@@ -21,7 +21,6 @@
 #include "Subscriber.h"
 #include "cuda_utils.h"
 #include <memory>
-#include <random_utils.h>
 #include <vector>
 
 // Forward declaration
