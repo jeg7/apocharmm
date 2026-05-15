@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -18,6 +18,7 @@
 #include <iomanip>
 #include <iostream>
 #include <numeric>
+#include <vector>
 
 // Energy and virial in device memory
 // static __device__ BondedEnergyVirial_t d_energy_virial;
@@ -1279,78 +1280,52 @@ void CudaBondedForce<AT, CT>::setup_coef(
   }
 
   if (nureybcoef > 0) {
-    float2 *h_ureybcoef;
-    h_ureybcoef = new float2[nureybcoef];
-    for (int i = 0; i < nureybcoef; ++i) {
-      float2 elem;
-      elem.x = val[pos + i][0];
-      elem.y = val[pos + i][1];
-      h_ureybcoef[i] = elem;
-    }
+    std::vector<float2> h_ureybcoef(nureybcoef);
+    for (int i = 0; i < nureybcoef; i++)
+      h_ureybcoef[i] = make_float2(val[pos + i][0], val[pos + i][1]);
     reallocate<float2>(&ureybcoef, &ureybcoef_len, nureybcoef, 1.2f);
-    copy_HtoD<float2>(h_ureybcoef, ureybcoef, nureybcoef);
+    copy_HtoD<float2>(h_ureybcoef.data(), ureybcoef, nureybcoef);
     pos += nureybcoef;
-    delete h_ureybcoef;
   }
 
   if (nanglecoef > 0) {
-    float2 *h_anglecoef = new float2[nanglecoef];
-    for (int i = 0; i < nanglecoef; ++i) {
-      float2 elem;
-      elem.x = val[pos + i][0];
-      elem.y = val[pos + i][1];
-      h_anglecoef[i] = elem;
-    }
+    std::vector<float2> h_anglecoef(nanglecoef);
+    for (int i = 0; i < nanglecoef; i++)
+      h_anglecoef[i] = make_float2(val[pos + i][0], val[pos + i][1]);
     reallocate<float2>(&anglecoef, &anglecoef_len, nanglecoef, 1.2f);
-    copy_HtoD<float2>(h_anglecoef, anglecoef, nanglecoef);
+    copy_HtoD<float2>(h_anglecoef.data(), anglecoef, nanglecoef);
     pos += nanglecoef;
-    delete h_anglecoef;
   }
 
   if (ndihecoef > 0) {
-    float4 *h_dihecoef = new float4[ndihecoef];
+    std::vector<float4> h_dihecoef(ndihecoef);
     for (int i = 0; i < ndihecoef; ++i) {
-      float4 elem;
-      elem.x = val[pos + i][0];
-      elem.y = val[pos + i][1];
-      elem.z = val[pos + i][2];
-      elem.w = val[pos + i][3];
-      h_dihecoef[i] = elem;
+      h_dihecoef[i] = make_float4(val[pos + i][0], val[pos + i][1],
+                                  val[pos + i][2], val[pos + i][3]);
     }
     reallocate<float4>(&dihecoef, &dihecoef_len, ndihecoef, 1.2f);
-    copy_HtoD<float4>(h_dihecoef, dihecoef, ndihecoef);
+    copy_HtoD<float4>(h_dihecoef.data(), dihecoef, ndihecoef);
     pos += ndihecoef;
-    delete h_dihecoef;
   }
 
   if (nimdihecoef > 0) {
-    float4 *h_imdihecoef = new float4[nimdihecoef];
-    for (int i = 0; i < nimdihecoef; ++i) {
-      float4 elem;
-      elem.x = val[pos + i][0];
-      elem.y = val[pos + i][1];
-      elem.z = val[pos + i][2];
-      elem.w = val[pos + i][3];
-      h_imdihecoef[i] = elem;
+    std::vector<float4> h_imdihecoef(nimdihecoef);
+    for (int i = 0; i < nimdihecoef; i++) {
+      h_imdihecoef[i] = make_float4(val[pos + i][0], val[pos + i][1],
+                                    val[pos + i][2], val[pos + i][3]);
     }
     reallocate<float4>(&imdihecoef, &imdihecoef_len, nimdihecoef, 1.2f);
-    copy_HtoD<float4>(h_imdihecoef, imdihecoef, nimdihecoef);
+    copy_HtoD<float4>(h_imdihecoef.data(), imdihecoef, nimdihecoef);
     pos += nimdihecoef;
-    delete h_imdihecoef;
   }
 
   if (ncmapcoef > 0) {
-    float2 *h_cmapcoef = new float2[ncmapcoef];
-    for (int i = 0; i < ncmapcoef; ++i) {
-      float2 elem;
-      elem.x = val[pos + i][0];
-      elem.y = val[pos + i][1];
-      h_cmapcoef[i] = elem;
-    }
+    std::vector<float2> h_cmapcoef(ncmapcoef);
+    for (int i = 0; i < ncmapcoef; i++)
+      h_cmapcoef[i] = make_float2(val[pos + i][0], val[pos + i][1]);
     reallocate<float2>(&cmapcoef, &cmapcoef_len, ncmapcoef, 1.2f);
-    copy_HtoD<float2>(h_cmapcoef, cmapcoef, ncmapcoef);
+    copy_HtoD<float2>(h_cmapcoef.data(), cmapcoef, ncmapcoef);
     pos += ncmapcoef;
-    delete h_cmapcoef;
   }
   assert(pos == val.size());
 }
@@ -1421,36 +1396,34 @@ void CudaBondedForce<AT, CT>::setup_list(
   // nanglelist));
   size_t pos = 0;
   if (nbondlist > 0) {
-    bondlist_t *h_bondlist = new bondlist_t[nbondlist];
-    for (int i = 0; i < nbondlist; ++i) {
+    std::vector<bondlist_t> h_bondlist(nbondlist);
+    for (int i = 0; i < nbondlist; i++) {
       h_bondlist[i].i = val[i][0];
       h_bondlist[i].j = val[i][1];
       h_bondlist[i].itype = val[i][2];
       h_bondlist[i].ishift = val[i][3];
     }
     reallocate<bondlist_t>(&bondlist, &bondlist_len, nbondlist, 1.2f);
-    copy_HtoD<bondlist_t>(h_bondlist, bondlist, nbondlist, stream);
+    copy_HtoD<bondlist_t>(h_bondlist.data(), bondlist, nbondlist, stream);
     pos += nbondlist;
-    delete h_bondlist;
   }
 
   if (nureyblist > 0) {
-    bondlist_t *h_ureyblist = new bondlist_t[nureyblist];
-    for (int i = 0; i < nureyblist; ++i) {
+    std::vector<bondlist_t> h_ureyblist(nureyblist);
+    for (int i = 0; i < nureyblist; i++) {
       h_ureyblist[i].i = val[pos + i][0];
       h_ureyblist[i].j = val[pos + i][1];
       h_ureyblist[i].itype = val[pos + i][2];
       h_ureyblist[i].ishift = val[pos + i][3];
     }
     reallocate<bondlist_t>(&ureyblist, &ureyblist_len, nureyblist, 1.2f);
-    copy_HtoD<bondlist_t>(h_ureyblist, ureyblist, nureyblist, stream);
+    copy_HtoD<bondlist_t>(h_ureyblist.data(), ureyblist, nureyblist, stream);
     pos += nureyblist;
-    delete h_ureyblist;
   }
 
   if (nanglelist > 0) {
-    anglelist_t *h_anglelist = new anglelist_t[nanglelist];
-    for (int i = 0; i < nanglelist; ++i) {
+    std::vector<anglelist_t> h_anglelist(nanglelist);
+    for (int i = 0; i < nanglelist; i++) {
       h_anglelist[i].i = val[pos + i][0];
       h_anglelist[i].j = val[pos + i][1];
       h_anglelist[i].k = val[pos + i][2];
@@ -1459,14 +1432,13 @@ void CudaBondedForce<AT, CT>::setup_list(
       h_anglelist[i].ishift2 = val[pos + i][5];
     }
     reallocate<anglelist_t>(&anglelist, &anglelist_len, nanglelist, 1.2f);
-    copy_HtoD<anglelist_t>(h_anglelist, anglelist, nanglelist, stream);
+    copy_HtoD<anglelist_t>(h_anglelist.data(), anglelist, nanglelist, stream);
     pos += nanglelist;
-    delete h_anglelist;
   }
 
   if (ndihelist > 0) {
-    dihelist_t *h_dihelist = new dihelist_t[ndihelist];
-    for (int i = 0; i < ndihelist; ++i) {
+    std::vector<dihelist_t> h_dihelist(ndihelist);
+    for (int i = 0; i < ndihelist; i++) {
       h_dihelist[i].i = val[pos + i][0];
       h_dihelist[i].j = val[pos + i][1];
       h_dihelist[i].k = val[pos + i][2];
@@ -1477,14 +1449,13 @@ void CudaBondedForce<AT, CT>::setup_list(
       h_dihelist[i].ishift3 = val[pos + i][7];
     }
     reallocate<dihelist_t>(&dihelist, &dihelist_len, ndihelist, 1.2f);
-    copy_HtoD<dihelist_t>(h_dihelist, dihelist, ndihelist, stream);
+    copy_HtoD<dihelist_t>(h_dihelist.data(), dihelist, ndihelist, stream);
     pos += ndihelist;
-    delete h_dihelist;
   }
 
   if (nimdihelist > 0) {
-    dihelist_t *h_imdihelist = new dihelist_t[nimdihelist];
-    for (int i = 0; i < nimdihelist; ++i) {
+    std::vector<dihelist_t> h_imdihelist(nimdihelist);
+    for (int i = 0; i < nimdihelist; i++) {
       h_imdihelist[i].i = val[pos + i][0];
       h_imdihelist[i].j = val[pos + i][1];
       h_imdihelist[i].k = val[pos + i][2];
@@ -1495,14 +1466,13 @@ void CudaBondedForce<AT, CT>::setup_list(
       h_imdihelist[i].ishift3 = val[pos + i][7];
     }
     reallocate<dihelist_t>(&imdihelist, &imdihelist_len, nimdihelist, 1.2f);
-    copy_HtoD<dihelist_t>(h_imdihelist, imdihelist, nimdihelist, stream);
+    copy_HtoD<dihelist_t>(h_imdihelist.data(), imdihelist, nimdihelist, stream);
     pos += nimdihelist;
-    delete h_imdihelist;
   }
 
   if (ncmaplist > 0) {
-    cmaplist_t *h_cmaplist = new cmaplist_t[ncmaplist];
-    for (int i = 0; i < ncmaplist; ++i) {
+    std::vector<cmaplist_t> h_cmaplist(ncmaplist);
+    for (int i = 0; i < ncmaplist; i++) {
       h_cmaplist[i].i1 = val[pos + i][0];
       h_cmaplist[i].j1 = val[pos + i][1];
       h_cmaplist[i].k1 = val[pos + i][2];
@@ -1517,9 +1487,8 @@ void CudaBondedForce<AT, CT>::setup_list(
       h_cmaplist[i].ishift3 = val[pos + i][11];
     }
     reallocate<cmaplist_t>(&cmaplist, &cmaplist_len, ncmaplist, 1.2f);
-    copy_HtoD<cmaplist_t>(h_cmaplist, cmaplist, ncmaplist, stream);
+    copy_HtoD<cmaplist_t>(h_cmaplist.data(), cmaplist, ncmaplist, stream);
     pos += ncmaplist;
-    delete h_cmaplist;
   }
 }
 
@@ -1784,6 +1753,10 @@ void CudaBondedForce<AT, CT>::calc_force(
                 boxz, force, energyVirial.getEnergyPointer(strImdihe), NULL);
       }
       cudaCheck(cudaGetLastError());
+    }
+
+    if (calc_cmap) {
+      std::cout << "CMAP CALCULATION NOT IMPLEMENTED" << std::endl;
     }
   } else {
     int nbondlist_loc = (calc_bond) ? nbondlist : 0;

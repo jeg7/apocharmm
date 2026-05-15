@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -109,6 +109,10 @@ void CudaIntegrator::initialize(void) {
 }
 
 void CudaIntegrator::initializeFromRestartFile(const std::string &rstFileName) {
+  if (rstFileName.empty()) {
+    throw std::invalid_argument(
+        "CudaIntegrator::initializeFromRestartFile, rstFileName.empty()");
+  }
   std::cerr << "CudaIntegrator::initializeFromRestartFile(const std::string "
                "&rstFileName) : override me!"
             << std::endl;
@@ -306,102 +310,20 @@ void CudaIntegrator::setRemoveCenterOfMassFrequency(const int freq) {
 }
 
 const CudaContainer<double4> &CudaIntegrator::getCoordsDelta(void) const {
-  // std::cerr << "CudaIntegrator::getCoordsDelta() : override me!" <<
-  // std::endl; exit(1);
   return m_CoordsDelta;
 }
 
 CudaContainer<double4> &CudaIntegrator::getCoordsDelta(void) {
-  // std::cerr << "CudaIntegrator::getCoordsDelta() : override me!" <<
-  // std::endl; exit(1);
   return m_CoordsDelta;
 }
 
 const CudaContainer<double4> &
 CudaIntegrator::getCoordsDeltaPrevious(void) const {
-  // std::cerr << "CudaIntegrator::getCoordsDeltaPrevious() : override me!"
-  //           << std::endl;
-  // exit(1);
   return m_CoordsDeltaPrevious;
 }
 
 CudaContainer<double4> &CudaIntegrator::getCoordsDeltaPrevious(void) {
-  // std::cerr << "CudaIntegrator::getCoordsDeltaPrevious() : override me!"
-  //           << std::endl;
-  // exit(1);
   return m_CoordsDeltaPrevious;
-}
-
-void CudaIntegrator::setCoordsDeltaPrevious(
-    const std::vector<std::vector<double>> &coordsDelta) {
-  std::cerr << "CudaIntegrator::setCoordsDeltaPrevious() : override me!"
-            << std::endl;
-  exit(1);
-  return;
-}
-
-void CudaIntegrator::setOnStepPistonVelocity(
-    const CudaContainer<double> &onStepPistonVelocity) {
-  std::cerr << "CudaIntegrator::setOnStepPistonVelocity() : override me!"
-            << std::endl;
-  exit(1);
-  return;
-}
-
-void CudaIntegrator::setOnStepPistonVelocity(
-    const std::vector<double> &onStepPistonVelocity) {
-  std::cerr << "CudaIntegrator::setOnStepPistonVelocity() : override me!"
-            << std::endl;
-  exit(1);
-  return;
-}
-
-void CudaIntegrator::setHalfStepPistonVelocity(
-    const CudaContainer<double> &halfStepPistonVelocity) {
-  std::cerr << "CudaIntegrator::setHalfStepPistonVelocity() : override me!"
-            << std::endl;
-  exit(1);
-  return;
-}
-
-void CudaIntegrator::setHalfStepPistonVelocity(
-    const std::vector<double> &halfStepPistonVelocity) {
-  std::cerr << "CudaIntegrator::setHalfStepPistonVelocity() : override me!"
-            << std::endl;
-  exit(1);
-  return;
-}
-
-void CudaIntegrator::setOnStepPistonPosition(
-    const CudaContainer<double> &onStepPistonPosition) {
-  std::cerr << "CudaIntegrator::setOnStepPistonPosition() : override me!"
-            << std::endl;
-  exit(1);
-  return;
-}
-
-void CudaIntegrator::setOnStepPistonPosition(
-    const std::vector<double> &onStepPistonPosition) {
-  std::cerr << "CudaIntegrator::setOnStepPistonPosition() : override me!"
-            << std::endl;
-  exit(1);
-  return;
-}
-
-void CudaIntegrator::setHalfStepPistonPosition(
-    const CudaContainer<double> &halfStepPistonPosition) {
-  std::cerr << "CudaIntegrator::setHalfStepPistonPosition() : override me!"
-            << std::endl;
-  exit(1);
-  return;
-}
-
-void CudaIntegrator::setHalfStepPistonPosition(
-    const std::vector<double> &halfStepPistonPosition) {
-  std::cerr << "CudaIntegrator::setHalfStepPistonPosition() : override me!"
-            << std::endl;
-  exit(1);
-  return;
 }
 
 std::map<std::string, std::string>

@@ -2,13 +2,14 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D__APO_DEBUG__")
 set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -D__APO_DEBUG__")
 
 add_library(apoCHARMMlib
+  ${apoCHARMM_SOURCE_DIR}/src/AtomSelector.cu
   ${apoCHARMM_SOURCE_DIR}/src/BEDSSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/CharmmContext.cu
   ${apoCHARMM_SOURCE_DIR}/src/Checkpoint.cu
   ${apoCHARMM_SOURCE_DIR}/src/CheckpointSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/Coordinates.cu
   ${apoCHARMM_SOURCE_DIR}/src/CudaContainer.cu
-  ${apoCHARMM_SOURCE_DIR}/src/CudaBAOABIntegrator.cu
+  # ${apoCHARMM_SOURCE_DIR}/src/CudaBAOABIntegrator.cu
   ${apoCHARMM_SOURCE_DIR}/src/CudaBondedForce.cu
   ${apoCHARMM_SOURCE_DIR}/src/DynaSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/EnergyVirial.cpp
@@ -49,7 +50,7 @@ add_library(apoCHARMMlib
   ${apoCHARMM_SOURCE_DIR}/src/CudaNoseHooverThermostatIntegrator.cu
   ${apoCHARMM_SOURCE_DIR}/src/CudaLangevinPistonIntegrator.cu
   ${apoCHARMM_SOURCE_DIR}/src/CudaP21NeighborListBuild.cu
-  ${apoCHARMM_SOURCE_DIR}/src/CudaExternalForce.cu
+  # ${apoCHARMM_SOURCE_DIR}/src/CudaExternalForce.cu
   ${apoCHARMM_SOURCE_DIR}/src/HarmonicRestraintForce.cu
   ${apoCHARMM_SOURCE_DIR}/src/CompositeSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/DualTopologySubscriber.cu
@@ -61,18 +62,18 @@ add_library(apoCHARMMlib
   # ${apoCHARMM_SOURCE_DIR}/src/NetCDFSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/PDB.cu
   ${apoCHARMM_SOURCE_DIR}/src/PertForceManager.cu
-  ${apoCHARMM_SOURCE_DIR}/src/PrintEnergiesGraph.cu
+  # ${apoCHARMM_SOURCE_DIR}/src/PrintEnergiesGraph.cu
   ${apoCHARMM_SOURCE_DIR}/src/RestartSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/ReplicaExchange.cu
-  ${apoCHARMM_SOURCE_DIR}/src/CudaIntegratorGraph.cu
+  # ${apoCHARMM_SOURCE_DIR}/src/CudaIntegratorGraph.cu
   ${apoCHARMM_SOURCE_DIR}/src/NeighborListSort.cu
   ${apoCHARMM_SOURCE_DIR}/src/NonEquilibriumForceManager.cu
-  ${apoCHARMM_SOURCE_DIR}/src/SimpleLeapfrogGraph.cu
+  # ${apoCHARMM_SOURCE_DIR}/src/SimpleLeapfrogGraph.cu
   ${apoCHARMM_SOURCE_DIR}/src/StateSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/Subscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/DeviceVector.cu
-  ${apoCHARMM_SOURCE_DIR}/src/TestForce.cu
-  ${apoCHARMM_SOURCE_DIR}/src/TestSystem.cu
+  # ${apoCHARMM_SOURCE_DIR}/src/TestForce.cu
+  # ${apoCHARMM_SOURCE_DIR}/src/TestSystem.cu
   ${apoCHARMM_SOURCE_DIR}/src/XYZSubscriber.cu
   # ${apoCHARMM_SOURCE_DIR}/src/Utilities.cu
   ${apoCHARMM_SOURCE_DIR}/src/Logger.cu
@@ -85,7 +86,7 @@ target_compile_definitions(apoCHARMMlib PUBLIC USE_TEXTURE_OBJECTS)
 #   CUDA_ARCHITECTURES "80"
 # )
 set_target_properties(apoCHARMMlib PROPERTIES
-  CUDA_ARCHITECTURES "70;80;90"
+  CUDA_ARCHITECTURES "60;70;80;90"
 )
 # set_target_properties(apoCHARMMlib PROPERTIES
 #   CUDA_SEPARABLE_COMPILATION ON

@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -177,7 +177,7 @@ public:
   void spread_charge(const int ncoord, const Bspline<CT> &bspline);
   void spread_charge(const float4 *xyzq, const int ncoord, const double *recip);
 
-  void fillP21Grid(const int ncoord);
+  void fillP21Grid(void);
 
   // MSLDPME ->
   void spread_charge_block(const float4 *xyzq, const int ncoord,

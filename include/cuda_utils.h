@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -109,17 +109,17 @@ void set_gpu_array_async_T(void *data, const int ndata, const int value,
 void set_gpu_array_T(void *data, const int ndata, const int value,
                      const size_t sizeofT);
 
-void copy3D_HtoD_T(void *src_data, void *dst_data, int src_x0, int src_y0,
-                   int src_z0, size_t src_xsize, size_t src_ysize, int dst_x0,
-                   int dst_y0, int dst_z0, size_t width, size_t height,
-                   size_t depth, size_t dst_xsize, size_t dst_ysize,
-                   size_t sizeofT);
+// void copy3D_HtoD_T(void *src_data, void *dst_data, int src_x0, int src_y0,
+//                    int src_z0, size_t src_xsize, size_t src_ysize, int
+//                    dst_x0, int dst_y0, int dst_z0, size_t width, size_t
+//                    height, size_t depth, size_t dst_xsize, size_t dst_ysize,
+//                    size_t sizeofT);
 
-void copy3D_DtoH_T(void *src_data, void *dst_data, int src_x0, int src_y0,
-                   int src_z0, size_t src_xsize, size_t src_ysize, int dst_x0,
-                   int dst_y0, int dst_z0, size_t width, size_t height,
-                   size_t depth, size_t dst_xsize, size_t dst_ysize,
-                   size_t sizeofT);
+// void copy3D_DtoH_T(void *src_data, void *dst_data, int src_x0, int src_y0,
+//                    int src_z0, size_t src_xsize, size_t src_ysize, int
+//                    dst_x0, int dst_y0, int dst_z0, size_t width, size_t
+//                    height, size_t depth, size_t dst_xsize, size_t dst_ysize,
+//                    size_t sizeofT);
 
 //----------------------------------------------------------------------------------------
 //

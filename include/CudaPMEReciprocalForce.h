@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -61,27 +61,29 @@ private:
 public:
   // move constructor
   CudaPMEReciprocalForce(CudaPMEReciprocalForce &&other)
-      : energyVirial(other.energyVirial), PMErecip(std::move(other.PMErecip)),
+      : PMErecip(std::move(other.PMErecip)),
         // PMErecip2(std::move(other.PMErecip2)),
         nfftx(other.nfftx), nffty(other.nffty), nfftz(other.nfftz),
         order(other.order), kappa(other.kappa), forceVal(other.forceVal),
-        recipStream(other.recipStream) {}
+        recipStream(other.recipStream), energyVirial(other.energyVirial) {}
 
   CudaPMEReciprocalForce(CudaEnergyVirial &energyVirial)
-      : energyVirial(energyVirial),
-        PMErecip(energyVirial) // ,PMErecip2(energyVirial)
+      : PMErecip(energyVirial),
+        energyVirial(energyVirial) // ,PMErecip2(energyVirial)
   {}
   CudaPMEReciprocalForce(const int nfftx, const int nffty, const int nfftz,
                          const int order, const double kappa,
                          CudaEnergyVirial &energyVirial, const char *nameRecip,
                          const char *nameSelf)
       : // DomdecRecip(nfftx, nffty, nfftz, order, kappa),
-        energyVirial(energyVirial),
         PMErecip(nfftx, nffty, nfftz, order, BOX, 1, 0, energyVirial, nameRecip,
-                 nameSelf)
+                 nameSelf),
+        energyVirial(energyVirial)
   // PMErecip2(nfftx, nffty, nfftz, order, BOX, 1, 0, energyVirial,
   //           nameRecip, nameSelf)
-  {}
+  {
+    this->kappa = kappa;
+  }
 
   //~CudaPMEReciprocalForce() {std::cout << "In CudaPMEReciprocalForce
   // destructor\n";}

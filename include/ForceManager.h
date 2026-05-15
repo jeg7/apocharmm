@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -30,7 +30,6 @@
 #include "CudaPMEReciprocalForce.h"
 #include "CudaTopExcl.h"
 #include "PBC.h"
-#include "TestForce.h"
 
 // Forward declaration
 class CharmmContext;
@@ -406,12 +405,12 @@ public:
    */
   virtual void resetNeighborList(const float4 *xyzq);
 
-  void calcForcePart1(const float4 *xyzq, const bool reset,
-                      const bool calcEnergy, const bool calcVirial);
-  void calcForcePart2(const float4 *xyzq, const bool reset,
-                      const bool calcEnergy, const bool calcVirial);
-  void calcForcePart3(const float4 *xyzq, const bool reset,
-                      const bool calcEnergy, const bool calcVirial);
+  void calcForcePart1(const bool reset, const bool calcEnergy,
+                      const bool calcVirial);
+  void calcForcePart2(const float4 *xyzq, const bool calcEnergy,
+                      const bool calcVirial);
+  void calcForcePart3(const float4 *xyzq, const bool calcEnergy,
+                      const bool calcVirial);
   /**
    * @brief Compute forces, energy, optionally virial
    *

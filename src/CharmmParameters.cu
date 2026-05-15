@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -55,7 +55,7 @@ std::vector<std::string> split(const std::string &str) {
 */
 
 void CharmmParameters::readCharmmParameterFile(std::string fileName) {
-  enum State {
+  enum class State {
     NONE,
     ATOMS,
     BONDS,
@@ -67,18 +67,18 @@ void CharmmParameters::readCharmmParameterFile(std::string fileName) {
     NBFIX,
     HBOND
   };
-  State state = NONE;
+  State state = State::NONE;
   std::vector<std::string> tokens;
 
-  enum FileType { PAR, TOPPAR };
-  FileType fileType;
-  int pos = fileName.find_last_of('/');
+  enum class FileType { NONE, PAR, TOPPAR };
+  FileType fileType = FileType::NONE;
+  std::size_t pos = fileName.find_last_of('/');
   if (pos != std::string::npos) {
-    int topparPos = fileName.find("toppar", pos);
+    std::size_t topparPos = fileName.find("toppar", pos);
     if (topparPos != std::string::npos)
-      fileType = TOPPAR;
+      fileType = FileType::TOPPAR;
     else
-      fileType = PAR;
+      fileType = FileType::PAR;
   }
 
   std::ifstream prmFile(fileName);
@@ -94,7 +94,7 @@ void CharmmParameters::readCharmmParameterFile(std::string fileName) {
   // if (fileName.find_first_of("toppar") == 0 && fileName.find_last_of(".str")
   // != std::string::npos ) {
 
-  if (fileType == TOPPAR) {
+  if (fileType == FileType::TOPPAR) {
 
     while (!prmFile.eof()) {
       std::getline(prmFile, line);
@@ -131,27 +131,27 @@ void CharmmParameters::readCharmmParameterFile(std::string fileName) {
       // Skip the line
     } else {
       if (line.find("ATOMS") == 0)
-        state = ATOMS;
+        state = State::ATOMS;
       if (line.find("BONDS") == 0)
-        state = BONDS;
+        state = State::BONDS;
       if (line.find("ANGLES") == 0)
-        state = ANGLES;
+        state = State::ANGLES;
       if (line.find("DIHEDRALS") == 0)
-        state = DIHEDRALS;
+        state = State::DIHEDRALS;
       if (line.find("IMPR") == 0)
-        state = IMPROPERS;
+        state = State::IMPROPERS;
       if (line.find("CMAP") == 0)
-        state = CMAP;
+        state = State::CMAP;
       if (line.find("NONBONDED") == 0)
-        state = NONBONDED;
+        state = State::NONBONDED;
       if (line.find("END") == 0)
-        state = NONE;
+        state = State::NONE;
       if (line.find("HBOND") == 0)
-        state = HBOND;
+        state = State::HBOND;
       if (line.find("NBFIX") == 0)
-        state = NBFIX;
+        state = State::NBFIX;
 
-      if (state == BONDS) {
+      if (state == State::BONDS) {
         tokens = apo::split(line);
         if (tokens.size() >= 4) {
           if (tokens[0] > tokens[1])
@@ -161,7 +161,7 @@ void CharmmParameters::readCharmmParameterFile(std::string fileName) {
                BondValues(std::stof(tokens[2]), std::stof(tokens[3]))});
         }
       }
-      if (state == ANGLES) {
+      if (state == State::ANGLES) {
         tokens = apo::split(line);
         // std::cout << "Tokens size : " << tokens.size() << "\n";
         if (tokens.size() >= 5) {
@@ -201,7 +201,7 @@ void CharmmParameters::readCharmmParameterFile(std::string fileName) {
         }
       }
 
-      if (state == DIHEDRALS) {
+      if (state == State::DIHEDRALS) {
         tokens = apo::split(line);
         if (tokens.size() >= 7) {
           if (tokens[0] > tokens[3]) {
@@ -218,7 +218,7 @@ void CharmmParameters::readCharmmParameterFile(std::string fileName) {
         }
       }
 
-      if (state == IMPROPERS) {
+      if (state == State::IMPROPERS) {
         tokens = apo::split(line);
         if (tokens.size() >= 7) {
           if (tokens[0] > tokens[3]) {
@@ -226,13 +226,13 @@ void CharmmParameters::readCharmmParameterFile(std::string fileName) {
             std::swap(tokens[2], tokens[1]);
           } else if ((tokens[0] == tokens[3]) && (tokens[1] > tokens[2]))
             std::swap(tokens[2], tokens[1]);
-          auto success = improperParams.insert(
+          improperParams.insert(
               {DihedralKey(tokens[0], tokens[1], tokens[2], tokens[3]),
                ImDihedralValues(std::stof(tokens[4]), std::stof(tokens[6]))});
         }
       }
 
-      if (state == NONBONDED) {
+      if (state == State::NONBONDED) {
         tokens = apo::split(line);
         if (tokens[0] == "NONBONDED") {
           while (*(tokens.end() - 1) == "-") {
@@ -301,11 +301,11 @@ void CharmmParameters::readCharmmParameterFile(std::string fileName) {
 
       } // state : NONBONDED
 
-      if (state == CMAP) {
+      if (state == State::CMAP) {
         // std::cout << line << std::endl;
       }
 
-      if (state == NBFIX) {
+      if (state == State::NBFIX) {
         // std::cout << "NBFIX : " << line << "\t";
         tokens = apo::split(line);
         if (tokens.size() >= 4) {
@@ -504,7 +504,7 @@ BondedParamsAndLists CharmmParameters::getBondedParamsAndLists(
         dihedralKeysPresent.push_back(key);
         // if (dihedralParams[key].size() > 1) std::cout << "size larger than
         // 1\n";
-        for (int i = 0; i < dihedralParams[key].size(); ++i) {
+        for (std::size_t i = 0; i < dihedralParams[key].size(); i++) {
           if (i > 0) {
             paramsVal[paramsVal.size() - 1][0] *= -1;
           } else {
@@ -537,7 +537,7 @@ BondedParamsAndLists CharmmParameters::getBondedParamsAndLists(
         if (findResult == dihedralKeysPresent.end()) {
           if (dihedralParams[key].size() > 1)
             std::cout << "CharmmParameters: Dihedral key size larger than 1\n";
-          for (int i = 0; i < dihedralParams[key].size(); ++i) {
+          for (std::size_t i = 0; i < dihedralParams[key].size(); i++) {
             if (i > 0) {
               paramsVal[paramsVal.size() - 1][0] *= -1;
             } else {
@@ -736,8 +736,8 @@ CharmmParameters::getVdwParamsAndTypes(std::shared_ptr<CharmmPSF> &psf) {
                                           vdw14AtomTypesMap.end());
 
   // int count = 0;
-  for (int i = 0; i < vdwAtomTypes.size(); ++i) {
-    for (int j = 0; j <= i; ++j) {
+  for (std::size_t i = 0; i < vdwAtomTypes.size(); i++) {
+    for (std::size_t j = 0; j <= i; j++) {
       std::string iType = vdwAtomTypes[i];
       std::string jType = vdwAtomTypes[j];
 
@@ -778,8 +778,8 @@ CharmmParameters::getVdwParamsAndTypes(std::shared_ptr<CharmmPSF> &psf) {
 
   // psfVdw14Params = psfVdwParams;
 
-  for (int i = 0; i < vdwAtomTypes.size(); ++i) {
-    for (int j = 0; j <= i; ++j) {
+  for (std::size_t i = 0; i < vdwAtomTypes.size(); i++) {
+    for (std::size_t j = 0; j <= i; j++) {
       std::string iType = vdwAtomTypes[i];
       std::string jType = vdwAtomTypes[j];
 

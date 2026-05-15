@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -11,11 +11,11 @@
 #include "CharmmPSF.h"
 
 #include "str_utils.h"
-
-#include <iostream> // TMP?
+#include <stdexcept>
 
 CharmmPSF::CharmmPSF(void)
-    : m_NumAtoms(-1), m_Masses(), m_Charges(), m_AtomNames(), m_AtomTypes(),
+    : m_NumAtoms(-1), m_SegmentIdentifiers(), m_ResidueIdentifiers(),
+      m_ResidueNames(), m_AtomNames(), m_AtomTypes(), m_Charges(), m_Masses(),
       m_NumBonds(-1), m_Bonds(), m_NumAngles(-1), m_Angles(),
       m_NumDihedrals(-1), m_Dihedrals(), m_NumImpropers(-1), m_Impropers(),
       m_NumCrossTerms(-1), m_CrossTerms(), m_Connected12(), m_Connected13(),
@@ -30,9 +30,12 @@ CharmmPSF::CharmmPSF(const std::string &fileName) : CharmmPSF() {
 }
 
 CharmmPSF::CharmmPSF(const CharmmPSF &other)
-    : m_NumAtoms(other.m_NumAtoms), m_Masses(other.m_Masses),
-      m_Charges(other.m_Charges), m_AtomNames(other.m_AtomNames),
-      m_AtomTypes(other.m_AtomTypes), m_NumBonds(other.m_NumBonds),
+    : m_NumAtoms(other.m_NumAtoms),
+      m_SegmentIdentifiers(other.m_SegmentIdentifiers),
+      m_ResidueIdentifiers(other.m_ResidueIdentifiers),
+      m_ResidueNames(other.m_ResidueNames), m_AtomNames(other.m_AtomNames),
+      m_AtomTypes(other.m_AtomTypes), m_Charges(other.m_Charges),
+      m_Masses(other.m_Masses), m_NumBonds(other.m_NumBonds),
       m_Bonds(other.m_Bonds), m_NumAngles(other.m_NumAngles),
       m_Angles(other.m_Angles), m_NumDihedrals(other.m_NumDihedrals),
       m_Dihedrals(other.m_Dihedrals), m_NumImpropers(other.m_NumImpropers),
@@ -44,9 +47,12 @@ CharmmPSF::CharmmPSF(const CharmmPSF &other)
       m_Groups(other.m_Groups), m_FileName(other.m_FileName) {}
 
 CharmmPSF::CharmmPSF(const CharmmPSF &&other)
-    : m_NumAtoms(other.m_NumAtoms), m_Masses(other.m_Masses),
-      m_Charges(other.m_Charges), m_AtomNames(other.m_AtomNames),
-      m_AtomTypes(other.m_AtomTypes), m_NumBonds(other.m_NumBonds),
+    : m_NumAtoms(other.m_NumAtoms),
+      m_SegmentIdentifiers(other.m_SegmentIdentifiers),
+      m_ResidueIdentifiers(other.m_ResidueIdentifiers),
+      m_ResidueNames(other.m_ResidueNames), m_AtomNames(other.m_AtomNames),
+      m_AtomTypes(other.m_AtomTypes), m_Charges(other.m_Charges),
+      m_Masses(other.m_Masses), m_NumBonds(other.m_NumBonds),
       m_Bonds(other.m_Bonds), m_NumAngles(other.m_NumAngles),
       m_Angles(other.m_Angles), m_NumDihedrals(other.m_NumDihedrals),
       m_Dihedrals(other.m_Dihedrals), m_NumImpropers(other.m_NumImpropers),
@@ -59,10 +65,13 @@ CharmmPSF::CharmmPSF(const CharmmPSF &&other)
 
 void CharmmPSF::setNumAtoms(const int numAtoms) {
   m_NumAtoms = numAtoms;
-  m_Masses.resize(numAtoms);
-  m_Charges.resize(numAtoms);
+  m_SegmentIdentifiers.resize(numAtoms);
+  m_ResidueIdentifiers.resize(numAtoms);
+  m_ResidueNames.resize(numAtoms);
   m_AtomNames.resize(numAtoms);
   m_AtomTypes.resize(numAtoms);
+  m_Charges.resize(numAtoms);
+  m_Masses.resize(numAtoms);
   return;
 }
 
@@ -83,10 +92,16 @@ int CharmmPSF::getNumImpropers(void) const { return m_NumImpropers; }
 
 int CharmmPSF::getNumCrossTerms(void) const { return m_NumCrossTerms; }
 
-const std::vector<double> &CharmmPSF::getMasses(void) const { return m_Masses; }
+const std::vector<std::string> &CharmmPSF::getSegmentIdentifiers(void) const {
+  return m_SegmentIdentifiers;
+}
 
-const std::vector<double> &CharmmPSF::getCharges(void) const {
-  return m_Charges;
+const std::vector<int> &CharmmPSF::getResidueIdentifiers(void) const {
+  return m_ResidueIdentifiers;
+}
+
+const std::vector<std::string> &CharmmPSF::getResidueNames(void) const {
+  return m_ResidueNames;
 }
 
 const std::vector<std::string> &CharmmPSF::getAtomNames(void) const {
@@ -96,6 +111,12 @@ const std::vector<std::string> &CharmmPSF::getAtomNames(void) const {
 const std::vector<std::string> &CharmmPSF::getAtomTypes(void) const {
   return m_AtomTypes;
 }
+
+const std::vector<double> &CharmmPSF::getCharges(void) const {
+  return m_Charges;
+}
+
+const std::vector<double> &CharmmPSF::getMasses(void) const { return m_Masses; }
 
 const std::vector<Bond> &CharmmPSF::getBonds(void) const { return m_Bonds; }
 
@@ -141,13 +162,25 @@ const CudaContainer<int2> &CharmmPSF::getGroups(void) const { return m_Groups; }
 
 const std::string &CharmmPSF::getFileName(void) const { return m_FileName; }
 
-std::vector<double> &CharmmPSF::getMasses(void) { return m_Masses; }
+std::vector<std::string> &CharmmPSF::getSegmentIdentifiers(void) {
+  return m_SegmentIdentifiers;
+}
 
-std::vector<double> &CharmmPSF::getCharges(void) { return m_Charges; }
+std::vector<int> &CharmmPSF::getResidueIdentifiers(void) {
+  return m_ResidueIdentifiers;
+}
+
+std::vector<std::string> &CharmmPSF::getResidueNames(void) {
+  return m_ResidueNames;
+}
 
 std::vector<std::string> &CharmmPSF::getAtomNames(void) { return m_AtomNames; }
 
 std::vector<std::string> &CharmmPSF::getAtomTypes(void) { return m_AtomTypes; }
+
+std::vector<double> &CharmmPSF::getCharges(void) { return m_Charges; }
+
+std::vector<double> &CharmmPSF::getMasses(void) { return m_Masses; }
 
 std::vector<Bond> &CharmmPSF::getBonds(void) { return m_Bonds; }
 
@@ -398,11 +431,22 @@ void CharmmPSF::readCharmmPSF(const std::string &fileName) {
     apo::get_line(line, pos, fileData);
     tokens.clear();
     tokens = apo::split(line);
-    m_Masses[i] = std::stod(tokens[7]);
-    m_Charges[i] = std::stod(tokens[6]);
-    m_AtomNames[i] = tokens[4];
-    m_AtomTypes[i] = tokens[5];
+    const std::string segi = tokens[1];
     const int resi = std::stoi(tokens[2]);
+    const std::string resn = tokens[3];
+    const std::string anam = tokens[4];
+    const std::string atyp = tokens[5];
+    const double chrg = std::stod(tokens[6]);
+    const double mass = std::stod(tokens[7]);
+
+    m_SegmentIdentifiers[i] = segi;
+    m_ResidueIdentifiers[i] = resi;
+    m_ResidueNames[i] = resn;
+    m_AtomNames[i] = anam;
+    m_AtomTypes[i] = atyp;
+    m_Charges[i] = chrg;
+    m_Masses[i] = mass;
+
     if (resiOld == 0)
       resiOld = resi;
     if (resiOld != resi) {
@@ -414,6 +458,16 @@ void CharmmPSF::readCharmmPSF(const std::string &fileName) {
   }
   m_Residues.push_back(make_int2(resiStartIdx, m_NumAtoms - 1));
   m_Residues.shrink_to_fit();
+
+  // Ensure no extra whitespace in string variables
+  for (std::string &segi : m_SegmentIdentifiers)
+    apo::trim_ip(segi);
+  for (std::string &resn : m_ResidueNames)
+    apo::trim_ip(resn);
+  for (std::string &anam : m_AtomNames)
+    apo::trim_ip(anam);
+  for (std::string &atyp : m_AtomTypes)
+    apo::trim_ip(atyp);
 
   // Parse BOND section
   foundSection = false;

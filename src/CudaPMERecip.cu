@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -1374,6 +1374,12 @@ template <typename AT, typename CT, typename CT2>
 void CudaPMERecip<AT, CT, CT2>::init(int x0, int x1, int y0, int y1, int z0,
                                      int z1, int order, bool y_land_locked,
                                      bool z_land_locked) {
+  if ((y_land_locked == true) || (z_land_locked == true)) {
+    throw std::invalid_argument(
+        "CudaPMERecip<AT, CT, CT2>::init, y_land_locked == true || "
+        "z_land_locked == true");
+  }
+
   this->x0 = x0;
   this->x1 = x1;
 
@@ -2024,8 +2030,7 @@ __global__ void fillP21Kernel_4(const int nfftx, const int nffty,
 }
 
 template <typename AT, typename CT, typename CT2>
-void CudaPMERecip<AT, CT, CT2>::fillP21Grid(const int ncoord) {
-
+void CudaPMERecip<AT, CT, CT2>::fillP21Grid(void) {
   dim3 nthread, nblock;
   int gridSize = nfftx * nffty * nfftz;
   switch (order) {
@@ -2178,11 +2183,12 @@ void CudaPMERecip<AT, CT, CT2>::scalar_sum(const double *recip,
     }
   }
 
-  int nfft1, nfft2, nfft3;
-  int size1, size2, size3;
-  CT *prefac1, *prefac2, *prefac3;
-  CT recip1, recip2, recip3;
-  CT2 *datap;
+  int nfft1 = -1, nfft2 = -1, nfft3 = -1;
+  int size1 = -1, size2 = -1, size3 = -1;
+  CT *prefac1 = nullptr, *prefac2 = nullptr, *prefac3 = nullptr;
+  CT recip1 = static_cast<CT>(0), recip2 = static_cast<CT>(0),
+     recip3 = static_cast<CT>(0);
+  CT2 *datap = nullptr;
 
   if (fft_type == COLUMN || fft_type == SLAB) {
     nfft1 = nfftz;

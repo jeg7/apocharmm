@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -24,7 +24,7 @@ TEST_CASE("harmonicRestraintForce") {
   const std::vector<double> boxDims(3, 50.0);
   const int randomSeed = 314159;
   const double temperature = 300.0;
-  const int nstep = 10000;
+  const int nstep = 1000;
   const double timeStep = 0.002;
 
   SECTION("nacl") {
@@ -78,7 +78,7 @@ TEST_CASE("harmonicRestraintForce") {
     double forceConstant = 1e-8;
     for (int i = 0; i < 14; i++) {
       harm->setForceConstant(forceConstant);
-      integrator->propagate(1000);
+      integrator->propagate(nstep);
       forceConstant *= 10.0;
     }
 

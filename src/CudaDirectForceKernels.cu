@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -947,7 +947,9 @@ __device__ void calc_in14_force_device(
 
 #define EXPAND_ENERGY_VIRIAL_NONE(KERNEL_CREATOR, KERNEL_NAME, VDW_MODEL,      \
                                   ELEC_MODEL, ...)                             \
-  { KERNEL_CREATOR(KERNEL_NAME, VDW_MODEL, ELEC_MODEL, __VA_ARGS__); }
+  {                                                                            \
+    KERNEL_CREATOR(KERNEL_NAME, VDW_MODEL, ELEC_MODEL, __VA_ARGS__);           \
+  }
 
 #define EXPAND_ELEC(EXPAND_ENERGY_VIRIAL_NAME, KERNEL_CREATOR, KERNEL_NAME,    \
                     VDW_MODEL, ...)                                            \
@@ -1095,8 +1097,12 @@ void calcForceKernelChoice(const int nblock_tot_in, const int nthread,
                            Virial_t *virial, double *energy_vdw,
                            double *energy_elec, CudaBlock *cudaBlock,
                            AT *biflam, AT *biflam2) {
+  if ((biflam != NULL) || (biflam2 != NULL)) {
+    throw std::invalid_argument(
+        "calcForceKernelChoice, biflam != NULL || biflam2 != NULL");
+  }
 
-  int nblock_tot = nblock_tot_in;
+  unsigned int nblock_tot = static_cast<unsigned int>(nblock_tot_in);
   int3 max_nblock3 = get_max_nblock();
   unsigned int max_nblock = max_nblock3.x;
   unsigned int base = 0;

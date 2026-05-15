@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -48,14 +48,20 @@ CharmmContext::CharmmContext(std::shared_ptr<ForceManager> fmIn)
 }
 
 // Copy Constructor . Does not copy CharmmContext.
-CharmmContext::CharmmContext(const CharmmContext &ctxIn)
-    : numAtoms(ctxIn.numAtoms), xyzq(ctxIn.xyzq),
-      coordsCharge(ctxIn.coordsCharge), velocityMass(ctxIn.velocityMass),
-      kineticEnergy(ctxIn.kineticEnergy), pressure(ctxIn.pressure),
-      temperature(ctxIn.temperature),
-      numDegreesOfFreedom(ctxIn.numDegreesOfFreedom),
-      usingHolonomicConstraints(ctxIn.usingHolonomicConstraints),
-      hasLogger(ctxIn.hasLogger), seed(ctxIn.seed) {}
+CharmmContext::CharmmContext(const CharmmContext &other)
+    : std::enable_shared_from_this<CharmmContext>(other) {
+  this->numAtoms = other.numAtoms;
+  this->xyzq = other.xyzq;
+  this->coordsCharge = other.coordsCharge;
+  this->velocityMass = other.velocityMass;
+  this->kineticEnergy = other.kineticEnergy;
+  this->pressure = other.pressure;
+  this->temperature = other.temperature;
+  this->numDegreesOfFreedom = other.numDegreesOfFreedom;
+  this->usingHolonomicConstraints = other.usingHolonomicConstraints;
+  this->hasLogger = other.hasLogger;
+  this->seed = other.seed;
+}
 
 void CharmmContext::setupFromCheckpoint(
     std::shared_ptr<Checkpoint> checkpoint) {
@@ -66,7 +72,7 @@ void CharmmContext::setupFromCheckpoint(
 }
 
 void CharmmContext::setMasses(const std::vector<double> &masses) {
-  if (masses.size() != numAtoms) {
+  if (masses.size() != static_cast<std::size_t>(numAtoms)) {
     std::stringstream tmpexc;
     tmpexc << "Masses vector size does not match numAtoms (" << masses.size()
            << " != " << numAtoms << ")\n";
@@ -763,6 +769,8 @@ int CharmmContext::getDegreesOfFreedom() { return numDegreesOfFreedom; }
 
 void CharmmContext::calculatePotentialEnergy(bool reset, bool print) {
   forceManager->calcForce(xyzq.getDeviceArray().data(), reset, true, true);
+  if (print == true)
+    std::cout << "Implement some nice printing" << std::endl;
   return;
 }
 CudaContainer<double> &CharmmContext::getPotentialEnergy() {
@@ -923,7 +931,7 @@ void CharmmContext::useHolonomicConstraints(bool set) {
     ndegf -= getWaterMolecules().size() * 3;
     int numShakeConstraints = 0;
     auto shakeAtoms = forceManager->getShakeAtoms().getHostArray();
-    for (int i = 0; i < shakeAtoms.size(); ++i) {
+    for (std::size_t i = 0; i < shakeAtoms.size(); ++i) {
       ++numShakeConstraints;
       if (shakeAtoms[i].z != -1)
         ++numShakeConstraints;

@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -33,8 +33,8 @@ void FEPEIForceManager::setSelectorVec(const std::vector<float> &lambda) {
   auto it = std::find(lambda.begin(), lambda.end(), 1.0);
   assert(it != lambda.end());
   nonZeroLambdaIndex = it - lambda.begin();
-  for (int i = 0; i < lambda.size(); ++i) {
-    if (i != nonZeroLambdaIndex)
+  for (std::size_t i = 0; i < lambda.size(); i++) {
+    if (static_cast<int>(i) != nonZeroLambdaIndex)
       assert(lambda[i] == 0.0);
   }
   ForceManagerComposite::setSelectorVec(lambda);
@@ -103,7 +103,7 @@ CudaContainer<double> FEPEIForceManager::getLambdaPotentialEnergies() {
   // Move them to the device in the second pass
   // weights.transferFromDevice();
   m_TotalPotentialEnergy.transferFromDevice();
-  for (int i = 0; i < lambdas.size(); ++i) {
+  for (std::size_t i = 0; i < lambdas.size(); i++) {
     lambdaPotentialEnergies[i] = (1 - lambdas[i]) * m_TotalPotentialEnergy[0] +
                                  lambdas[i] * m_TotalPotentialEnergy[1];
   }

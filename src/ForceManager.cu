@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -215,6 +215,8 @@ void ForceManager::setPrintEnergyDecomposition(
 }
 
 void ForceManager::addForceManager(std::shared_ptr<ForceManager> fm) {
+  if (fm == nullptr)
+    throw std::invalid_argument("ForceManager::addForceManager, fm == nullptr");
   throw std::invalid_argument("ERROR: Cannot add ForceManager to ForceManager");
   return;
 }
@@ -552,10 +554,8 @@ void ForceManager::resetNeighborList(const float4 *xyzq) {
   return;
 }
 
-void ForceManager::calcForcePart1(const float4 *xyzq, const bool reset,
-                                  const bool calcEnergy,
+void ForceManager::calcForcePart1(const bool reset, const bool calcEnergy,
                                   const bool calcVirial) {
-
   if (reset) {
     /* FOR FUTURE USE
     // forces_[1].resetNeighborList(xyzq, numAtoms, directStream);
@@ -601,8 +601,7 @@ void ForceManager::calcForcePart1(const float4 *xyzq, const bool reset,
   return;
 }
 
-void ForceManager::calcForcePart2(const float4 *xyzq, const bool reset,
-                                  const bool calcEnergy,
+void ForceManager::calcForcePart2(const float4 *xyzq, const bool calcEnergy,
                                   const bool calcVirial) {
   gpu_range_start("bonded");
   m_BondedForcePtr->calc_force(xyzq, calcEnergy, calcVirial);
@@ -662,8 +661,7 @@ UpdatePotentialEnergyKernel2(double *__restrict__ pe,
   return;
 }
 
-void ForceManager::calcForcePart3(const float4 *xyzq, const bool reset,
-                                  const bool calcEnergy,
+void ForceManager::calcForcePart3(const float4 *xyzq, const bool calcEnergy,
                                   const bool calcVirial) {
   m_TotalForceValues->clear(*m_ForceManagerStream);
 
@@ -822,14 +820,18 @@ void ForceManager::calcForcePart3(const float4 *xyzq, const bool reset,
 
 void ForceManager::calcForce(const float4 *xyzq, bool reset, bool calcEnergy,
                              bool calcVirial) {
-  this->calcForcePart1(xyzq, reset, calcEnergy, calcVirial);
-  this->calcForcePart2(xyzq, reset, calcEnergy, calcVirial);
-  this->calcForcePart3(xyzq, reset, calcEnergy, calcVirial);
+  this->calcForcePart1(reset, calcEnergy, calcVirial);
+  this->calcForcePart2(xyzq, calcEnergy, calcVirial);
+  this->calcForcePart3(xyzq, calcEnergy, calcVirial);
   return;
 }
 
 CudaContainer<double>
 ForceManager::computeAllChildrenPotentialEnergy(const float4 *xyzq) {
+  if (xyzq == nullptr) {
+    throw std::invalid_argument(
+        "ForceManager::computeAllChildrenPotentialEnergy, xyzq == nullptr");
+  }
   throw std::invalid_argument(
       "ERROR: computeAllChildrenPotential cannot be called from ForceManager");
   return;
@@ -882,7 +884,7 @@ void ForceManager::initializeHolonomicConstraintsVariables(void) {
       group = {i, -1, -1, -1};
       float totalMass = static_cast<float>(atomMasses[i]);
       float hydrogenMass = 0.0f;
-      BondValues bondValue;
+      BondValues bondValue(0.0f, 0.0f);
       for (std::size_t j = 0; j < hydrogenBonds[i].size(); j++) {
         int hyd = hydrogenBonds[i][j];
         group[j + 1] = hyd;

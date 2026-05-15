@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -66,8 +66,8 @@ AlchemicalForceManagerGenerator::generateForceManager(
       std::make_shared<ForceManager>(*baseForceManager);
   // Modify electrostatics
   modifyElectrostatics(newFM, lambdaElecIn);
-  // Modify vdW
-  modifyvdW(newFM, lambdaVdWIn);
+  // // Modify vdW
+  // modifyvdW(newFM, lambdaVdWIn);
 
   // TODO
   // - Recompute numAtoms once modif has been done ?
@@ -77,7 +77,7 @@ AlchemicalForceManagerGenerator::generateForceManager(
 
 void AlchemicalForceManagerGenerator::modifyElectrostatics(
     std::shared_ptr<ForceManager> fmIn, double lambdaIn) {
-  int ialch, i;
+  int ialch;
   double tmpcharge;
   // Easiest/inelegant version : generate a whole new PSF with scaled charges,
   // then initialize the ForceManager object.
@@ -93,7 +93,7 @@ void AlchemicalForceManagerGenerator::modifyElectrostatics(
   std::vector<double> charges = psf->getCharges();
 
   // For each element in the alch region, scale the charges by lambdaIn
-  for (i = 0; i < alchemicalRegion.size(); i++) {
+  for (std::size_t i = 0; i < alchemicalRegion.size(); i++) {
     ialch = alchemicalRegion[i];
     tmpcharge = charges[ialch];
     tmpcharge = tmpcharge * lambdaIn;
@@ -106,6 +106,7 @@ void AlchemicalForceManagerGenerator::modifyElectrostatics(
   fmIn->setPsf(newPsf);
 }
 
+/* *
 void AlchemicalForceManagerGenerator::modifyvdW(
     std::shared_ptr<ForceManager> fmIn, float lambdaIn) {
   // Modify vdW params
@@ -116,3 +117,4 @@ void AlchemicalForceManagerGenerator::modifyvdW(
 
   throw std::invalid_argument("Not implemented yet ! [modifyvdW]");
 }
+* */

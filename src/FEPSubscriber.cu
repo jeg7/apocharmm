@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -8,10 +8,11 @@
 //
 // ENDLICENSE
 
+#include "FEPSubscriber.h"
+
 #include "BEDSForceManager.h"
 #include "CharmmContext.h"
 #include "FEPEIForceManager.h"
-#include "FEPSubscriber.h"
 #include <fstream>
 #include <iostream>
 
@@ -19,7 +20,9 @@ FEPSubscriber::FEPSubscriber(const std::string &fileName)
     : Subscriber(fileName) {
   m_NumFramesWritten = 0;
 }
-FEPSubscriber::FEPSubscriber(const std::string &fileName, int reportFrequency)
+
+FEPSubscriber::FEPSubscriber(const std::string &fileName,
+                             const int reportFrequency)
     : Subscriber(fileName, reportFrequency) {
   m_NumFramesWritten = 0;
 }
@@ -38,7 +41,7 @@ void FEPSubscriber::update(void) {
 
     auto lambdaPotentialEnergies =
         bridgeEDSForceManager->getLambdaPotentialEnergies();
-    for (int i = 0; i < lambdaPotentialEnergies.size(); i++)
+    for (std::size_t i = 0; i < lambdaPotentialEnergies.size(); i++)
       m_FileStream << lambdaPotentialEnergies[i] << "\t";
     m_FileStream << std::endl;
 

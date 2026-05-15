@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -21,7 +21,7 @@ ForceManagerComposite::ForceManagerComposite(void) : ForceManager() {
 
 ForceManagerComposite::ForceManagerComposite(
     const std::vector<std::shared_ptr<ForceManager>> &fmList) {
-  for (int i = 0; i < fmList.size(); i++)
+  for (std::size_t i = 0; i < fmList.size(); i++)
     this->addForceManager(fmList[i]);
 }
 
@@ -306,17 +306,16 @@ void ForceManagerComposite::calcForce(const float4 *xyzq, const bool reset,
   cudaStreamSynchronize(*m_CompositeStream);
 
   for (int i = 0; i < numChildren; i++) {
-    m_Children[i]->calcForcePart1(m_XYZQs[i].getDeviceArray().data(), reset,
+    m_Children[i]->calcForcePart1(reset, calcEnergy, calcVirial);
+  }
+
+  for (int i = 0; i < numChildren; i++) {
+    m_Children[i]->calcForcePart2(m_XYZQs[i].getDeviceArray().data(),
                                   calcEnergy, calcVirial);
   }
 
   for (int i = 0; i < numChildren; i++) {
-    m_Children[i]->calcForcePart2(m_XYZQs[i].getDeviceArray().data(), reset,
-                                  calcEnergy, calcVirial);
-  }
-
-  for (int i = 0; i < numChildren; i++) {
-    m_Children[i]->calcForcePart3(m_XYZQs[i].getDeviceArray().data(), reset,
+    m_Children[i]->calcForcePart3(m_XYZQs[i].getDeviceArray().data(),
                                   calcEnergy, calcVirial);
   }
 

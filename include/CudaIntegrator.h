@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -171,41 +171,13 @@ public:
    */
   void setRemoveCenterOfMassFrequency(const int freq);
 
-  virtual const CudaContainer<double4> &getCoordsDelta(void) const;
+  const CudaContainer<double4> &getCoordsDelta(void) const;
 
-  virtual CudaContainer<double4> &getCoordsDelta(void);
+  CudaContainer<double4> &getCoordsDelta(void);
 
-  virtual const CudaContainer<double4> &getCoordsDeltaPrevious(void) const;
+  const CudaContainer<double4> &getCoordsDeltaPrevious(void) const;
 
-  virtual CudaContainer<double4> &getCoordsDeltaPrevious(void);
-
-  virtual void
-  setCoordsDeltaPrevious(const std::vector<std::vector<double>> &coordsDelta);
-
-  virtual void
-  setOnStepPistonVelocity(const CudaContainer<double> &onStepPistonVelocity);
-
-  virtual void
-  setOnStepPistonVelocity(const std::vector<double> &onStepPistonVelocity);
-
-  virtual void setHalfStepPistonVelocity(
-      const CudaContainer<double> &halfStepPistonVelocity);
-
-  virtual void
-  setHalfStepPistonVelocity(const std::vector<double> &halfStepPistonVelocity);
-
-  virtual void
-  setOnStepPistonPosition(const CudaContainer<double> &onStepPistonPosition);
-
-  virtual void
-  setOnStepPistonPosition(const std::vector<double> &onStepPistonPosition);
-
-  virtual void setHalfStepPistonPosition(
-      const CudaContainer<double> &halfStepPistonPosition);
-
-  virtual void
-  setHalfStepPistonPosition(const std::vector<double> &halfStepPistonPosition);
-
+  CudaContainer<double4> &getCoordsDeltaPrevious(void);
   /** @brief Returns a map of the integrator descriptor. Should be overriden by
    * child classes.*/
   virtual std::map<std::string, std::string> getIntegratorDescriptors(void);

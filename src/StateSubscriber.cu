@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -59,7 +59,7 @@ void StateSubscriber::update(void) {
   velmassCC.transferFromDevice();
   std::vector<double4> velmass = velmassCC.getHostArray();
   double densityMass = 0.0;
-  for (int i = 0; i < velmass.size(); i++)
+  for (std::size_t i = 0; i < velmass.size(); i++)
     densityMass += 1.0 / velmass[i].w;
   double convertedDensityMass = densityMass * 1.660540199e-24;
 

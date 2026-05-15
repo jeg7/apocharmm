@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -8,8 +8,9 @@
 //
 // ENDLICENSE
 
-#include "BEDSForceManager.h"
 #include "BEDSSubscriber.h"
+
+#include "BEDSForceManager.h"
 #include "CharmmContext.h"
 #include <fstream>
 #include <iostream>
@@ -19,13 +20,17 @@ BEDSSubscriber::BEDSSubscriber(const std::string &fileName)
   m_NumFramesWritten = 0;
 }
 
-BEDSSubscriber::BEDSSubscriber(const std::string &fileName, int reportFrequency)
+BEDSSubscriber::BEDSSubscriber(const std::string &fileName,
+                               const int reportFrequency)
     : Subscriber(fileName, reportFrequency) {
   m_NumFramesWritten = 0;
 }
 
 BEDSSubscriber::~BEDSSubscriber(void) {
-  if (m_FileStream.is_open())m_FileStream.close(); return;}
+  if (m_FileStream.is_open())
+    m_FileStream.close();
+  return;
+}
 
 void BEDSSubscriber::update(void) {
   auto fm = m_CharmmContext->getForceManager();
@@ -36,7 +41,7 @@ void BEDSSubscriber::update(void) {
 
     auto lambdaPotentialEnergies =
         bridgeEDSForceManager->getLambdaPotentialEnergies();
-    for (int i = 0; i < lambdaPotentialEnergies.size(); i++)
+    for (std::size_t i = 0; i < lambdaPotentialEnergies.size(); i++)
       m_FileStream << lambdaPotentialEnergies[i] << "\t";
     m_FileStream << std::endl;
 

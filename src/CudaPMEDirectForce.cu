@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -864,12 +864,16 @@ void CudaPMEDirectForce<AT, CT>::set_vdwtype14(const int ncoord,
 template <typename AT, typename CT>
 void CudaPMEDirectForce<AT, CT>::set_sort_vdwtype(const int ncoord,
                                                   const int *ind_sorted) {
-  /*int *h_vdwtype;
-  h_vdwtype = new int[ncoord];
-  for (int i=0; i < ncoord; ++i){
-    h_vdwtype[i] = ind_sorted[i]
-  }
-  */
+  // Align ncoord to warpsize
+  int ncoord_aligned = ((ncoord - 1) / warpsize + 1) * warpsize;
+  reallocate<int>(&vdwtype, &vdwtype_len, ncoord_aligned, 1.2f);
+  reallocate<int>(&vdwtypeTemp, &vdwtype_len, ncoord_aligned, 1.2f);
+
+  int nthread = 512;
+  int nblock = (ncoord - 1) / nthread + 1;
+  set_sorted_vdwtype_kernel<<<nblock, nthread>>>(ncoord, vdwtypeTemp,
+                                                 ind_sorted, vdwtype);
+  cudaCheck(cudaGetLastError());
 }
 
 //
@@ -903,8 +907,6 @@ void CudaPMEDirectForce<AT, CT>::set_14_list(std::string sizeFile,
                                              std::string valFile,
                                              cudaStream_t stream) {
   std::ifstream file;
-  xx14list_t *h_in14list;
-  xx14list_t *h_ex14list;
   file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
   try {
     // Open file
@@ -912,15 +914,14 @@ void CudaPMEDirectForce<AT, CT>::set_14_list(std::string sizeFile,
     file >> nin14list;
     file >> nex14list;
     file.close();
-  } catch (std::ifstream::failure e) {
+  } catch (const std::ifstream::failure &e) {
     // std::cerr << "Error opening/reading/closing file " << sizeFile <<
     // std::endl;
     throw std::invalid_argument("Error opening/reading/closing file " +
                                 sizeFile + "\n");
     exit(1);
   }
-  h_in14list = new xx14list_t[nin14list];
-  h_ex14list = new xx14list_t[nex14list];
+  std::vector<xx14list_t> h_in14list(nin14list), h_ex14list(nex14list);
 
   try {
     // Open file
@@ -936,7 +937,7 @@ void CudaPMEDirectForce<AT, CT>::set_14_list(std::string sizeFile,
       // <<  "\n";
     }
     file.close();
-  } catch (std::ifstream::failure e) {
+  } catch (const std::ifstream::failure &e) {
     // std::cerr << "Error opening/reading/closing file " << valFile <<
     // std::endl;
     throw std::invalid_argument("Error opening/reading/closing file " +
@@ -946,15 +947,13 @@ void CudaPMEDirectForce<AT, CT>::set_14_list(std::string sizeFile,
 
   if (nin14list > 0) {
     reallocate<xx14list_t>(&in14list, &in14list_len, nin14list);
-    copy_HtoD<xx14list_t>(h_in14list, in14list, nin14list, stream);
+    copy_HtoD<xx14list_t>(h_in14list.data(), in14list, nin14list, stream);
   }
 
   if (nex14list > 0) {
     reallocate<xx14list_t>(&ex14list, &ex14list_len, nex14list);
-    copy_HtoD<xx14list_t>(h_ex14list, ex14list, nex14list, stream);
+    copy_HtoD<xx14list_t>(h_ex14list.data(), ex14list, nex14list, stream);
   }
-  delete h_in14list;
-  delete h_ex14list;
 }
 
 //
@@ -1169,18 +1168,18 @@ void calc_vdw_cpu(const CudaNeighborListBuild<32> &nlist, int nvdwparam,
   // Only for test
   std::ofstream out;
   out.open("vdwparamtest.out");
-  ientry_t *h_ientry = new ientry_t[nlist.get_n_ientry()];
-  int *h_tile_indj = new int[nlist.get_n_tile()];
-  int *h_vdwtype = new int[2500];
-  float *h_vdwparam = new float[nvdwparam];
-  float4 *h_xyzq = new float4[2500];
-  copy_DtoH_T(nlist.get_ientry(), h_ientry, nlist.get_n_ientry(),
+  std::vector<ientry_t> h_ientry(nlist.get_n_ientry());
+  std::vector<int> h_tile_indj(nlist.get_n_tile());
+  std::vector<int> h_vdwtype(2500);
+  std::vector<float> h_vdwparam(nvdwparam);
+  std::vector<float4> h_xyzq(2500);
+  copy_DtoH_T(nlist.get_ientry(), h_ientry.data(), nlist.get_n_ientry(),
               sizeof(ientry_t));
-  copy_DtoH_T(nlist.get_tile_indj(), h_tile_indj, nlist.get_n_tile(),
+  copy_DtoH_T(nlist.get_tile_indj(), h_tile_indj.data(), nlist.get_n_tile(),
               sizeof(int));
-  copy_DtoH_T(vdwtype, h_vdwtype, 2500, sizeof(int));
-  copy_DtoH_T(vdwparam, h_vdwparam, nvdwparam, sizeof(float));
-  copy_DtoH_T(xyzq, h_xyzq, 2500, sizeof(float4));
+  copy_DtoH_T(vdwtype, h_vdwtype.data(), 2500, sizeof(int));
+  copy_DtoH_T(vdwparam, h_vdwparam.data(), nvdwparam, sizeof(float));
+  copy_DtoH_T(xyzq, h_xyzq.data(), 2500, sizeof(float4));
   cudaDeviceSynchronize();
 
   for (int i = 0; i < nlist.get_n_ientry(); ++i) {
@@ -1211,12 +1210,6 @@ void calc_vdw_cpu(const CudaNeighborListBuild<32> &nlist, int nvdwparam,
   // std::cout << indi <<  " "  << h_tile_indj[startj] << " " <<
   // h_tile_indj[endj]  << "\n";
 
-  delete h_ientry;
-  delete h_tile_indj;
-  delete h_vdwtype;
-  delete h_vdwparam;
-  delete h_xyzq;
-
   // only for test
 }
 
@@ -1234,6 +1227,10 @@ void CudaPMEDirectForce<AT, CT>::calc_force(
     const int whichlist, const float4 *xyzq,
     const CudaNeighborListBuild<32> &nlist, const bool calc_energy,
     const bool calc_virial, const int stride, AT *force, cudaStream_t stream) {
+  if (whichlist != 0) {
+    throw std::invalid_argument(
+        "CudaPMEDirectForce<AT, CT>::calc_force, whichlist != 0");
+  }
 
   // test_vdwparams<<<1,1>>>(vdwtype, vdwparam);
   // calc_vdw_cpu(nlist, nvdwparam, vdwtype, vdwparam, xyzq);

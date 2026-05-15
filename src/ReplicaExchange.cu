@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -21,7 +21,8 @@ ReplicaExchange::ReplicaExchange(
     std::vector<std::shared_ptr<CudaIntegrator>> integrators,
     int _stepsPerExchange, int _numExchanges, std::string _logFileName)
     : integrators(integrators), stepsPerExchange(_stepsPerExchange),
-      numExchanges(_numExchanges) {}
+      numExchanges(_numExchanges), logFileName(_logFileName),
+      isInitialized(false), leftExchanges(), rightExchanges() {}
 
 void ReplicaExchange::initialize() {
   // for (auto integrator : integrators) {
@@ -30,14 +31,12 @@ void ReplicaExchange::initialize() {
 
   // fill the left exchange vector
   leftExchanges.push_back(integrators.size() - 1);
-  for (int i = 1; i < integrators.size(); i++) {
+  for (std::size_t i = 1; i < integrators.size(); i++)
     leftExchanges.push_back(i - 1);
-  }
 
   // fill the right exchange vector
-  for (int i = 0; i < integrators.size() - 1; i++) {
+  for (std::size_t i = 0; i < integrators.size() - 1; i++)
     rightExchanges.push_back(i + 1);
-  }
   rightExchanges.push_back(0);
 
   isInitialized = true;

@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -144,7 +144,7 @@ void EDSForceManager::weighForces() {
   int numThreads = 128;
   int numBlocks = (numAtoms - 1) / numThreads + 1;
 
-  for (int i = 0; i < m_Children.size(); ++i) {
+  for (std::size_t i = 0; i < m_Children.size(); i++) {
     weighForcesKernel<<<numBlocks, numThreads, 0, *m_CompositeStream>>>(
         numAtoms, forceStride, i, weights.getDeviceArray().data(),
         m_Children[i]->getForces()->xyz(), m_TotalForceValues->xyz());

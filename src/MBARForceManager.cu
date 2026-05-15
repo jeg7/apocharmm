@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -51,8 +51,8 @@ void MBARForceManager::setSelectorVec(const std::vector<float> &lambdas) {
   auto it = std::find(lambdas.begin(), lambdas.end(), 1.0);
   assert(it != lambdas.end());
   nonZeroLambdaIndex = it - lambdas.begin();
-  for (int i = 0; i < lambdas.size(); ++i) {
-    if (i != nonZeroLambdaIndex)
+  for (std::size_t i = 0; i < lambdas.size(); i++) {
+    if (static_cast<int>(i) != nonZeroLambdaIndex)
       // assert((lambdas[i] == 0.0) && "Only one of the entries in the
       // selectorVec should be 1.");
       if (lambdas[i] != 0.0) {

@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <type_traits>
 
 const int TILEDIM = 32;
 const int TILEROWS = 8;
@@ -212,6 +213,7 @@ template <> inline double Matrix3d<float2>::norm(float2 a, float2 b) {
   return (double)max(fabsf(a.x - b.x), fabsf(a.y - b.y));
 }
 
+/* *
 template <> inline bool Matrix3d<long long int>::is_nan(long long int a) {
   return false;
 };
@@ -223,6 +225,7 @@ template <> inline bool Matrix3d<float>::is_nan(float a) { return isnan(a); }
 template <> inline bool Matrix3d<float2>::is_nan(float2 a) {
   return (isnan(a.x) || isnan(a.y));
 }
+* */
 
 std::ostream &operator<<(std::ostream &os, float2 &a) {
   os << a.x << " " << a.y;
@@ -255,15 +258,19 @@ bool Matrix3d<T>::compare(Matrix3d<T> *mat, const double tol,
 
   max_diff = 0.0;
 
-  int x, y, z;
-  double diff;
+  int x = -1, y = -1, z = -1;
+  double diff = 0.0;
   try {
     for (z = 0; z < nz; z++)
       for (y = 0; y < ny; y++)
         for (x = 0; x < nx; x++) {
-          if (is_nan(h_data1[x + (y + z * ysize) * xsize]) ||
-              is_nan(h_data2[x + (y + z * mat->ysize) * mat->xsize]))
-            throw 1;
+          if constexpr (std::is_floating_point_v<T>) {
+            // if (is_nan(h_data1[x + (y + z * ysize) * xsize]) ||
+            //     is_nan(h_data2[x + (y + z * mat->ysize) * mat->xsize]))
+            if (std::isnan(h_data1[x + (y + z * ysize) * xsize]) ||
+                std::isnan(h_data2[x + (y + z * mat->ysize) * mat->xsize]))
+              throw 1;
+          }
           diff = norm(h_data1[x + (y + z * ysize) * xsize],
                       h_data2[x + (y + z * mat->ysize) * mat->xsize]);
           max_diff = (diff > max_diff) ? diff : max_diff;
@@ -588,8 +595,8 @@ void Matrix3d<T>::load(const int x0, const int x1, const int nx, const int y0,
 
     // Close file
     file.close();
-  } catch (std::ifstream::failure e) {
-     std::stringstream tmpexc; 
+  } catch (const std::ifstream::failure &e) {
+    std::stringstream tmpexc;
     tmpexc << "Error opening/reading/closing file " << filename << std::endl;
     throw std::invalid_argument(tmpexc.str());
     exit(1);

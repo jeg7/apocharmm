@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -75,10 +75,13 @@ public:
   int getNumImpropers(void) const;
   int getNumCrossTerms(void) const;
 
-  const std::vector<double> &getMasses(void) const;
-  const std::vector<double> &getCharges(void) const;
+  const std::vector<std::string> &getSegmentIdentifiers(void) const;
+  const std::vector<int> &getResidueIdentifiers(void) const;
+  const std::vector<std::string> &getResidueNames(void) const;
   const std::vector<std::string> &getAtomNames(void) const;
   const std::vector<std::string> &getAtomTypes(void) const;
+  const std::vector<double> &getCharges(void) const;
+  const std::vector<double> &getMasses(void) const;
   const std::vector<Bond> &getBonds(void) const;
   const std::vector<Angle> &getAngles(void) const;
   const std::vector<Dihedral> &getDihedrals(void) const;
@@ -94,10 +97,13 @@ public:
   const CudaContainer<int2> &getGroups(void) const;
   const std::string &getFileName(void) const;
 
-  std::vector<double> &getMasses(void);
-  std::vector<double> &getCharges(void);
+  std::vector<std::string> &getSegmentIdentifiers(void);
+  std::vector<int> &getResidueIdentifiers(void);
+  std::vector<std::string> &getResidueNames(void);
   std::vector<std::string> &getAtomNames(void);
   std::vector<std::string> &getAtomTypes(void);
+  std::vector<double> &getCharges(void);
+  std::vector<double> &getMasses(void);
   std::vector<Bond> &getBonds(void);
   std::vector<Angle> &getAngles(void);
   std::vector<Dihedral> &getDihedrals(void);
@@ -124,10 +130,13 @@ private:
 
 private:
   int m_NumAtoms;
-  std::vector<double> m_Masses;
-  std::vector<double> m_Charges;
+  std::vector<std::string> m_SegmentIdentifiers;
+  std::vector<int> m_ResidueIdentifiers;
+  std::vector<std::string> m_ResidueNames;
   std::vector<std::string> m_AtomNames;
   std::vector<std::string> m_AtomTypes;
+  std::vector<double> m_Charges;
+  std::vector<double> m_Masses;
 
   int m_NumBonds;
   std::vector<Bond> m_Bonds;

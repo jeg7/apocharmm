@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -18,7 +18,7 @@
 
 CharmmResidueTopology::CharmmResidueTopology() {}
 
-CharmmResidueTopology::CharmmResidueTopology(std::string rtfFileName) {}
+// CharmmResidueTopology::CharmmResidueTopology(std::string rtfFileName) {}
 
 std::string getCleanLine(std::ifstream &rtfFile) {
   std::string line;
@@ -32,15 +32,15 @@ std::string getCleanLine(std::ifstream &rtfFile) {
 }
 void CharmmResidueTopology::readRTF(std::string fileName) {
 
-  enum FileType { RTF, TOPPAR };
-  FileType fileType;
-  int pos = fileName.find_last_of('/');
+  enum class FileType { NONE, RTF, TOPPAR };
+  FileType fileType = FileType::NONE;
+  std::size_t pos = fileName.find_last_of('/');
   if (pos != std::string::npos) {
-    int topparPos = fileName.find("toppar", pos);
+    std::size_t topparPos = fileName.find("toppar", pos);
     if (topparPos != std::string::npos)
-      fileType = TOPPAR;
+      fileType = FileType::TOPPAR;
     else
-      fileType = RTF;
+      fileType = FileType::RTF;
   }
 
   std::ifstream rtfFile(fileName);
@@ -53,7 +53,7 @@ void CharmmResidueTopology::readRTF(std::string fileName) {
     return;
   }
 
-  if (fileType == RTF) {
+  if (fileType == FileType::RTF) {
     // std::cout << "Reading a  RTF file\n";
   }
 
@@ -106,7 +106,7 @@ void CharmmResidueTopology::readRTF(std::string fileName) {
 
         if (line.find("BOND") == 0 || line.find("DOUB") == 0) {
           parts = apo::split(line);
-          for (int i = 1; i < parts.size(); i += 2) {
+          for (std::size_t i = 1; i < parts.size(); i += 2) {
             residue.bonds.push_back({parts[i], parts[i + 1]});
           }
         }
@@ -115,7 +115,7 @@ void CharmmResidueTopology::readRTF(std::string fileName) {
           if (parts[1] == "ATOM") {
             // Assuming only atoms are being deleteed
             // TODO : make it more general
-            for (int i = 2; i < parts.size(); ++i) {
+            for (std::size_t i = 2; i < parts.size(); ++i) {
               residue.atomsToDelete.push_back(parts[i]);
             }
           }

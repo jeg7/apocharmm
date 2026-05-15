@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -22,7 +22,7 @@
 class CompositeSubscriber : public Subscriber {
 public:
   CompositeSubscriber(const std::string &fileName);
-  CompositeSubscriber(const std::string &fileName, int reportFrequency);
+  CompositeSubscriber(const std::string &fileName, const int reportFrequency);
   ~CompositeSubscriber(void);
 
 public:

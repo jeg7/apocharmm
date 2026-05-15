@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -134,7 +134,7 @@ void CudaNeighborList<tilesize>::registerList(
   // Get izoneStart and izoneEnd
   int izoneStart = numZone + 1;
   int izoneEnd = -1;
-  for (int izone = 0; izone < numIntZone.size(); izone++) {
+  for (int izone = 0; izone < static_cast<int>(numIntZone.size()); izone++) {
     if (numIntZone.at(izone) > 0) {
       izoneStart = min(izoneStart, izone);
       izoneEnd = max(izoneEnd, izone);
@@ -287,25 +287,22 @@ template <int tilesize> void CudaNeighborList<tilesize>::dealloc(void) {
     deallocate<float>(&cell_bz);
   if (bb != NULL)
     deallocate<bb_t>(&bb);
-  for (int i = 0; i < d_NlistParam.size(); i++) {
+  for (std::size_t i = 0; i < d_NlistParam.size(); i++) {
     deallocate<NlistParam_t>(&d_NlistParam.at(i));
     deallocate_host<NlistParam_t>(&h_NlistParam.at(i));
   }
-  for (int i = 0; i < sorter.size(); i++) {
+  for (std::size_t i = 0; i < sorter.size(); i++)
     delete sorter.at(i);
-  }
   if (!builder.empty()) {
-    for (int i = 0; i < builder.size(); ++i) {
+    for (std::size_t i = 0; i < builder.size(); i++)
       delete builder.at(i);
-    }
   }
   if (h_ZoneParam != NULL)
     deallocate_host<ZoneParam_t>(&h_ZoneParam);
   if (d_ZoneParam != NULL)
     deallocate<ZoneParam_t>(&d_ZoneParam);
-  for (int i = 0; i < build_event.size(); i++) {
+  for (std::size_t i = 0; i < build_event.size(); i++)
     cudaCheck(cudaEventDestroy(build_event.at(i)));
-  }
   cudaCheck(cudaEventDestroy(glo2loc_reset_event));
   if (d_cellParam != NULL)
     deallocate<CellParam_t>(&d_cellParam);

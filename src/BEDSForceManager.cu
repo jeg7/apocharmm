@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -213,7 +213,7 @@ void BEDSForceManager::setEndStateEnergyOffsets(
   allEnergyOffsets[0] = _energyOffsets[0];
   allEnergyOffsets[allEnergyOffsets.size() - 1] = _energyOffsets[1];
 
-  for (int i = 0; i < lambdas.size(); ++i) {
+  for (std::size_t i = 0; i < lambdas.size(); i++) {
     allEnergyOffsets[i] =
         (1 - lambdas[i]) * _energyOffsets[0] + lambdas[i] * _energyOffsets[1];
   }
@@ -227,7 +227,7 @@ CudaContainer<double> BEDSForceManager::getLambdaPotentialEnergies() {
   // Move them to the device in the second pass
   // weights.transferFromDevice();
   m_TotalPotentialEnergy.transferFromDevice();
-  for (int i = 0; i < lambdas.size(); ++i) {
+  for (std::size_t i = 0; i < lambdas.size(); i++) {
     lambdaPotentialEnergies[i] = (1 - lambdas[i]) * m_TotalPotentialEnergy[0] +
                                  lambdas[i] * m_TotalPotentialEnergy[1];
   }

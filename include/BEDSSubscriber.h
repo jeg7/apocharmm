@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -16,7 +16,7 @@
 class BEDSSubscriber : public Subscriber {
 public:
   BEDSSubscriber(const std::string &fileName);
-  BEDSSubscriber(const std::string &fileName, int reportFrequency);
+  BEDSSubscriber(const std::string &fileName, const int reportFrequency);
   ~BEDSSubscriber(void);
 
 public:

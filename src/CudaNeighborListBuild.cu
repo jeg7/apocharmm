@@ -1,6 +1,6 @@
 // BEGINLICENSE
 //
-// This file is part of chcuda, which is distributed under the BSD 3-clause
+// This file is part of apoCHARMM, which is distributed under the BSD 3-clause
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
@@ -2076,7 +2076,7 @@ void CudaNeighborListBuild<tilesize>::test_build(
               // if (abs(npair_tile1 - npair_tile2) > 0) {
               if (!compare<tilesize>(tileinfo, tileinfo2, ijvec)) {
                 bool ok = true;
-                for (int k = 0; k < ijvec.size(); k++) {
+                for (std::size_t k = 0; k < ijvec.size(); k++) {
                   int it = ijvec.at(k).x;
                   int jt = ijvec.at(k).y;
                   tileinfo_t tileinfo_val;
@@ -2111,7 +2111,7 @@ void CudaNeighborListBuild<tilesize>::test_build(
                 // fprintf(stderr,"tileinfo2:\n");
                 // print_excl<tilesize>(tileinfo2);
 
-                for (int k = 0; k < ijvec.size(); k++) {
+                for (std::size_t k = 0; k < ijvec.size(); k++) {
                   int it = ijvec.at(k).x;
                   int jt = ijvec.at(k).y;
 
@@ -2383,7 +2383,8 @@ void CudaNeighborListBuild<tilesize>::build_excl(
   unsigned int base_tid = 0;
 
   while (nblock_tot != 0) {
-    int nblock = (nblock_tot > max_nblock) ? max_nblock : nblock_tot;
+    int nblock =
+        (nblock_tot > static_cast<int>(max_nblock)) ? max_nblock : nblock_tot;
     nblock_tot -= nblock;
 
     build_excl_kernel<tilesize><<<nblock, nthread, shmem_size, stream>>>(
@@ -2698,7 +2699,7 @@ void CudaNeighborListBuild<tilesize>::load(const char *filename) {
     }
 
     file.close();
-  } catch (std::ifstream::failure e) {
+  } catch (const std::ifstream::failure &e) {
     // std::cerr << "Error opening/reading/closing file " << filename <<
     // std::endl;
     std::stringstream invalar;

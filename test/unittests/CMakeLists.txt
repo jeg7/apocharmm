@@ -4,6 +4,9 @@ set(SOURCES_UNITTESTS_TESTS
   unittest-deviceVector.cpp
   unittest-cudaContainer.cpp
 
+  # Object tests
+  unittest-charmmPSF.cpp
+
   # Integrators
   unittest-noseHoover.cpp
   unittest-langevinPiston.cpp
