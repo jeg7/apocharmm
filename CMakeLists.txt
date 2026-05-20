@@ -35,3 +35,6 @@ find_package(CUDAToolkit REQUIRED)
 
 add_subdirectory(${apoCHARMM_SOURCE_DIR}/src)
 add_subdirectory(${apoCHARMM_SOURCE_DIR}/test)
+
+# Turn on building the Python API
+option(APOCHARMM_ENABLE_C_INTERFACE "Build apoCHARMM C ABI interface" ON)

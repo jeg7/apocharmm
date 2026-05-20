@@ -1,1 +1,0 @@
-# Some classes to make it easier to use pymbar using MBARSubscriber outputs
