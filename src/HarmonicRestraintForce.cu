@@ -16,14 +16,23 @@
 #include <string>
 
 template <typename AT, typename CT>
-HarmonicRestraintForce<AT, CT>::HarmonicRestraintForce(void)
-    : m_NumAtoms(-1), m_ForceConstants(), m_ReferenceCoordinates(),
-      m_BoxDimensions(), m_EnergyVirial(nullptr), m_Forces(nullptr),
-      m_Stream(nullptr) {
-  m_BoxDimensions.resize(3);
+HarmonicRestraintForce<AT, CT>::HarmonicRestraintForce(const int numAtoms)
+    : m_NumAtoms(numAtoms), m_ForceConstants(numAtoms),
+      m_ReferenceCoordinates(numAtoms), m_BoxDimensions(3),
+      m_Selection(numAtoms, AtomSelection::InitialValue::ALL),
+      m_EnergyVirial(nullptr), m_Forces(nullptr), m_Stream(nullptr) {
+  m_ForceConstants.set(0.0);
+
+  m_ReferenceCoordinates.set(make_double4(0.0, 0.0, 0.0, 1.0));
+
   m_BoxDimensions.set(0.0);
+
   m_EnergyVirial = std::make_shared<CudaEnergyVirial>();
   m_EnergyVirial->insert("harm");
+
+  m_Forces = std::make_shared<Force<AT>>();
+  m_Forces->realloc(numAtoms, 1.5f);
+
   m_Stream = std::make_shared<cudaStream_t>();
   cudaCheck(cudaStreamCreate(m_Stream.get()));
 }
@@ -34,9 +43,32 @@ HarmonicRestraintForce<AT, CT>::~HarmonicRestraintForce(void) {
 }
 
 template <typename AT, typename CT>
+void HarmonicRestraintForce<AT, CT>::setSelection(
+    const AtomSelection &selection) {
+  if (selection.getNumAtoms() != m_NumAtoms)
+    throw std::invalid_argument("Selection has incorrect number of atoms");
+
+  m_Selection = selection;
+
+  for (int i = 0; i < m_NumAtoms; i++) {
+    if (!selection.contains(i))
+      m_ForceConstants[i] = 0.0;
+  }
+  m_ForceConstants.transferToDevice();
+
+  return;
+}
+
+template <typename AT, typename CT>
 void HarmonicRestraintForce<AT, CT>::setForceConstant(
     const double forceConstant) {
-  m_ForceConstants.set(forceConstant);
+  m_ForceConstants.set(0.0);
+
+  for (const int i : m_Selection.getAtomIndices())
+    m_ForceConstants[i] = forceConstant;
+
+  m_ForceConstants.transferToDevice();
+
   return;
 }
 
@@ -54,7 +86,14 @@ void HarmonicRestraintForce<AT, CT>::setForceConstants(
       msg += "HINT: Try calling initialize(numAtoms, boxDimensions) first\n";
     throw std::invalid_argument(msg);
   }
-  m_ForceConstants = forceConstants;
+
+  m_ForceConstants.set(0.0);
+
+  for (const int i : m_Selection.getAtomIndices())
+    m_ForceConstants[i] = forceConstants[i];
+
+  m_ForceConstants.transferToDevice();
+
   return;
 }
 
@@ -127,6 +166,7 @@ void HarmonicRestraintForce<AT, CT>::setMasses(
 
   for (int i = 0; i < m_NumAtoms; i++)
     m_ReferenceCoordinates[i].w = masses[i];
+
   m_ReferenceCoordinates.transferToDevice();
 
   return;
@@ -140,19 +180,22 @@ void HarmonicRestraintForce<AT, CT>::setBoxDimensions(
       (m_BoxDimensions[2] == boxDimensions[2]))
     return;
 
-  // JEG260512: This only works for cubic, tetragonal, and orthorhombic boxes.
-  // If we ever want to do other crystals (e.g. triclinic) we would need to
-  // update all of the code to use the A, B, C, alpha, beta, gamma matrix.
-  const double dx = boxDimensions[0] / m_BoxDimensions[0];
-  const double dy = boxDimensions[1] / m_BoxDimensions[1];
-  const double dz = boxDimensions[2] / m_BoxDimensions[2];
+  if ((m_BoxDimensions[0] != 0.0) && (m_BoxDimensions[1] != 0.0) &&
+      (m_BoxDimensions[2] != 0.0)) {
+    // JEG260512: This only works for cubic, tetragonal, and orthorhombic boxes.
+    // If we ever want to do other crystals (e.g. triclinic) we would need to
+    // update all of the code to use the A, B, C, alpha, beta, gamma matrix.
+    const double dx = boxDimensions[0] / m_BoxDimensions[0];
+    const double dy = boxDimensions[1] / m_BoxDimensions[1];
+    const double dz = boxDimensions[2] / m_BoxDimensions[2];
 
-  for (int i = 0; i < m_NumAtoms; i++) {
-    m_ReferenceCoordinates[i].x *= dx;
-    m_ReferenceCoordinates[i].y *= dy;
-    m_ReferenceCoordinates[i].z *= dz;
+    for (int i = 0; i < m_NumAtoms; i++) {
+      m_ReferenceCoordinates[i].x *= dx;
+      m_ReferenceCoordinates[i].y *= dy;
+      m_ReferenceCoordinates[i].z *= dz;
+    }
+    m_ReferenceCoordinates.transferToDevice();
   }
-  m_ReferenceCoordinates.transferToDevice();
 
   m_BoxDimensions = boxDimensions;
 
@@ -179,14 +222,8 @@ template <typename AT, typename CT>
 void HarmonicRestraintForce<AT, CT>::initialize(
     const int numAtoms, const std::vector<double> &boxDimensions) {
   if (m_NumAtoms != numAtoms) {
-    m_NumAtoms = numAtoms;
-    m_ForceConstants.resize(numAtoms);
-    m_ReferenceCoordinates.resize(numAtoms);
-    m_Forces = std::make_shared<Force<AT>>();
-    m_Forces->realloc(numAtoms, 1.5f);
-
-    m_ForceConstants.set(0.0);
-    m_ReferenceCoordinates.set(make_double4(0.0, 0.0, 0.0, 1.0));
+    throw std::runtime_error("HarmonicRestraintForce: Attempted to initialize "
+                             "with different atom count");
   }
 
   this->setBoxDimensions(boxDimensions);
@@ -230,16 +267,11 @@ __global__ static void HarmonicRestraintForceKernel(
     if (calcEnergy == true)
       epot += static_cast<double>(kf * mass * dr2);
 
-    CT dr = 0.0;
-    if (sizeof(CT) == 4)
-      dr = sqrtf(dr2);
-    else
-      dr = sqrt(dr2);
-    const CT fr = 2.0 * kf * mass * dr;
+    const CT forceCoef = static_cast<CT>(2.0) * kf * mass;
 
     AT fx = static_cast<AT>(0), fy = static_cast<AT>(0),
        fz = static_cast<AT>(0);
-    calc_component_force<AT, CT>(fr, dx, dy, dz, fx, fy, fz);
+    calc_component_force<AT, CT>(forceCoef, dx, dy, dz, fx, fy, fz);
 
     // Store forces
     write_force<AT>(fx, fy, fz, i, forceStride, forces);

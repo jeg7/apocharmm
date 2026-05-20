@@ -2,7 +2,10 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D__APO_DEBUG__")
 set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -D__APO_DEBUG__")
 
 add_library(apoCHARMMlib
-  ${apoCHARMM_SOURCE_DIR}/src/AtomSelector.cu
+  ${apoCHARMM_SOURCE_DIR}/src/AtomSelection.cpp
+  ${apoCHARMM_SOURCE_DIR}/src/AtomSelector.cpp
+  ${apoCHARMM_SOURCE_DIR}/src/SelectionParser.cpp
+  ${apoCHARMM_SOURCE_DIR}/src/SelectionTokenizer.cpp
   ${apoCHARMM_SOURCE_DIR}/src/BEDSSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/CharmmContext.cu
   ${apoCHARMM_SOURCE_DIR}/src/Checkpoint.cu

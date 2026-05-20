@@ -11,6 +11,9 @@ set -e
 echo "./bin/unittest-deviceVector"
 ./bin/unittest-deviceVector
 
+echo "./bin/unittest-charmmPSF"
+./bin/unittest-charmmPSF
+
 echo "./bin/unittest-noseHoover"
 ./bin/unittest-noseHoover
 

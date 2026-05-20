@@ -184,7 +184,7 @@ inline bool CompareVectorsPBC(const std::vector<std::vector<double>> &a,
 // future, so we should switch to these eventually
 template <typename Type>
 bool CompareVectors1(const std::vector<Type> &vecA,
-                     const std::vector<Type> &vecB, const double tol = 1e-12,
+                     const std::vector<Type> &vecB, const double tol = 0.0,
                      const bool verbose = false) {
   if (vecA.size() != vecB.size()) {
     if (verbose) {

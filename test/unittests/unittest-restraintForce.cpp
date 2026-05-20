@@ -8,6 +8,7 @@
 //
 // ENDLICENSE
 
+#include "AtomSelector.h"
 #include "CharmmContext.h"
 #include "CharmmCrd.h"
 #include "CudaLangevinThermostatIntegrator.h"
@@ -25,7 +26,7 @@ TEST_CASE("harmonicRestraintForce") {
   const int randomSeed = 314159;
   const double temperature = 300.0;
   const int nstep = 1000;
-  const double timeStep = 0.002;
+  const double timeStep = 0.001;
 
   SECTION("nacl") {
     auto prm =
@@ -52,15 +53,20 @@ TEST_CASE("harmonicRestraintForce") {
 
     // DCD subscriber to visualize effects of restraints
     // Uncomment the lines below if you want to write out the trajectory
-    // auto dcd = std::make_shared<DcdSubscriber>("tmpHarmRestraint.dcd", 1);
-    // integrator->subscribe(dcd);
+    auto dcd = std::make_shared<DcdSubscriber>("tmpHarmRestraint.dcd", 1);
+    integrator->subscribe(dcd);
 
     // Setup harmonic restraint
-    auto harm =
-        std::make_shared<HarmonicRestraintForce<long long int, float>>();
-    harm->initialize(ctx->getNumAtoms(), boxDims);
+    auto harm = std::make_shared<HarmonicRestraintForce<long long int, float>>(
+        ctx->getNumAtoms());
     harm->setReferenceCoordinates(crd->getCoordinatesD());
     // harm->setMasses(psf->getMasses());
+
+    // Generate selection for restraints
+    auto selector = std::make_shared<AtomSelector>(psf);
+    auto selection = selector->select("all");
+    harm->setSelection(selection);
+
     fm->subscribe(harm, "HarmonicRestraint", harm->getStream(),
                   harm->getForce(), harm->getEnergyVirial());
 

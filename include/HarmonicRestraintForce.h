@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "AtomSelection.h"
 #include "CudaContainer.h"
 #include "CudaEnergyVirial.h"
 #include "Force.h"
@@ -22,10 +23,12 @@
 
 template <typename AT, typename CT> class HarmonicRestraintForce {
 public:
-  HarmonicRestraintForce(void);
+  HarmonicRestraintForce(void) = delete;
+  HarmonicRestraintForce(const int numAtoms);
   ~HarmonicRestraintForce(void);
 
 public:
+  void setSelection(const AtomSelection &selection);
   void setForceConstant(const double forceConstant);
   void setForceConstants(const std::vector<double> &forceConstants);
   void
@@ -54,6 +57,7 @@ private:
   CudaContainer<double> m_ForceConstants;
   CudaContainer<double4> m_ReferenceCoordinates;
   CudaContainer<double> m_BoxDimensions;
+  AtomSelection m_Selection;
   std::shared_ptr<CudaEnergyVirial> m_EnergyVirial;
   std::shared_ptr<Force<AT>> m_Forces;
   std::shared_ptr<cudaStream_t> m_Stream;

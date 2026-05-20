@@ -10,42 +10,19 @@
 
 #pragma once
 
+#include "AtomSelection.h"
 #include "CharmmPSF.h"
-#include "CudaContainer.h"
 #include <memory>
+#include <string_view>
 
 class AtomSelector {
 public:
-  AtomSelector(void);
-  AtomSelector(const std::shared_ptr<CharmmPSF> psf);
+  AtomSelector(void) = delete;
+  explicit AtomSelector(std::shared_ptr<const CharmmPSF> psf);
 
 public:
-  void setPsf(const std::shared_ptr<CharmmPSF> psf);
-
-public:
-  int getNumSelected(void) const;
-
-  /**
-   * @brief Returns a CudaContainer that has the indices of the atoms that have
-   * been selected
-   */
-  const CudaContainer<int> &getSelection(void) const;
-  CudaContainer<int> &getSelection(void);
-
-public:
-  void seleSegi(const std::string &segi);
-  void seleResi(const int resi);
-  void seleResn(const std::string &resn);
-  void seleName(const std::string &anam);
-  void seleType(const std::string &atyp);
-
-  void selectAnd();
-  void selectOr();
-  void selectNot();
-
-  void clear(void);
+  AtomSelection select(const std::string_view selectionString) const;
 
 private:
-  std::shared_ptr<CharmmPSF> m_Psf;
-  CudaContainer<int> m_Selection;
+  std::shared_ptr<const CharmmPSF> m_Psf;
 };

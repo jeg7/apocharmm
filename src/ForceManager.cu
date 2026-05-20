@@ -773,8 +773,8 @@ void ForceManager::calcForcePart3(const float4 *xyzq, const bool calcEnergy,
     // flexibile. Should be overhauled at some point.
     for (std::size_t i = 0; i < m_ForceViews.size(); i++) {
       UpdatePotentialEnergyKernel2<<<1, 32, 0, *m_ForceManagerStream>>>(
-          m_EnergyVirials[i]->getEnergyPointer(),
-          m_TotalPotentialEnergy.getDeviceArray().data());
+          m_TotalPotentialEnergy.getDeviceArray().data(),
+          m_EnergyVirials[i]->getEnergyPointer());
     }
 
     cudaCheck(cudaStreamSynchronize(*m_ForceManagerStream));

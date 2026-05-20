@@ -11,6 +11,7 @@
 #include "str_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -37,20 +38,20 @@ void apo::trim_ip(std::string &str) {
   return;
 }
 
-std::string apo::ltrim(const std::string &str) {
-  std::string s = str;
+std::string apo::ltrim(const std::string_view str) {
+  std::string s{str};
   apo::ltrim_ip(s);
   return s;
 }
 
-std::string apo::rtrim(const std::string &str) {
-  std::string s = str;
+std::string apo::rtrim(const std::string_view str) {
+  std::string s{str};
   apo::rtrim_ip(s);
   return s;
 }
 
-std::string apo::trim(const std::string &str) {
-  std::string s = str;
+std::string apo::trim(const std::string_view str) {
+  std::string s{str};
   apo::trim_ip(s);
   return s;
 }
@@ -67,20 +68,20 @@ void apo::to_upper_ip(std::string &str) {
   return;
 }
 
-std::string apo::to_lower(const std::string &str) {
-  std::string s = str;
+std::string apo::to_lower(const std::string_view str) {
+  std::string s{str};
   apo::to_lower_ip(s);
   return s;
 }
 
-std::string apo::to_upper(const std::string &str) {
-  std::string s = str;
+std::string apo::to_upper(const std::string_view str) {
+  std::string s{str};
   apo::to_upper_ip(s);
   return s;
 }
 
-std::vector<std::string> apo::split(const std::string &str,
-                                    const std::string &delimiter) {
+std::vector<std::string> apo::split(const std::string_view str,
+                                    const std::string_view delimiter) {
   std::string s = apo::trim(str);
   std::vector<std::string> tokens;
   std::size_t pos = 0;
@@ -96,7 +97,7 @@ std::vector<std::string> apo::split(const std::string &str,
 }
 
 void apo::get_line(std::string &line, std::size_t &pos,
-                   const std::string &file_data) {
+                   const std::string_view file_data) {
   const std::size_t pos1 = file_data.find_first_of('\n', pos);
   line = file_data.substr(pos, pos1 - pos);
   pos = pos1 + 1;
@@ -123,6 +124,17 @@ void apo::read_file_into_string(std::string &file_data,
   return;
 }
 
+bool apo::contains_wildcard(const std::string_view str) {
+  constexpr std::array<char, 4> WILDCARDS = {'*', '%', '#', '+'};
+  for (const char c : str) {
+    for (const char WILDCARD : WILDCARDS) {
+      if (c == WILDCARD)
+        return true;
+    }
+  }
+  return false;
+}
+
 std::string apo::cDoubleToFortSciStr(const double val, const int prec) {
   std::ostringstream oss;
   oss << std::scientific << std::setprecision(prec) << val;
@@ -131,8 +143,8 @@ std::string apo::cDoubleToFortSciStr(const double val, const int prec) {
   return str;
 }
 
-double apo::fortSciStrToCDouble(const std::string &str) {
-  std::string s = str;
+double apo::fortSciStrToCDouble(const std::string_view str) {
+  std::string s{str};
   std::replace(s.begin(), s.end(), 'D', 'e');
   return std::stod(s);
 }
