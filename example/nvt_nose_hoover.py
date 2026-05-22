@@ -40,17 +40,17 @@ def main(argc, argv):
     ctx.useHolonomicConstraints(use_holonomic_constraints)
 
     # Setup the integrator
-    integrator = apo.CudaNoseHooverThermostatIntegrator(time_step)
+    integrator = apo.CudaNoseHooverIntegrator(time_step)
     integrator.setCharmmContext(ctx)
     integrator.setReferenceTemperature(temperature)
 
     # Create a DCD and restart file subscriber
-    # dcd = apo.DcdSubscriber("tmp_nvt_nose_hoover.dcd")
-    # rst = apo.RstSubscriber("tmp_nvt_nose_hoover.rst")
+    dcd = apo.DcdSubscriber("tmp_nvt_nose_hoover.dcd")
+    rst = apo.RestartSubscriber("tmp_nvt_nose_hoover.rst", num_steps)
 
     # Subscribe the DCD and restart subscribers to the integrator
-    # integrator.subscribe(dcd)
-    # integrator.subscribe(rst)
+    integrator.subscribe(dcd)
+    integrator.subscribe(rst)
 
     # Run simulation
     integrator.propagate(num_steps)

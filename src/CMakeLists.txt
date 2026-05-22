@@ -50,7 +50,7 @@ add_library(apoCHARMMlib
   ${apoCHARMM_SOURCE_DIR}/src/CudaVerletIntegrator.cu
   ${apoCHARMM_SOURCE_DIR}/src/CudaVMMSVelocityVerletIntegrator.cu
   ${apoCHARMM_SOURCE_DIR}/src/CudaVelocityVerletIntegrator.cu
-  ${apoCHARMM_SOURCE_DIR}/src/CudaNoseHooverThermostatIntegrator.cu
+  ${apoCHARMM_SOURCE_DIR}/src/CudaNoseHooverIntegrator.cu
   ${apoCHARMM_SOURCE_DIR}/src/CudaLangevinPistonIntegrator.cu
   ${apoCHARMM_SOURCE_DIR}/src/CudaP21NeighborListBuild.cu
   # ${apoCHARMM_SOURCE_DIR}/src/CudaExternalForce.cu

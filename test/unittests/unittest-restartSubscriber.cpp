@@ -14,7 +14,7 @@
 #include "CharmmParameters.h"
 #include "CudaLangevinPistonIntegrator.h"
 #include "CudaLangevinThermostatIntegrator.h"
-#include "CudaNoseHooverThermostatIntegrator.h"
+#include "CudaNoseHooverIntegrator.h"
 #include "ForceManager.h"
 #include "RestartSubscriber.h"
 #include "catch.hpp"
@@ -66,8 +66,7 @@ TEST_CASE("restart") {
     std::cout << "**** Nose-Hoover ****" << std::endl;
 
     // Setup first integrator
-    auto integrator1 =
-        std::make_shared<CudaNoseHooverThermostatIntegrator>(timeStep);
+    auto integrator1 = std::make_shared<CudaNoseHooverIntegrator>(timeStep);
     integrator1->setCharmmContext(ctx1);
 
     // Setup restart subscriber
@@ -79,8 +78,7 @@ TEST_CASE("restart") {
     integrator1->propagate(1);
 
     // Setup second integrator from restart file
-    auto integrator2 =
-        std::make_shared<CudaNoseHooverThermostatIntegrator>(timeStep);
+    auto integrator2 = std::make_shared<CudaNoseHooverIntegrator>(timeStep);
     integrator2->setCharmmContext(ctx2);
     integrator2->initializeFromRestartFile("tmpNoseHoover.rst");
 

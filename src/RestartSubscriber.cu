@@ -13,7 +13,7 @@
 #include "CharmmContext.h"
 #include "CudaLangevinPistonIntegrator.h"
 #include "CudaLangevinThermostatIntegrator.h"
-#include "CudaNoseHooverThermostatIntegrator.h"
+#include "CudaNoseHooverIntegrator.h"
 #include "PBC.h"
 #include "str_utils.h"
 #include <iomanip>
@@ -50,8 +50,7 @@ void RestartSubscriber::update(void) {
 
   // Attempt to cast to supported integrators to determine how we set some
   // values
-  auto nh = std::dynamic_pointer_cast<CudaNoseHooverThermostatIntegrator>(
-      m_Integrator);
+  auto nh = std::dynamic_pointer_cast<CudaNoseHooverIntegrator>(m_Integrator);
   auto lp =
       std::dynamic_pointer_cast<CudaLangevinPistonIntegrator>(m_Integrator);
   auto lt =

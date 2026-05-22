@@ -9,14 +9,13 @@
 // ENDLICENSE
 
 #include "Constants.h"
-#include "CudaNoseHooverThermostatIntegrator.h"
+#include "CudaNoseHooverIntegrator.h"
 #include "gpu_utils.h"
 #include <chrono>
 #include <iostream>
 #include <stdexcept>
 
-CudaNoseHooverThermostatIntegrator::CudaNoseHooverThermostatIntegrator(
-    const double timeStep)
+CudaNoseHooverIntegrator::CudaNoseHooverIntegrator(const double timeStep)
     : CudaIntegrator(timeStep) {
   m_UsingHolonomicConstraints = true;
 
@@ -50,147 +49,141 @@ CudaNoseHooverThermostatIntegrator::CudaNoseHooverThermostatIntegrator(
   m_UsingOldTemperature = false;
 }
 
-void CudaNoseHooverThermostatIntegrator::setReferenceTemperature(
+void CudaNoseHooverIntegrator::setReferenceTemperature(
     const double referenceTemperature) {
   m_ReferenceTemperature = referenceTemperature;
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::setNoseHooverPistonMass(
+void CudaNoseHooverIntegrator::setNoseHooverPistonMass(
     const double noseHooverPistonMass) {
   m_NoseHooverPistonMass.setToValue(noseHooverPistonMass);
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::setNoseHooverPistonVelocity(
+void CudaNoseHooverIntegrator::setNoseHooverPistonVelocity(
     const double noseHooverPistonVelocity) {
   m_NoseHooverPistonVelocity.setToValue(noseHooverPistonVelocity);
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::setNoseHooverPistonVelocityPrevious(
+void CudaNoseHooverIntegrator::setNoseHooverPistonVelocityPrevious(
     const double noseHooverPistonVelocityPrevious) {
   m_NoseHooverPistonVelocityPrevious.setToValue(
       noseHooverPistonVelocityPrevious);
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::setNoseHooverPistonForce(
+void CudaNoseHooverIntegrator::setNoseHooverPistonForce(
     const double noseHooverPistonForce) {
   m_NoseHooverPistonForce.setToValue(noseHooverPistonForce);
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::setNoseHooverPistonForcePrevious(
+void CudaNoseHooverIntegrator::setNoseHooverPistonForcePrevious(
     const double noseHooverPistonForcePrevious) {
   m_NoseHooverPistonForcePrevious.setToValue(noseHooverPistonForcePrevious);
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::setMaxPredictorCorrectorIterations(
+void CudaNoseHooverIntegrator::setMaxPredictorCorrectorIterations(
     const int maxPredictorCorrectorIterations) {
   m_MaxPredictorCorrectorIterations = maxPredictorCorrectorIterations;
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::useOldTemperature(
+void CudaNoseHooverIntegrator::useOldTemperature(
     const bool usingOldTemperature) {
   m_UsingOldTemperature = usingOldTemperature;
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::resetAverageTemperature(void) {
+void CudaNoseHooverIntegrator::resetAverageTemperature(void) {
   m_AverageWindowSize = 0;
   m_AverageTemperature.setToValue(0.0);
   return;
 }
 
-double CudaNoseHooverThermostatIntegrator::getReferenceTemperature(void) const {
+double CudaNoseHooverIntegrator::getReferenceTemperature(void) const {
   return m_ReferenceTemperature;
 }
 
-bool CudaNoseHooverThermostatIntegrator::usingOldTemperature(void) const {
+bool CudaNoseHooverIntegrator::usingOldTemperature(void) const {
   return m_UsingOldTemperature;
 }
 
 const CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getNoseHooverPistonMass(void) const {
+CudaNoseHooverIntegrator::getNoseHooverPistonMass(void) const {
   return m_NoseHooverPistonMass;
 }
 
 const CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getNoseHooverPistonVelocity(void) const {
+CudaNoseHooverIntegrator::getNoseHooverPistonVelocity(void) const {
   return m_NoseHooverPistonVelocity;
 }
 
 const CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getNoseHooverPistonVelocityPrevious(
-    void) const {
+CudaNoseHooverIntegrator::getNoseHooverPistonVelocityPrevious(void) const {
   return m_NoseHooverPistonVelocityPrevious;
 }
 
 const CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getNoseHooverPistonForce(void) const {
+CudaNoseHooverIntegrator::getNoseHooverPistonForce(void) const {
   return m_NoseHooverPistonForce;
 }
 
 const CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getNoseHooverPistonForcePrevious(
-    void) const {
+CudaNoseHooverIntegrator::getNoseHooverPistonForcePrevious(void) const {
   return m_NoseHooverPistonForcePrevious;
 }
 
-int CudaNoseHooverThermostatIntegrator::getMaxPredictorCorrectorIterations(
-    void) const {
+int CudaNoseHooverIntegrator::getMaxPredictorCorrectorIterations(void) const {
   return m_MaxPredictorCorrectorIterations;
 }
 
 const CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getKineticEnergy(void) const {
+CudaNoseHooverIntegrator::getKineticEnergy(void) const {
   return m_KineticEnergy;
 }
 
 const CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getAverageTemperature(void) const {
+CudaNoseHooverIntegrator::getAverageTemperature(void) const {
   return m_AverageTemperature;
 }
 
-CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getNoseHooverPistonMass(void) {
+CudaContainer<double> &CudaNoseHooverIntegrator::getNoseHooverPistonMass(void) {
   return m_NoseHooverPistonMass;
 }
 
 CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getNoseHooverPistonVelocity(void) {
+CudaNoseHooverIntegrator::getNoseHooverPistonVelocity(void) {
   return m_NoseHooverPistonVelocity;
 }
 
 CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getNoseHooverPistonVelocityPrevious(void) {
+CudaNoseHooverIntegrator::getNoseHooverPistonVelocityPrevious(void) {
   return m_NoseHooverPistonVelocityPrevious;
 }
 
 CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getNoseHooverPistonForce(void) {
+CudaNoseHooverIntegrator::getNoseHooverPistonForce(void) {
   return m_NoseHooverPistonForce;
 }
 
 CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getNoseHooverPistonForcePrevious(void) {
+CudaNoseHooverIntegrator::getNoseHooverPistonForcePrevious(void) {
   return m_NoseHooverPistonForcePrevious;
 }
 
-CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getKineticEnergy(void) {
+CudaContainer<double> &CudaNoseHooverIntegrator::getKineticEnergy(void) {
   return m_KineticEnergy;
 }
 
-CudaContainer<double> &
-CudaNoseHooverThermostatIntegrator::getAverageTemperature(void) {
+CudaContainer<double> &CudaNoseHooverIntegrator::getAverageTemperature(void) {
   return m_AverageTemperature;
 }
 
-double CudaNoseHooverThermostatIntegrator::getInstantaneousTemperature(void) {
+double CudaNoseHooverIntegrator::getInstantaneousTemperature(void) {
   const double ndegf = static_cast<double>(m_Context->getDegreesOfFreedom());
   m_KineticEnergy.transferToHost();
   if (m_UsingOldTemperature)
@@ -280,7 +273,7 @@ BackStepInitializationKernel2(double4 *__restrict__ coordsCharges,
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::initialize(void) {
+void CudaNoseHooverIntegrator::initialize(void) {
   const int numAtoms = m_Context->getNumAtoms();
   constexpr int numThreads = 256;
   const int numBlocks = (numAtoms + numThreads - 1) / numThreads;
@@ -341,7 +334,7 @@ void CudaNoseHooverThermostatIntegrator::initialize(void) {
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::initializeFromRestartFile(
+void CudaNoseHooverIntegrator::initializeFromRestartFile(
     const std::string &rstFileName) {
   // Ensure that the CharmmContext has been set before we try to initialize
   if (m_Context == nullptr) {
@@ -842,7 +835,7 @@ UpdateAverageTemperatureKernel(double *__restrict__ averageTemperature,
   return;
 }
 
-void CudaNoseHooverThermostatIntegrator::propagateOneStep(void) {
+void CudaNoseHooverIntegrator::propagateOneStep(void) {
   const int numDegreesOfFreedom = m_Context->getDegreesOfFreedom();
   const double referenceKineticEnergy =
       0.5 * static_cast<double>(numDegreesOfFreedom) *
@@ -1013,7 +1006,7 @@ void CudaNoseHooverThermostatIntegrator::propagateOneStep(void) {
   return;
 }
 
-double CudaNoseHooverThermostatIntegrator::computeNoseHooverPistonMass(void) {
+double CudaNoseHooverIntegrator::computeNoseHooverPistonMass(void) {
   if (m_Context == nullptr)
     return -9999.9999;
 
@@ -1027,7 +1020,7 @@ double CudaNoseHooverThermostatIntegrator::computeNoseHooverPistonMass(void) {
   return (0.2 * totalMass);
 }
 
-void CudaNoseHooverThermostatIntegrator::removeCenterOfMassMotion(void) {
+void CudaNoseHooverIntegrator::removeCenterOfMassMotion(void) {
   cudaCheck(cudaStreamSynchronize(*m_IntegratorStream));
 
   const PBC pbc = m_Context->getForceManager()->getPeriodicBoundaryCondition();

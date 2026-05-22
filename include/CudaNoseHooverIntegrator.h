@@ -13,9 +13,9 @@
 #include "CharmmContext.h"
 #include "CudaIntegrator.h"
 
-class CudaNoseHooverThermostatIntegrator : public CudaIntegrator {
+class CudaNoseHooverIntegrator : public CudaIntegrator {
 public:
-  CudaNoseHooverThermostatIntegrator(const double timeStep);
+  CudaNoseHooverIntegrator(const double timeStep);
 
 public:
   void setReferenceTemperature(const double referenceTemperature);

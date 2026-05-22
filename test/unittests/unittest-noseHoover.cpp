@@ -10,7 +10,7 @@
 
 #include "CharmmContext.h"
 #include "CharmmCrd.h"
-#include "CudaNoseHooverThermostatIntegrator.h"
+#include "CudaNoseHooverIntegrator.h"
 #include "DcdSubscriber.h"
 #include "ForceManager.h"
 #include "catch.hpp"
@@ -45,8 +45,7 @@ TEST_CASE("noseHooverThermostat", "[dynamics]") {
     ctx->useHolonomicConstraints(useHolonomicConstraints);
 
     // Setup integrator
-    auto integrator =
-        std::make_shared<CudaNoseHooverThermostatIntegrator>(timeStep);
+    auto integrator = std::make_shared<CudaNoseHooverIntegrator>(timeStep);
     integrator->setCharmmContext(ctx);
 
     // integrator->useOldTemperature(true); // "Jung temperature" is the default
@@ -125,12 +124,10 @@ TEST_CASE("noseHooverThermostat", "[dynamics]") {
                                    true));
 
     // Setup integrators
-    auto integrator1 =
-        std::make_shared<CudaNoseHooverThermostatIntegrator>(timeStep);
+    auto integrator1 = std::make_shared<CudaNoseHooverIntegrator>(timeStep);
     integrator1->setCharmmContext(ctx1);
 
-    auto integrator2 =
-        std::make_shared<CudaNoseHooverThermostatIntegrator>(timeStep);
+    auto integrator2 = std::make_shared<CudaNoseHooverIntegrator>(timeStep);
     integrator2->setCharmmContext(ctx2);
 
     // Ensure that integrator variables match
@@ -306,7 +303,7 @@ TEST_CASE("optimalTemperature") {
   SECTION("oldTemp") {
     // Setup integrator
     auto integrator =
-        std::make_shared<CudaNoseHooverThermostatIntegrator>(timeStep);
+        std::make_shared<CudaNoseHooverIntegrator>(timeStep);
     integrator->setCharmmContext(ctx);
     integrator->useOldTemperature(true);
 
@@ -329,7 +326,7 @@ TEST_CASE("optimalTemperature") {
   SECTION("newTemp") {
     // Setup integrator
     auto integrator =
-        std::make_shared<CudaNoseHooverThermostatIntegrator>(timeStep);
+        std::make_shared<CudaNoseHooverIntegrator>(timeStep);
     integrator->setCharmmContext(ctx);
 
     auto dcdSubscriber =

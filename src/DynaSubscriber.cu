@@ -13,7 +13,7 @@
 #include "CudaLangevinPistonIntegrator.h"
 #include "CudaLangevinThermostatIntegrator.h"
 #include "CudaLeapFrogIntegrator.h"
-#include "CudaNoseHooverThermostatIntegrator.h"
+#include "CudaNoseHooverIntegrator.h"
 #include "CudaVMMSVelocityVerletIntegrator.h"
 #include "CudaVelocityVerletIntegrator.h"
 #include "CudaVerletIntegrator.h"
@@ -51,8 +51,7 @@ void DynaSubscriber::update(void) {
   auto lt =
       std::dynamic_pointer_cast<CudaLangevinThermostatIntegrator>(m_Integrator);
   auto lf = std::dynamic_pointer_cast<CudaLeapFrogIntegrator>(m_Integrator);
-  auto nht = std::dynamic_pointer_cast<CudaNoseHooverThermostatIntegrator>(
-      m_Integrator);
+  auto nh = std::dynamic_pointer_cast<CudaNoseHooverIntegrator>(m_Integrator);
   auto vv =
       std::dynamic_pointer_cast<CudaVelocityVerletIntegrator>(m_Integrator);
   auto v = std::dynamic_pointer_cast<CudaVerletIntegrator>(m_Integrator);
@@ -160,9 +159,9 @@ void DynaSubscriber::update(void) {
   } else if (lf != nullptr) { // CudaLeapFrogIntegrator
     throw std::invalid_argument(
         "DynaSubscriber::ERROR: Leap Frog Integrator is not supported!\n");
-  } else if (nht != nullptr) { // CudaNoseHooverThermostatIntegrator
-    throw std::invalid_argument("DynaSubscriber::ERROR: Nose-Hoover Thermostat "
-                                "Integrator is not supported!\n");
+  } else if (nh != nullptr) { // CudaNoseHooverIntegrator
+    throw std::invalid_argument(
+        "DynaSubscriber::ERROR: Nose-Hoover Integrator is not supported!\n");
   } else if (vv != nullptr) { // CudaVelocityVerletIntegrator
     throw std::invalid_argument("DynaSubscriber::ERROR: Velocity Verlet "
                                 "Integrator is not supported!\n");
