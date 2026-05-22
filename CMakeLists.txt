@@ -20,6 +20,10 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
     ${apoCHARMM_SOURCE_DIR}/bin
   )
 
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY
+    ${apoCHARMM_SOURCE_DIR}/lib
+  )
+
   # Compiler flags
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
   set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g3 -O0")
@@ -33,8 +37,13 @@ endif()
 # CUDA Toolkit
 find_package(CUDAToolkit REQUIRED)
 
+# Build the C++/CUDA apoCHARMM library
 add_subdirectory(${apoCHARMM_SOURCE_DIR}/src)
-add_subdirectory(${apoCHARMM_SOURCE_DIR}/test)
 
-# Turn on building the Python API
 option(APOCHARMM_ENABLE_C_INTERFACE "Build apoCHARMM C ABI interface" ON)
+if(APOCHARMM_ENABLE_C_INTERFACE)
+  add_subdirectory(${apoCHARMM_SOURCE_DIR}/capi)
+endif()
+
+# Compile the test cases
+add_subdirectory(${apoCHARMM_SOURCE_DIR}/test)

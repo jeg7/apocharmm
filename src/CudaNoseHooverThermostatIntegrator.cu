@@ -109,6 +109,10 @@ double CudaNoseHooverThermostatIntegrator::getReferenceTemperature(void) const {
   return m_ReferenceTemperature;
 }
 
+bool CudaNoseHooverThermostatIntegrator::usingOldTemperature(void) const {
+  return m_UsingOldTemperature;
+}
+
 const CudaContainer<double> &
 CudaNoseHooverThermostatIntegrator::getNoseHooverPistonMass(void) const {
   return m_NoseHooverPistonMass;

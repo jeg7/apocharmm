@@ -85,6 +85,9 @@ add_library(apoCHARMMlib
 
 target_compile_definitions(apoCHARMMlib PUBLIC USE_TEXTURE_OBJECTS)
 
+set_target_properties(apoCHARMMlib PROPERTIES
+  POSITION_INDEPENDENT_CODE ON
+)
 # set_target_properties(apoCHARMMlib PROPERTIES
 #   CUDA_ARCHITECTURES "80"
 # )

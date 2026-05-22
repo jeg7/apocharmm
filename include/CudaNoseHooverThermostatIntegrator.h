@@ -33,6 +33,7 @@ public:
 
 public:
   double getReferenceTemperature(void) const;
+  bool usingOldTemperature(void) const;
   const CudaContainer<double> &getNoseHooverPistonMass(void) const;
   const CudaContainer<double> &getNoseHooverPistonVelocity(void) const;
   const CudaContainer<double> &getNoseHooverPistonVelocityPrevious(void) const;

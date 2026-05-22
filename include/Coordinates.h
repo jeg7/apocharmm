@@ -11,6 +11,7 @@
 #pragma once
 
 #include <vector>
+#include <vector_types.h>
 
 /**
  * @brief Coordinates base class

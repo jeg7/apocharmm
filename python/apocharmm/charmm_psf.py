@@ -1,0 +1,76 @@
+# BEGINLICENSE
+# This file is part of apoCHARMM, which is distributed under the BSD 3-clause
+# license, as described in the LICENSE file in the top level directory of this
+# project.
+#
+# Author: James E. Gonzales II
+#
+# ENDLICENSE
+
+import ctypes
+
+from ._base import _ApoObject
+from ._lib import encode_path, lib
+from .errors import check_status
+
+_prototypes_initialized = False
+
+
+def _initialize_prototypes():
+    global _prototypes_initialized
+
+    if _prototypes_initialized:
+        return
+
+    lib().apo_charmm_psf_create.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_char_p,
+    ]
+    lib().apo_charmm_psf_create.restype = ctypes.c_int
+
+    lib().apo_charmm_psf_destroy.argtypes = [ctypes.c_void_p]
+    lib().apo_charmm_psf_destroy.restype = None
+
+    lib().apo_charmm_psf_get_num_atoms.argtypes = [
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
+    ]
+    lib().apo_charmm_psf_get_num_atoms.restype = ctypes.c_int
+
+    _prototypes_initialized = True
+
+
+class CharmmPsf(_ApoObject):
+    _destroy_function_name = "apo_charmm_psf_destroy"
+
+    def __init__(self, path):
+        _initialize_prototypes()
+        super().__init__()
+
+        handle = ctypes.c_void_p()
+
+        status = lib().apo_charmm_psf_create(
+            ctypes.byref(handle), ctypes.c_char_p(encode_path(path))
+        )
+
+        check_status(status, "CharmmPsf construction failed")
+
+        if handle.value is None:
+            raise RuntimeError(
+                "apo_charmm_psf_create returned success but prodced a NULL handle"
+            )
+
+        self._handle = handle
+
+    def getNumAtoms(self):
+        _initialize_prototypes()
+
+        num_atoms = ctypes.c_size_t()
+
+        status = lib().apo_charmm_psf_get_num_atoms(
+            ctypes.byref(num_atoms), self._handle
+        )
+
+        check_status(status, "CharmmPsf.getNumAtoms() failed")
+
+        return int(num_atoms.value)

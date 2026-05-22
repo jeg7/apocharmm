@@ -43,7 +43,7 @@ felix**/**
 nsight/*
 python_old
 python_old/*
-python/__pycache__/
+
 release*
 release/*
 slurm-*
@@ -63,4 +63,9 @@ dist/*
 compile.sh
 clean.sh
 dyn_form.out
+
 bin*
+lib*
+*__pycache__*
+
+OLD*
