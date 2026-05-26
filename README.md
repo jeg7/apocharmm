@@ -9,7 +9,7 @@ the working unit tests (c.f. run_all_tests.sh) can be used for performing
 molecular dynamics simulations. The Python API is currently being overhauled and
 is deprecated.
 
-Reference:
+Any work that uses apoCHARMM should cite the following publication:
 
 [S. Prasad, F. Aviat, J. E. Gonzales II, and B. R. Brooks, "apoCHARMM:
 High-performance molecular dynamics simulations on GPUs for advanced simulation
@@ -27,7 +27,7 @@ enumerated below.
 ## Dependencies
 
 * [Catch2](https://github.com/catchorg/Catch2) for unit testing
-  [(BSL license)](https://opensource.org/licenses/BSL-1.0).
+  ([BSL license](https://opensource.org/licenses/BSL-1.0)).
 
 ## Authors
 
@@ -39,16 +39,14 @@ Bernard R. Brooks (NIH)
 
 ## Installation
 
-Currently, only building from source is supported. Once the Python API has been
-overhauled, the installation procedure may change.
-
-While the source code was developed using the following tool and compiler
-versions, other versions may work.
+The source code was developed using the following tool and compiler versions,
+other versions may work.
 * GCC [12.2.0]
 * CUDA [12.2.140]
 * CMake [3.25.1]
 
 ### 0. Clone this repository
+
 ```
 git clone git@github.com:jeg7/apocharmm --recursive
 cd apocharmm/
@@ -59,11 +57,30 @@ run `git submodule update --init --force --remote` from within the `apocharmm/`
 directory).
 
 ### 1. Compile the source code
+
+By default, the Python API is built as well. If you would like to disable it,
+replace the CMake command below with
+`cmake -DAPOCHARMM_ENABLE_PYTHON_API=OFF ..`
+
 ```
 mkdir build
 cd build/
 cmake ..
 make -j
+```
+
+### 2. Enable use of the Python API
+
+In your shells's configuration script (typically `~/.bashrc`) add the following
+lines to the end.
+
+**Note that you should replace the `/absolute/path/to/` with the absolute path
+that leads to the `apocharmm/` directory (i.e. Where you cloned it).**
+
+```
+# For apoCHARMM
+export APOCHARMM_LIBRARY_PATH=/absolute/path/to/apocharmm/lib/libapocharmm_c.so
+export PYTHONPATH=/absolute/path/to/apocharmm/python:$PYTHONPATH
 ```
 
 ## Testing

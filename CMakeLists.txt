@@ -40,8 +40,8 @@ find_package(CUDAToolkit REQUIRED)
 # Build the C++/CUDA apoCHARMM library
 add_subdirectory(${apoCHARMM_SOURCE_DIR}/src)
 
-option(APOCHARMM_ENABLE_C_INTERFACE "Build apoCHARMM C ABI interface" ON)
-if(APOCHARMM_ENABLE_C_INTERFACE)
+option(APOCHARMM_ENABLE_PYTHON_API "Build apoCHARMM Python interface (C ABI)" ON)
+if(APOCHARMM_ENABLE_PYTHON_API)
   add_subdirectory(${apoCHARMM_SOURCE_DIR}/capi)
 endif()
 
