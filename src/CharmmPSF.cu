@@ -218,6 +218,13 @@ CudaContainer<int2> &CharmmPSF::getGroups(void) { return m_Groups; }
 
 std::string &CharmmPSF::getFileName(void) { return m_FileName; }
 
+double CharmmPSF::getNetCharge(void) const {
+  double netCharge = 0.0;
+  for (int i = 0; i < m_NumAtoms; i++)
+    netCharge += m_Charges[i];
+  return netCharge;
+}
+
 double CharmmPSF::getTotalMass(void) const {
   double totalMass = 0.0;
   for (int i = 0; i < m_NumAtoms; i++)
@@ -378,6 +385,9 @@ void CharmmPSF::buildTopologicalExclusions(void) {
 }
 
 void CharmmPSF::readCharmmPSF(const std::string &fileName) {
+  // Store file name
+  m_FileName = fileName;
+
   std::string fileData = "";
   apo::read_file_into_string(fileData, fileName);
 

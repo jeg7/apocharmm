@@ -69,3 +69,5 @@ lib*
 *__pycache__*
 
 OLD*
+
+tmp*

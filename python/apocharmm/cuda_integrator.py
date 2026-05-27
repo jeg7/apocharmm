@@ -10,7 +10,7 @@
 import ctypes
 
 from ._base import _ApoObject
-from ._lib import lib
+from ._lib import encode_path, lib
 from .charmm_context import CharmmContext
 from .errors import check_status
 from .subscriber import Subscriber
@@ -41,6 +41,12 @@ def _initialize_prototypes():
 
     lib().apo_cuda_integrator_propagate.argtypes = [ctypes.c_void_p, ctypes.c_int]
     lib().apo_cuda_integrator_propagate.restype = ctypes.c_int
+
+    lib().apo_cuda_integrator_initialize_from_restart_file.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+    ]
+    lib().apo_cuda_integrator_initialize_from_restart_file.restype = ctypes.c_int
 
     _prototypes_initialized = True
 
@@ -112,3 +118,10 @@ class CudaIntegrator(_ApoObject):
         )
 
         check_status(status, "CudaIntegrator.propagate(num_steps) failed")
+
+    def initializeFromRestartFile(self, path):
+        _initialize_prototypes()
+
+        status = lib().apo_cuda_integrator_initialize_from_restart_file(
+            self.integrator_handle, ctypes.c_char_p(encode_path(path))
+        )

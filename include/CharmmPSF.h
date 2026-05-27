@@ -119,6 +119,7 @@ public:
   CudaContainer<int2> &getGroups(void);
   std::string &getFileName(void);
 
+  double getNetCharge(void) const;
   double getTotalMass(void) const;
   InclusionExclusion getInclusionExclusionLists(void) const;
 

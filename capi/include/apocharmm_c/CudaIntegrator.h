@@ -33,6 +33,9 @@ APOCHARMM_C_API apo_status apo_cuda_integrator_subscribe(
 APOCHARMM_C_API apo_status apo_cuda_integrator_propagate(
     apo_cuda_integrator *integrator, const int num_steps);
 
+APOCHARMM_C_API apo_status apo_cuda_integrator_initialize_from_restart_file(
+    apo_cuda_integrator *integrator, const char *path);
+
 #ifdef __cplusplus
 }
 #endif

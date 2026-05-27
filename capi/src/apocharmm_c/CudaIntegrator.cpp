@@ -94,3 +94,24 @@ apo_cuda_integrator_propagate(apo_cuda_integrator *integrator,
       },
       function_name);
 }
+
+extern "C" apo_status apo_cuda_integrator_initialize_from_restart_file(
+    apo_cuda_integrator *integrator, const char *path) {
+  const char *function_name =
+      "apo_cuda_integrator_initialize_from_restart_file";
+
+  return apocharmm_c::guard(
+      [&](void) -> apo_status {
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_cuda_integrator>(
+                integrator, function_name, "CudaIntegrator"));
+
+        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_c_string(
+            path, function_name, "Restart file path"));
+
+        integrator->object->initializeFromRestartFile(std::string(path));
+
+        return APO_STATUS_OK;
+      },
+      function_name);
+}

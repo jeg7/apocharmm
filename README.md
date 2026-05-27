@@ -83,10 +83,13 @@ export APOCHARMM_LIBRARY_PATH=/absolute/path/to/apocharmm/lib/libapocharmm_c.so
 export PYTHONPATH=/absolute/path/to/apocharmm/python:$PYTHONPATH
 ```
 
-## Testing
+## Testing and Examples
 
 To ensure that your installation of apoCHARMM is working correctly, you can run
 the [test shell script](run_all_tests.sh).
+
+Example scripts of how to perform simple tasks in apoCHARMM can be found in the
+[example directory](example).
 
 ## Getting Help, Feature Requests, and Contributing
 
