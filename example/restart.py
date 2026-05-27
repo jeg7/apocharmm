@@ -20,7 +20,7 @@ def run0(
     num_steps,
 ):
     # Load CHARMM force field
-    prm = apo.CharmmParameters(["test/data/toppar_water_ions.str"])
+    prm = apo.CharmmParameters("test/data/toppar_water_ions.str")
 
     # Load PSF and coordinates
     psf = apo.CharmmPsf("test/data/waterbox.psf")
@@ -69,7 +69,7 @@ def run1(
     num_steps,
 ):
     # Load CHARMM force field
-    prm = apo.CharmmParameters(["test/data/toppar_water_ions.str"])
+    prm = apo.CharmmParameters("test/data/toppar_water_ions.str")
 
     # Load PSF and coordinates
     psf = apo.CharmmPsf("test/data/waterbox.psf")

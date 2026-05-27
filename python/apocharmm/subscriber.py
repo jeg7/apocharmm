@@ -51,8 +51,17 @@ class Subscriber(_ApoObject):
     def setReportFrequency(self, report_frequency: int) -> None:
         _initialize_prototypes()
 
+        if (
+            isinstance(report_frequency, bool)
+            or report_frequency <= 0
+            or report_frequency > 2**31 - 1
+        ):
+            raise ValueError("report_frequency must fit in positive int")
+
+        c_report_frequency: ctypes.c_int = ctypes.c_int(report_frequency)
+
         status = lib().apo_subscriber_set_report_frequency(
-            self.subscriber_handle, report_frequency
+            self.subscriber_handle, c_report_frequency
         )
 
         check_status(status, "Subscriber.setReportFrequency(report_frequency) failed")

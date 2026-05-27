@@ -57,11 +57,12 @@ class CharmmCrd(_ApoObject):
         _initialize_prototypes()
         super().__init__()
 
-        handle = ctypes.c_void_p()
+        handle: ctypes.c_void_p = ctypes.c_void_p()
 
-        status = lib().apo_charmm_crd_create(
-            ctypes.byref(handle), ctypes.c_char_p(encode_path(path))
-        )
+        encoded_path: bytes = encode_path(path)
+        c_path: ctypes.c_char_p = ctypes.c_char_p(encoded_path)
+
+        status = lib().apo_charmm_crd_create(ctypes.byref(handle), c_path)
 
         check_status(status, "CharmmCrd construction failed")
 
@@ -90,13 +91,14 @@ class CharmmCrd(_ApoObject):
     def getCoordinates(self) -> list[list[float]]:
         _initialize_prototypes()
 
-        num_atoms = self.getNumAtoms()
-        buffer_len = 3 * num_atoms
+        num_atoms: int = self.getNumAtoms()
+        buffer_len: int = 3 * num_atoms
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(buffer_len)
 
         buffer_type = ctypes.c_double * buffer_len
         buffer = buffer_type()
 
-        status = lib().apo_charmm_crd_get_coordinates(buffer, buffer_len, self.handle)
+        status = lib().apo_charmm_crd_get_coordinates(buffer, c_buffer_len, self.handle)
 
         check_status(status, "CharmmCrd.getCoordinates() failed")
 

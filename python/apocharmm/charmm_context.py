@@ -76,7 +76,10 @@ class CharmmContext(_ApoObject):
         _initialize_prototypes()
         super().__init__()
 
-        handle = ctypes.c_void_p()
+        if not isinstance(force_manager, ForceManager):
+            raise TypeError("CharmmContext expects a ForceManager")
+
+        handle: ctypes.c_void_p = ctypes.c_void_p()
 
         status = lib().apo_charmm_context_create(
             ctypes.byref(handle), force_manager.handle
@@ -90,12 +93,15 @@ class CharmmContext(_ApoObject):
             )
 
         self._handle = handle
-        self._force_manager = force_manager
+        self._force_manager: ForceManager = force_manager
 
         return
 
     def setCoordinates(self, crd: CharmmCrd) -> None:
         _initialize_prototypes()
+
+        if not isinstance(crd, CharmmCrd):
+            raise TypeError("CharmmContext.setCoordinates expects a CharmmCrd")
 
         status = lib().apo_charmm_context_set_coordinates(self.handle, crd.handle)
 
@@ -106,8 +112,13 @@ class CharmmContext(_ApoObject):
     def setRandomSeedForVelocities(self, seed: int) -> None:
         _initialize_prototypes()
 
+        if isinstance(seed, bool) or seed < 0 or seed > 2**64 - 1:
+            raise ValueError("seed must fit in uint64_t")
+
+        c_seed: ctypes.c_uint64 = ctypes.c_uint64(seed)
+
         status = lib().apo_charmm_context_set_random_seed_for_velocities(
-            self.handle, seed
+            self.handle, c_seed
         )
 
         check_status(status, "CharmmContext.setRandomSeedForVelocities(seed) failed")
@@ -117,8 +128,12 @@ class CharmmContext(_ApoObject):
     def useHolonomicConstraints(self, use_holonomic_constraints: bool) -> None:
         _initialize_prototypes()
 
+        c_use_holonomic_constraints: ctypes.c_bool = ctypes.c_bool(
+            use_holonomic_constraints
+        )
+
         status = lib().apo_charmm_context_use_holonomic_constraints(
-            self.handle, use_holonomic_constraints
+            self.handle, c_use_holonomic_constraints
         )
 
         check_status(
@@ -131,8 +146,10 @@ class CharmmContext(_ApoObject):
     def assignVelocitiesAtTemperature(self, temperature: float) -> None:
         _initialize_prototypes()
 
+        c_temperature: ctypes.c_double = ctypes.c_double(temperature)
+
         status = lib().apo_charmm_context_assign_velocities_at_temperature(
-            self.handle, temperature
+            self.handle, c_temperature
         )
 
         check_status(

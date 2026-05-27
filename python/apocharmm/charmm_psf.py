@@ -150,9 +150,10 @@ class CharmmPsf(_ApoObject):
 
         handle = ctypes.c_void_p()
 
-        status = lib().apo_charmm_psf_create(
-            ctypes.byref(handle), ctypes.c_char_p(encode_path(path))
-        )
+        encoded_path: bytes = encode_path(path)
+        c_path: ctypes.c_char_p = ctypes.c_char_p(encoded_path)
+
+        status = lib().apo_charmm_psf_create(ctypes.byref(handle), c_path)
 
         check_status(status, "CharmmPsf construction failed")
 
@@ -246,14 +247,15 @@ class CharmmPsf(_ApoObject):
     def getSegmentIdentifiers(self) -> list[str]:
         _initialize_prototypes()
 
-        num_segis = self.getNumAtoms()
-        buffer_len = 8 * num_segis
+        num_segis: int = self.getNumAtoms()
+        buffer_len: int = 8 * num_segis
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(buffer_len)
 
         buffer_type = ctypes.c_char * buffer_len
         buffer = buffer_type()
 
         status = lib().apo_charmm_psf_get_segment_identifiers(
-            buffer, buffer_len, self.handle
+            buffer, c_buffer_len, self.handle
         )
 
         check_status(status, "CharmmPsf.getSegmentIdentifiers() failed")
@@ -274,12 +276,13 @@ class CharmmPsf(_ApoObject):
 
         num_resis = self.getNumAtoms()
         buffer_len = num_resis
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(buffer_len)
 
         buffer_type = ctypes.c_int * buffer_len
         buffer = buffer_type()
 
         status = lib().apo_charmm_psf_get_residue_identifiers(
-            buffer, buffer_len, self.handle
+            buffer, c_buffer_len, self.handle
         )
 
         check_status(status, "CharmmPsf.getResidueIdentifiers() failed")
@@ -295,11 +298,14 @@ class CharmmPsf(_ApoObject):
 
         num_resns = self.getNumAtoms()
         buffer_len = 8 * num_resns
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(buffer_len)
 
         buffer_type = ctypes.c_char * buffer_len
         buffer = buffer_type()
 
-        status = lib().apo_charmm_psf_get_residue_names(buffer, buffer_len, self.handle)
+        status = lib().apo_charmm_psf_get_residue_names(
+            buffer, c_buffer_len, self.handle
+        )
 
         check_status(status, "CharmmPsf.getResidueNames() failed")
 
@@ -319,11 +325,12 @@ class CharmmPsf(_ApoObject):
 
         num_names = self.getNumAtoms()
         buffer_len = 8 * num_names
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(buffer_len)
 
         buffer_type = ctypes.c_char * buffer_len
         buffer = buffer_type()
 
-        status = lib().apo_charmm_psf_get_atom_names(buffer, buffer_len, self.handle)
+        status = lib().apo_charmm_psf_get_atom_names(buffer, c_buffer_len, self.handle)
 
         check_status(status, "CharmmPsf.getAtomNames() failed")
 
@@ -343,11 +350,12 @@ class CharmmPsf(_ApoObject):
 
         num_types = self.getNumAtoms()
         buffer_len = 8 * num_types
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(buffer_len)
 
         buffer_type = ctypes.c_char * buffer_len
         buffer = buffer_type()
 
-        status = lib().apo_charmm_psf_get_atom_types(buffer, buffer_len, self.handle)
+        status = lib().apo_charmm_psf_get_atom_types(buffer, c_buffer_len, self.handle)
 
         check_status(status, "CharmmPsf.getAtomTypes() failed")
 
@@ -367,11 +375,12 @@ class CharmmPsf(_ApoObject):
 
         num_atoms = self.getNumAtoms()
         buffer_len = num_atoms
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(buffer_len)
 
         buffer_type = ctypes.c_double * buffer_len
         buffer = buffer_type()
 
-        status = lib().apo_charmm_psf_get_charges(buffer, buffer_len, self.handle)
+        status = lib().apo_charmm_psf_get_charges(buffer, c_buffer_len, self.handle)
 
         check_status(status, "CharmmPsf.getCharges() failed")
 
@@ -386,11 +395,12 @@ class CharmmPsf(_ApoObject):
 
         num_atoms = self.getNumAtoms()
         buffer_len = num_atoms
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(buffer_len)
 
         buffer_type = ctypes.c_double * buffer_len
         buffer = buffer_type()
 
-        status = lib().apo_charmm_psf_get_masses(buffer, buffer_len, self.handle)
+        status = lib().apo_charmm_psf_get_masses(buffer, c_buffer_len, self.handle)
 
         check_status(status, "CharmmPsf.getMasses() failed")
 
@@ -431,10 +441,12 @@ class CharmmPsf(_ApoObject):
 
         # We are going to assume that the file name is less than 1024 chars
         buffer_len = 1024
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(buffer_len)
+
         buffer_type = ctypes.c_char * buffer_len
         buffer = buffer_type()
 
-        status = lib().apo_charmm_psf_get_file_name(buffer, buffer_len, self.handle)
+        status = lib().apo_charmm_psf_get_file_name(buffer, c_buffer_len, self.handle)
 
         check_status(status, "CharmmPsf.getFileName() failed")
 

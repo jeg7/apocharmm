@@ -86,13 +86,19 @@ class ForceManager(_ApoObject):
         _initialize_prototypes()
 
         if len(box_dimensions) != 3:
-            raise RuntimeError(
+            raise ValueError(
                 "ForceManager.setBoxDimensions expects exactly three box_dimensions"
             )
 
-        status = lib().apo_force_manager_set_box_dimensions(
-            self.handle, box_dimensions[0], box_dimensions[1], box_dimensions[2]
-        )
+        x: float = float(box_dimensions[0])
+        y: float = float(box_dimensions[1])
+        z: float = float(box_dimensions[2])
+
+        c_x: ctypes.c_double = ctypes.c_double(x)
+        c_y: ctypes.c_double = ctypes.c_double(y)
+        c_z: ctypes.c_double = ctypes.c_double(z)
+
+        status = lib().apo_force_manager_set_box_dimensions(self.handle, c_x, c_y, c_z)
 
         check_status(status, "ForceManager.setBoxDimensions() failed")
 

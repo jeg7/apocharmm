@@ -117,7 +117,8 @@ apo_charmm_context_assign_velocities_at_temperature(apo_charmm_context *context,
             apocharmm_c::require_handle_object<apo_charmm_context>(
                 context, function_name, "CharmmContext"));
 
-        context->object->assignVelocitiesAtTemperature(temperature);
+        context->object->assignVelocitiesAtTemperature(
+            static_cast<float>(temperature));
 
         return APO_STATUS_OK;
       },

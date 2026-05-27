@@ -51,25 +51,29 @@ class CharmmParameters(_ApoObject):
         _initialize_prototypes()
         super().__init__()
 
-        handle = ctypes.c_void_p()
+        handle: ctypes.c_void_p = ctypes.c_void_p()
 
         if isinstance(paths, (list, tuple)):
             if len(paths) == 0:
                 raise ValueError("CharmmParameters requires at least one file")
 
-            encoded_paths = [encode_path(path) for path in paths]
+            encoded_paths: list[bytes] = [encode_path(path) for path in paths]
+            num_paths: int = len(encoded_paths)
+            c_num_paths: ctypes.c_size_t = ctypes.c_size_t(num_paths)
+
             path_array_type = ctypes.c_char_p * len(encoded_paths)
             path_array = path_array_type(*encoded_paths)
 
             status = lib().apo_charmm_parameters_create_from_files(
-                ctypes.byref(handle), path_array, len(encoded_paths)
+                ctypes.byref(handle), path_array, c_num_paths
             )
 
             function_name = "apo_charmm_parameters_create_from_files"
         else:
-            status = lib().apo_charmm_parameters_create(
-                ctypes.byref(handle), ctypes.c_char_p(encode_path(paths))
-            )
+            encoded_path: bytes = encode_path(paths)
+            c_path: ctypes.c_char_p = ctypes.c_char_p(encoded_path)
+
+            status = lib().apo_charmm_parameters_create(ctypes.byref(handle), c_path)
 
             function_name = "apo_charmm_parameters_create"
 

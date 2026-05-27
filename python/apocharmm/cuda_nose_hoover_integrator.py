@@ -100,10 +100,11 @@ class CudaNoseHooverIntegrator(CudaIntegrator):
         _initialize_prototypes()
         super().__init__()
 
-        handle = ctypes.c_void_p()
+        handle: ctypes.c_void_p = ctypes.c_void_p()
+        c_time_step: ctypes.c_double = ctypes.c_double(time_step)
 
         status = lib().apo_cuda_nose_hoover_integrator_create(
-            ctypes.byref(handle), time_step
+            ctypes.byref(handle), c_time_step
         )
 
         check_status(status, "CudaNoseHooverIntegrator construction failed")
@@ -115,7 +116,7 @@ class CudaNoseHooverIntegrator(CudaIntegrator):
 
         self._handle = handle
 
-        integrator_handle = ctypes.c_void_p()
+        integrator_handle: ctypes.c_void_p = ctypes.c_void_p()
 
         status = lib().apo_cuda_nose_hoover_integrator_as_cuda_integrator(
             ctypes.byref(integrator_handle), self.handle
@@ -137,8 +138,10 @@ class CudaNoseHooverIntegrator(CudaIntegrator):
     def setReferenceTemperature(self, temperature: float) -> None:
         _initialize_prototypes()
 
+        c_temperature: ctypes.c_double = ctypes.c_double(temperature)
+
         status = lib().apo_cuda_nose_hoover_integrator_set_reference_temperature(
-            self.handle, temperature
+            self.handle, c_temperature
         )
 
         check_status(
@@ -151,8 +154,10 @@ class CudaNoseHooverIntegrator(CudaIntegrator):
     def setNoseHooverPistonMass(self, mass: float) -> None:
         _initialize_prototypes()
 
+        c_mass: ctypes.c_double = ctypes.c_double(mass)
+
         status = lib().apo_cuda_nose_hoover_integrator_set_nose_hoover_piston_mass(
-            self.handle, mass
+            self.handle, c_mass
         )
 
         check_status(
@@ -165,8 +170,10 @@ class CudaNoseHooverIntegrator(CudaIntegrator):
     def useOldTemperature(self, flag: bool = True) -> None:
         _initialize_prototypes()
 
+        c_flag: ctypes.c_bool = ctypes.c_bool(flag)
+
         status = lib().apo_cuda_nose_hoover_integrator_use_old_temperature(
-            self.handle, flag
+            self.handle, c_flag
         )
 
         check_status(status, "CudaNoseHooverIntegrator.useOldTemperature(flag) failed")

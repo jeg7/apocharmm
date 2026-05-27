@@ -53,6 +53,9 @@ apo_charmm_parameters_create_from_files(apo_charmm_parameters **out,
             apocharmm_c::prepare_output_pointer<apo_charmm_parameters>(
                 out, function_name, "out"));
 
+        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_pointer<const char *>(
+            paths, function_name, "paths"));
+
         std::vector<std::string> fnames;
         for (size_t i = 0; i < num_paths; i++) {
           APOCHARMM_C_RETURN_IF_ERROR(

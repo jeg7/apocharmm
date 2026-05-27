@@ -57,17 +57,26 @@ class RestartSubscriber(Subscriber):
         _initialize_prototypes()
         super().__init__()
 
-        handle = ctypes.c_void_p()
-        encoded_path = encode_path(path)
+        handle: ctypes.c_void_p = ctypes.c_void_p()
+
+        encoded_path: bytes = encode_path(path)
+        c_path: ctypes.c_char_p = ctypes.c_char_p(encoded_path)
 
         if report_frequency is None:
-            status = lib().apo_restart_subscriber_create(
-                ctypes.byref(handle), encoded_path
-            )
+            status = lib().apo_restart_subscriber_create(ctypes.byref(handle), c_path)
             function_name = "apo_restart_subscriber_create"
         else:
+            if (
+                isinstance(report_frequency, bool)
+                or report_frequency <= 0
+                or report_frequency > 2**31 - 1
+            ):
+                raise ValueError("report_frequency must fit in positive int")
+
+            c_report_frequency: ctypes.c_int = ctypes.c_int(report_frequency)
+
             status = lib().apo_restart_subscriber_create_with_report_frequency(
-                ctypes.byref(handle), encoded_path, report_frequency
+                ctypes.byref(handle), c_path, c_report_frequency
             )
             function_name = "apo_restart_subscriber_create_with_report_frequency"
 
@@ -80,7 +89,7 @@ class RestartSubscriber(Subscriber):
 
         self._handle = handle
 
-        subscriber_handle = ctypes.c_void_p()
+        subscriber_handle: ctypes.c_void_p = ctypes.c_void_p()
 
         status = lib().apo_restart_subscriber_as_subscriber(
             ctypes.byref(subscriber_handle), self.handle

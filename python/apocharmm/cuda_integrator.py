@@ -60,7 +60,7 @@ class CudaIntegrator(_ApoObject):
         super().__init__()
 
         self._integrator_handle: ctypes.c_void_p = ctypes.c_void_p()
-        self._context: CharmmContext = None
+        self._context: CharmmContext | None = None
         self._subscribers: list[Subscriber] = []
 
         return
@@ -84,8 +84,10 @@ class CudaIntegrator(_ApoObject):
     def setTimeStep(self, time_step: float) -> None:
         _initialize_prototypes()
 
+        c_time_step: ctypes.c_double = ctypes.c_double(time_step)
+
         status = lib().apo_cuda_integrator_set_time_step(
-            self.integrator_handle, time_step
+            self.integrator_handle, c_time_step
         )
 
         check_status(status, "CudaIntegrator.setTimeStep(time_step) failed")
@@ -127,7 +129,14 @@ class CudaIntegrator(_ApoObject):
     def propagate(self, num_steps: int) -> None:
         _initialize_prototypes()
 
-        status = lib().apo_cuda_integrator_propagate(self.integrator_handle, num_steps)
+        if isinstance(num_steps, bool) or num_steps < 0 or num_steps > 2**31 - 1:
+            raise ValueError("num_steps must fit in non-negative int")
+
+        c_num_steps: ctypes.c_int = ctypes.c_int(num_steps)
+
+        status = lib().apo_cuda_integrator_propagate(
+            self.integrator_handle, c_num_steps
+        )
 
         check_status(status, "CudaIntegrator.propagate(num_steps) failed")
 
@@ -136,8 +145,11 @@ class CudaIntegrator(_ApoObject):
     def initializeFromRestartFile(self, path: FilePath) -> None:
         _initialize_prototypes()
 
+        encoded_path: bytes = encode_path(path)
+        c_path: ctypes.c_char_p = ctypes.c_char_p(encoded_path)
+
         status = lib().apo_cuda_integrator_initialize_from_restart_file(
-            self.integrator_handle, ctypes.c_char_p(encode_path(path))
+            self.integrator_handle, c_path
         )
 
         check_status(status, "CudaIntegrator.initializeFromRestartFile(path) failed")

@@ -21,7 +21,7 @@ def main(argc, argv):
     time_step = 0.002
 
     # Load CHARMM force field
-    prm = apo.CharmmParameters(["test/data/toppar_water_ions.str"])
+    prm = apo.CharmmParameters("test/data/toppar_water_ions.str")
 
     # Load PSF and coordinates
     psf = apo.CharmmPsf("test/data/waterbox.psf")

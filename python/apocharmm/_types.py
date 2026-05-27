@@ -7,7 +7,9 @@
 #
 # ENDLICENSE
 
-FilePath = str | bytes
+import os
+
+FilePath = str | bytes | os.PathLike[str] | os.PathLike[bytes]
 FilePaths = FilePath | list[FilePath] | tuple[FilePath, ...]
 
 BoxDimensions = list[float] | tuple[float, float, float]

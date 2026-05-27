@@ -9,11 +9,14 @@
 
 import ctypes
 
+from types import TracebackType
+from typing import ClassVar, Self
+
 from ._lib import lib
 
 
 class _ApoObject:
-    _destroy_function_name: str | None = None
+    _destroy_function_name: ClassVar[str | None] = None
 
     def __init__(self) -> None:
         self._handle: ctypes.c_void_p | None = ctypes.c_void_p()
@@ -44,14 +47,14 @@ class _ApoObject:
         self.close()
         return
 
-    def __enter__(self) -> "_ApoObject":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
-        traceback: object,
+        traceback: TracebackType | None,
     ) -> bool:
         self.close()
         return False

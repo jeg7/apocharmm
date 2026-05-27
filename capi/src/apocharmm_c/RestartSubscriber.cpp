@@ -29,7 +29,7 @@ apo_restart_subscriber_create(apo_restart_subscriber **out, const char *path) {
 
         std::unique_ptr<apo_restart_subscriber> handle(
             new apo_restart_subscriber());
-        handle->object = std::make_shared<RestartSubscriber>(path);
+        handle->object = std::make_shared<RestartSubscriber>(std::string(path));
         handle->base.object = handle->object;
 
         *out = handle.release();
@@ -56,8 +56,8 @@ extern "C" apo_status apo_restart_subscriber_create_with_report_frequency(
 
         std::unique_ptr<apo_restart_subscriber> handle(
             new apo_restart_subscriber());
-        handle->object =
-            std::make_shared<RestartSubscriber>(path, report_frequency);
+        handle->object = std::make_shared<RestartSubscriber>(std::string(path),
+                                                             report_frequency);
         handle->base.object = handle->object;
 
         *out = handle.release();
