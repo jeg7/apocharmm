@@ -32,9 +32,6 @@ APOCHARMM_C_API apo_status apo_force_manager_set_box_dimensions(
     apo_force_manager *force_manager, const double x, const double y,
     const double z);
 
-APOCHARMM_C_API apo_status apo_force_manager_get_box_dimensions(
-    double *xyz, const size_t xyz_len, const apo_force_manager *force_manager);
-
 #ifdef __cplusplus
 }
 #endif

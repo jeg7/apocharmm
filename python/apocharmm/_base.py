@@ -13,41 +13,52 @@ from ._lib import lib
 
 
 class _ApoObject:
-    _destroy_function_name = None
+    _destroy_function_name: str | None = None
 
-    def __init__(self):
-        self._handle = ctypes.c_void_p()
+    def __init__(self) -> None:
+        self._handle: ctypes.c_void_p | None = ctypes.c_void_p()
+        return
 
     @property
-    def handle(self):
+    def handle(self) -> ctypes.c_void_p:
         if self._handle is None or self._handle.value is None:
             raise RuntimeError("apoCHARMM object has been destroyed")
         return self._handle
 
-    def close(self):
+    def close(self) -> None:
         if self._handle is None or self._handle.value is None:
             return
 
-        if self._destroy_function_name is None:
+        destroy_function_name = self._destroy_function_name
+        if destroy_function_name is None:
             raise RuntimeError("No destroy function has been set for this object")
 
-        destroy = getattr(lib(), self._destroy_function_name)
+        destroy = getattr(lib(), destroy_function_name)
         destroy(self._handle)
 
         self._handle = ctypes.c_void_p()
 
-    def destroy(self):
-        self.close()
+        return
 
-    def __enter__(self):
+    def destroy(self) -> None:
+        self.close()
+        return
+
+    def __enter__(self) -> "_ApoObject":
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object,
+    ) -> bool:
         self.close()
         return False
 
-    def __del__(self):
+    def __del__(self) -> None:
         try:
             self.close()
         except Exception:
             pass
+        return

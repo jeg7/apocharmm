@@ -10,13 +10,13 @@
 import ctypes
 
 from ._lib import lib
-from .errors import check_status
+from .error import check_status
 from .cuda_integrator import CudaIntegrator
 
-_prototypes_initialized = False
+_prototypes_initialized: bool = False
 
 
-def _initialize_prototypes():
+def _initialize_prototypes() -> None:
     global _prototypes_initialized
 
     if _prototypes_initialized:
@@ -31,9 +31,6 @@ def _initialize_prototypes():
     lib().apo_cuda_nose_hoover_integrator_destroy.argtypes = [ctypes.c_void_p]
     lib().apo_cuda_nose_hoover_integrator_destroy.restype = None
 
-    #################
-    #### Setters ####
-    #######################################################################
     lib().apo_cuda_nose_hoover_integrator_set_reference_temperature.argtypes = [
         ctypes.c_void_p,
         ctypes.c_double,
@@ -62,11 +59,7 @@ def _initialize_prototypes():
     lib().apo_cuda_nose_hoover_integrator_reset_average_temperature.restype = (
         ctypes.c_int
     )
-    #######################################################################
 
-    #################
-    #### Getters ####
-    #######################################################################
     lib().apo_cuda_nose_hoover_integrator_get_reference_temperature.argtypes = [
         ctypes.POINTER(ctypes.c_double),
         ctypes.c_void_p,
@@ -88,35 +81,32 @@ def _initialize_prototypes():
     lib().apo_cuda_nose_hoover_integrator_get_instantaneous_temperature.restype = (
         ctypes.c_int
     )
-    #######################################################################
 
-    ###################
-    #### Functions ####
-    #######################################################################
     lib().apo_cuda_nose_hoover_integrator_as_cuda_integrator.argtypes = [
         ctypes.POINTER(ctypes.c_void_p),
         ctypes.c_void_p,
     ]
     lib().apo_cuda_nose_hoover_integrator_as_cuda_integrator.restype = ctypes.c_int
-    #######################################################################
 
     _prototypes_initialized = True
+
+    return
 
 
 class CudaNoseHooverIntegrator(CudaIntegrator):
     _destroy_function_name = "apo_cuda_nose_hoover_integrator_destroy"
 
-    def __init__(self, time_step):
+    def __init__(self, time_step: float) -> None:
         _initialize_prototypes()
         super().__init__()
 
         handle = ctypes.c_void_p()
 
         status = lib().apo_cuda_nose_hoover_integrator_create(
-            ctypes.byref(handle), float(time_step)
+            ctypes.byref(handle), time_step
         )
 
-        check_status(status, "CudaNoseHooverThermostatIntegrator construction failed")
+        check_status(status, "CudaNoseHooverIntegrator construction failed")
 
         if handle.value is None:
             raise RuntimeError(
@@ -142,10 +132,9 @@ class CudaNoseHooverIntegrator(CudaIntegrator):
 
         self._integrator_handle = integrator_handle
 
-    #################
-    #### Setters ####
-    #######################################################################
-    def setReferenceTemperature(self, temperature):
+        return
+
+    def setReferenceTemperature(self, temperature: float) -> None:
         _initialize_prototypes()
 
         status = lib().apo_cuda_nose_hoover_integrator_set_reference_temperature(
@@ -154,10 +143,12 @@ class CudaNoseHooverIntegrator(CudaIntegrator):
 
         check_status(
             status,
-            "CudaNoseHooverThermostatIntegrator.setReferenceTemperature(temperature) failed",
+            "CudaNoseHooverIntegrator.setReferenceTemperature(temperature) failed",
         )
 
-    def setNoseHooverPistonMass(self, mass):
+        return
+
+    def setNoseHooverPistonMass(self, mass: float) -> None:
         _initialize_prototypes()
 
         status = lib().apo_cuda_nose_hoover_integrator_set_nose_hoover_piston_mass(
@@ -166,21 +157,23 @@ class CudaNoseHooverIntegrator(CudaIntegrator):
 
         check_status(
             status,
-            "CudaNoseHooverThermostatIntegrator.setNoseHooverPistonMass(mass) failed",
+            "CudaNoseHooverIntegrator.setNoseHooverPistonMass(mass) failed",
         )
 
-    def useOldTemperature(self, flag=True):
+        return
+
+    def useOldTemperature(self, flag: bool = True) -> None:
         _initialize_prototypes()
 
         status = lib().apo_cuda_nose_hoover_integrator_use_old_temperature(
             self.handle, flag
         )
 
-        check_status(
-            status, "CudaNoseHooverThermostatIntegrator.useOldTemperature(flag) failed"
-        )
+        check_status(status, "CudaNoseHooverIntegrator.useOldTemperature(flag) failed")
 
-    def resetAverageTemperature(self):
+        return
+
+    def resetAverageTemperature(self) -> None:
         _initialize_prototypes()
 
         status = lib().apo_cuda_nose_hoover_integrator_reset_average_temperature(
@@ -189,64 +182,50 @@ class CudaNoseHooverIntegrator(CudaIntegrator):
 
         check_status(
             status,
-            "CudaNoseHooverThermostatIntegrator.resetAverageTemperature() failed",
+            "CudaNoseHooverIntegrator.resetAverageTemperature() failed",
         )
 
-    #######################################################################
-
-    #################
-    #### Getters ####
-    #######################################################################
-    def getReferenceTemperature(self):
+    def getReferenceTemperature(self) -> float:
         _initialize_prototypes()
 
-        value = ctypes.c_double()
+        reference_temperature = ctypes.c_double()
 
         status = lib().apo_cuda_nose_hoover_integrator_get_reference_temperature(
-            ctypes.byref(value), self.handle
+            ctypes.byref(reference_temperature), self.handle
         )
 
         check_status(
             status,
-            "CudaNoseHooverThermostatIntegrator.getReferenceTemperature() failed",
+            "CudaNoseHooverIntegrator.getReferenceTemperature() failed",
         )
 
-        return float(value.value)
+        return float(reference_temperature.value)
 
-    def getAverageTemperature(self):
+    def getAverageTemperature(self) -> float:
         _initialize_prototypes()
 
-        value = ctypes.c_double()
+        average_temperature = ctypes.c_double()
 
         status = lib().apo_cuda_nose_hoover_integrator_get_average_temperature(
-            ctypes.byref(value), self.handle
+            ctypes.byref(average_temperature), self.handle
         )
 
-        check_status(
-            status, "CudaNoseHooverThermostatIntegrator.getAverageTemperature() failed"
-        )
+        check_status(status, "CudaNoseHooverIntegrator.getAverageTemperature() failed")
 
-        return float(value.value)
+        return float(average_temperature.value)
 
-    def getInstantaneousTemperature(self):
+    def getInstantaneousTemperature(self) -> float:
         _initialize_prototypes()
 
-        value = ctypes.c_double()
+        instantaneous_temperature = ctypes.c_double()
 
         status = lib().apo_cuda_nose_hoover_integrator_get_instantaneous_temperature(
-            ctypes.byref(value), self.handle
+            ctypes.byref(instantaneous_temperature), self.handle
         )
 
         check_status(
             status,
-            "CudaNoseHooverThermostatIntegrator.getInstantaneousTemperature() failed",
+            "CudaNoseHooverIntegrator.getInstantaneousTemperature() failed",
         )
 
-        return float(value.value)
-
-    #######################################################################
-
-    ###################
-    #### Functions ####
-    #######################################################################
-    #######################################################################
+        return float(instantaneous_temperature.value)

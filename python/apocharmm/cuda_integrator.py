@@ -11,14 +11,16 @@ import ctypes
 
 from ._base import _ApoObject
 from ._lib import encode_path, lib
+from ._types import FilePath
+from .error import check_status
+
 from .charmm_context import CharmmContext
-from .errors import check_status
 from .subscriber import Subscriber
 
-_prototypes_initialized = False
+_prototypes_initialized: bool = False
 
 
-def _initialize_prototypes():
+def _initialize_prototypes() -> None:
     global _prototypes_initialized
 
     if _prototypes_initialized:
@@ -50,39 +52,47 @@ def _initialize_prototypes():
 
     _prototypes_initialized = True
 
+    return
+
 
 class CudaIntegrator(_ApoObject):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-        self._integrator_handle = ctypes.c_void_p()
-        self._context = None
-        self._subscribers = []
+        self._integrator_handle: ctypes.c_void_p = ctypes.c_void_p()
+        self._context: CharmmContext = None
+        self._subscribers: list[Subscriber] = []
+
+        return
 
     @property
-    def integrator_handle(self):
+    def integrator_handle(self) -> ctypes.c_void_p:
         if self._integrator_handle is None or self._integrator_handle.value is None:
             raise RuntimeError("apoCHARMM integrator object has been destroyed")
 
         return self._integrator_handle
 
-    def close(self):
+    def close(self) -> None:
         super().close()
 
         self._integrator_handle = ctypes.c_void_p()
         self._context = None
         self._subscribers = []
 
-    def setTimeStep(self, time_step):
+        return
+
+    def setTimeStep(self, time_step: float) -> None:
         _initialize_prototypes()
 
         status = lib().apo_cuda_integrator_set_time_step(
-            self.integrator_handle, float(time_step)
+            self.integrator_handle, time_step
         )
 
         check_status(status, "CudaIntegrator.setTimeStep(time_step) failed")
 
-    def setCharmmContext(self, context):
+        return
+
+    def setCharmmContext(self, context: CharmmContext) -> None:
         _initialize_prototypes()
 
         if not isinstance(context, CharmmContext):
@@ -96,7 +106,9 @@ class CudaIntegrator(_ApoObject):
 
         self._context = context
 
-    def subscribe(self, subscriber):
+        return
+
+    def subscribe(self, subscriber: Subscriber) -> None:
         _initialize_prototypes()
 
         if not isinstance(subscriber, Subscriber):
@@ -110,18 +122,24 @@ class CudaIntegrator(_ApoObject):
 
         self._subscribers.append(subscriber)
 
-    def propagate(self, num_steps):
+        return
+
+    def propagate(self, num_steps: int) -> None:
         _initialize_prototypes()
 
-        status = lib().apo_cuda_integrator_propagate(
-            self.integrator_handle, int(num_steps)
-        )
+        status = lib().apo_cuda_integrator_propagate(self.integrator_handle, num_steps)
 
         check_status(status, "CudaIntegrator.propagate(num_steps) failed")
 
-    def initializeFromRestartFile(self, path):
+        return
+
+    def initializeFromRestartFile(self, path: FilePath) -> None:
         _initialize_prototypes()
 
         status = lib().apo_cuda_integrator_initialize_from_restart_file(
             self.integrator_handle, ctypes.c_char_p(encode_path(path))
         )
+
+        check_status(status, "CudaIntegrator.initializeFromRestartFile(path) failed")
+
+        return

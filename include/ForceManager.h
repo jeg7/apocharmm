@@ -91,8 +91,6 @@ public:
     return this->getEnergyVirial_impl(m_Force);
   }
 
-  // void add()
-
 private:
   void *m_Force;
   void (*initialize_impl)(void *force, const int numAtoms,

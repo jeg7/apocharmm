@@ -10,10 +10,12 @@
 import ctypes
 import os
 
-_library = None
+from ._types import FilePath
+
+_library: ctypes.CDLL | None = None
 
 
-def lib():
+def lib() -> ctypes.CDLL:
     global _library
 
     if _library is not None:
@@ -23,13 +25,15 @@ def lib():
     if library_path is None or library_path == "":
         raise RuntimeError("APOCHARMM_LIBRARY_PATH must point to libapocharmm_c.so")
 
-    _library = ctypes.CDLL(library_path)
+    library = ctypes.CDLL(library_path)
 
-    _library.apo_last_error.argtypes = []
-    _library.apo_last_error.restype = ctypes.c_char_p
+    library.apo_last_error.argtypes = []
+    library.apo_last_error.restype = ctypes.c_char_p
 
-    return _library
+    _library = library
+
+    return library
 
 
-def encode_path(path):
+def encode_path(path: FilePath) -> bytes:
     return os.fsencode(path)

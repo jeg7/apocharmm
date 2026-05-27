@@ -11,9 +11,10 @@ import ctypes
 
 from ._base import _ApoObject
 from ._lib import encode_path, lib
-from .errors import check_status
+from ._types import FilePath
+from .error import check_status
 
-_prototypes_initialized = False
+_prototypes_initialized: bool = False
 
 
 def _initialize_prototypes() -> None:
@@ -143,7 +144,7 @@ def _initialize_prototypes() -> None:
 class CharmmPsf(_ApoObject):
     _destroy_function_name = "apo_charmm_psf_destroy"
 
-    def __init__(self, path):
+    def __init__(self, path: FilePath) -> None:
         _initialize_prototypes()
         super().__init__()
 
@@ -157,10 +158,12 @@ class CharmmPsf(_ApoObject):
 
         if handle.value is None:
             raise RuntimeError(
-                "apo_charmm_psf_create returned success but prodced a NULL handle"
+                "apo_charmm_psf_create returned success but produced a NULL handle"
             )
 
         self._handle = handle
+
+        return
 
     def getNumAtoms(self) -> int:
         _initialize_prototypes()
@@ -257,10 +260,10 @@ class CharmmPsf(_ApoObject):
 
         raw = buffer.raw
 
-        segis = []
+        segis: list[str] = []
         for i in range(num_segis):
             start = i * 8
-            stop = i * 8 + 7
+            stop = start + 8
             segi = raw[start:stop].decode("utf-8")
             segis.append(segi.replace(" ", ""))  # Remove whitespace
 
@@ -281,7 +284,7 @@ class CharmmPsf(_ApoObject):
 
         check_status(status, "CharmmPsf.getResidueIdentifiers() failed")
 
-        resis = []
+        resis: list[int] = []
         for i in range(num_resis):
             resis.append(int(buffer[i]))
 
@@ -302,10 +305,10 @@ class CharmmPsf(_ApoObject):
 
         raw = buffer.raw
 
-        resns = []
+        resns: list[str] = []
         for i in range(num_resns):
             start = i * 8
-            stop = i * 8 + 7
+            stop = start + 8
             resn = raw[start:stop].decode("utf-8")
             resns.append(resn.replace(" ", ""))  # Remove whitespace
 
@@ -326,10 +329,10 @@ class CharmmPsf(_ApoObject):
 
         raw = buffer.raw
 
-        atom_names = []
+        atom_names: list[str] = []
         for i in range(num_names):
             start = i * 8
-            stop = i * 8 + 7
+            stop = start + 8
             atom_name = raw[start:stop].decode("utf-8")
             atom_names.append(atom_name.replace(" ", ""))  # Remove whitespace
 
@@ -350,10 +353,10 @@ class CharmmPsf(_ApoObject):
 
         raw = buffer.raw
 
-        atom_types = []
+        atom_types: list[str] = []
         for i in range(num_types):
             start = i * 8
-            stop = i * 8 + 7
+            stop = start + 8
             atom_type = raw[start:stop].decode("utf-8")
             atom_types.append(atom_type.replace(" ", ""))  # Remove whitespace
 
@@ -372,7 +375,7 @@ class CharmmPsf(_ApoObject):
 
         check_status(status, "CharmmPsf.getCharges() failed")
 
-        charges = []
+        charges: list[float] = []
         for i in range(num_atoms):
             charges.append(float(buffer[i]))
 
@@ -391,7 +394,7 @@ class CharmmPsf(_ApoObject):
 
         check_status(status, "CharmmPsf.getMasses() failed")
 
-        masses = []
+        masses: list[float] = []
         for i in range(num_atoms):
             masses.append(float(buffer[i]))
 
@@ -419,7 +422,7 @@ class CharmmPsf(_ApoObject):
             ctypes.byref(total_mass), self.handle
         )
 
-        check_status(status, "CharmmPsf.getNetCharge() failed")
+        check_status(status, "CharmmPsf.getTotalMass() failed")
 
         return float(total_mass.value)
 
@@ -437,4 +440,4 @@ class CharmmPsf(_ApoObject):
 
         file_name = buffer.raw.decode("utf-8")
 
-        return file_name.replace(" ", "")
+        return file_name.rstrip(" ")

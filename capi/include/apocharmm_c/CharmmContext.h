@@ -17,6 +17,10 @@
 
 #include <stdint.h>
 
+#ifndef __cplusplus
+#include <stdbool.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,7 +32,6 @@ APOCHARMM_C_API apo_status apo_charmm_context_create(
 
 APOCHARMM_C_API void apo_charmm_context_destroy(apo_charmm_context *context);
 
-// Setters
 APOCHARMM_C_API apo_status apo_charmm_context_set_coordinates(
     apo_charmm_context *context, const apo_charmm_crd *crd);
 
@@ -39,9 +42,6 @@ APOCHARMM_C_API
 apo_status apo_charmm_context_use_holonomic_constraints(
     apo_charmm_context *context, const bool useHolonomicConstraints);
 
-// Getters
-
-// Functions
 APOCHARMM_C_API apo_status apo_charmm_context_assign_velocities_at_temperature(
     apo_charmm_context *context, const double temperature);
 

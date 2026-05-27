@@ -12,7 +12,6 @@ import sys
 
 
 def run0(
-    test_path,
     box_dims,
     random_seed,
     temperature,
@@ -21,11 +20,11 @@ def run0(
     num_steps,
 ):
     # Load CHARMM force field
-    prm = apo.CharmmParameters(test_path + "toppar_water_ions.str")
+    prm = apo.CharmmParameters(["test/data/toppar_water_ions.str"])
 
     # Load PSF and coordinates
-    psf = apo.CharmmPsf(test_path + "waterbox.psf")
-    crd = apo.CharmmCrd(test_path + "waterbox.crd")
+    psf = apo.CharmmPsf("test/data/waterbox.psf")
+    crd = apo.CharmmCrd("test/data/waterbox.crd")
 
     # Setup the ForceManager
     fm = apo.ForceManager(psf, prm)
@@ -62,7 +61,6 @@ def run0(
 
 
 def run1(
-    test_path,
     box_dims,
     random_seed,
     temperature,
@@ -71,11 +69,11 @@ def run1(
     num_steps,
 ):
     # Load CHARMM force field
-    prm = apo.CharmmParameters(test_path + "toppar_water_ions.str")
+    prm = apo.CharmmParameters(["test/data/toppar_water_ions.str"])
 
     # Load PSF and coordinates
-    psf = apo.CharmmPsf(test_path + "waterbox.psf")
-    crd = apo.CharmmCrd(test_path + "waterbox.crd")
+    psf = apo.CharmmPsf("test/data/waterbox.psf")
+    crd = apo.CharmmCrd("test/data/waterbox.crd")
 
     # Setup the ForceManager
     fm = apo.ForceManager(psf, prm)
@@ -111,7 +109,6 @@ def run1(
 
 def main(argc, argv):
     # Input variables
-    test_path = "test/data/"
     box_dims = [50.0, 50.0, 50.0]
     random_seed = 314159
     temperature = 300.0
@@ -121,7 +118,6 @@ def main(argc, argv):
 
     # Set up simulation, run, and generate a restart file
     run0(
-        test_path,
         box_dims,
         random_seed,
         temperature,
@@ -132,7 +128,6 @@ def main(argc, argv):
 
     # Set up simulation from restart file and continute running
     run1(
-        test_path,
         box_dims,
         random_seed,
         temperature,

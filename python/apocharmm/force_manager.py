@@ -10,13 +10,17 @@
 import ctypes
 
 from ._base import _ApoObject
-from ._lib import encode_path, lib
-from .errors import check_status
+from ._lib import lib
+from ._types import BoxDimensions
+from .error import check_status
 
-_prototypes_initialized = False
+from .charmm_parameters import CharmmParameters
+from .charmm_psf import CharmmPsf
+
+_prototypes_initialized: bool = False
 
 
-def _initialize_prototypes():
+def _initialize_prototypes() -> None:
     global _prototypes_initialized
 
     if _prototypes_initialized:
@@ -40,21 +44,23 @@ def _initialize_prototypes():
     ]
     lib().apo_force_manager_set_box_dimensions.restype = ctypes.c_int
 
-    lib().apo_force_manager_get_box_dimensions.argtypes = [
-        ctypes.POINTER(ctypes.c_double),
-        ctypes.c_void_p,
-    ]
-    lib().apo_force_manager_get_box_dimensions.restype = ctypes.c_int
-
     _prototypes_initialized = True
+
+    return
 
 
 class ForceManager(_ApoObject):
     _destroy_function_name = "apo_force_manager_destroy"
 
-    def __init__(self, psf, parameters):
+    def __init__(self, psf: CharmmPsf, parameters: CharmmParameters) -> None:
         _initialize_prototypes()
         super().__init__()
+
+        if not isinstance(psf, CharmmPsf):
+            raise TypeError("ForceManager expects a CharmmPsf")
+
+        if not isinstance(parameters, CharmmParameters):
+            raise TypeError("ForceManager expects a CharmmParameters")
 
         handle = ctypes.c_void_p()
 
@@ -71,39 +77,23 @@ class ForceManager(_ApoObject):
 
         self._handle = handle
 
-        self._psf = psf
-        self._parameters = parameters
+        self._psf: CharmmPsf = psf
+        self._parameters: CharmmParameters = parameters
 
-    def setBoxDimensions(self, box_dimensions):
+        return
+
+    def setBoxDimensions(self, box_dimensions: BoxDimensions) -> None:
         _initialize_prototypes()
 
-        values = list(box_dimensions)
-
-        if len(values) != 3:
+        if len(box_dimensions) != 3:
             raise RuntimeError(
-                "ForceManager.setBoxDimensions expects exactly three values"
+                "ForceManager.setBoxDimensions expects exactly three box_dimensions"
             )
 
         status = lib().apo_force_manager_set_box_dimensions(
-            self.handle, float(values[0]), float(values[1]), float(values[2])
+            self.handle, box_dimensions[0], box_dimensions[1], box_dimensions[2]
         )
 
         check_status(status, "ForceManager.setBoxDimensions() failed")
 
-    # def getBoxDimensions(self):
-    #     _initialize_prototypes()
-
-    #     buffer_len = 3
-
-    #     buffer_type = ctypes.c_double * buffer_len
-    #     buffer = buffer_type()
-
-    #     status = lib().apo_force_manager_get_box_dimensions(
-    #         buffer, buffer_len, self._handle
-    #     )
-
-    #     check_status(status, "ForceManager.getBoxDimensions() failed")
-
-    #     box_dimensions = [float(buffer[0]), float(buffer[1]), float(buffer[2])]
-
-    #     return box_dimensions
+        return

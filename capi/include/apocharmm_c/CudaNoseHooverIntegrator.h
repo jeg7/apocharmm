@@ -16,6 +16,10 @@
 #include "apocharmm_c/Status.h"
 #include "apocharmm_c/Subscriber.h"
 
+#ifndef __cplusplus
+#include <stdbool.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,42 +32,35 @@ APOCHARMM_C_API apo_status apo_cuda_nose_hoover_integrator_create(
 APOCHARMM_C_API void apo_cuda_nose_hoover_integrator_destroy(
     apo_cuda_nose_hoover_integrator *integrator);
 
-/////////////////
-//// Setters ////
-////////////////////////////////////////////////////////////////////////
 APOCHARMM_C_API apo_status
 apo_cuda_nose_hoover_integrator_set_reference_temperature(
     apo_cuda_nose_hoover_integrator *integrator, const double temperature);
+
 APOCHARMM_C_API apo_status
 apo_cuda_nose_hoover_integrator_set_nose_hoover_piston_mass(
     apo_cuda_nose_hoover_integrator *integrator, const double mass);
+
 APOCHARMM_C_API apo_status apo_cuda_nose_hoover_integrator_use_old_temperature(
     apo_cuda_nose_hoover_integrator *integrator, const bool flag);
+
 APOCHARMM_C_API apo_status
 apo_cuda_nose_hoover_integrator_reset_average_temperature(
     apo_cuda_nose_hoover_integrator *integrator);
-////////////////////////////////////////////////////////////////////////
 
-/////////////////
-//// Getters ////
-////////////////////////////////////////////////////////////////////////
 APOCHARMM_C_API apo_status
 apo_cuda_nose_hoover_integrator_get_reference_temperature(
     double *temperature, const apo_cuda_nose_hoover_integrator *integrator);
+
 APOCHARMM_C_API apo_status
 apo_cuda_nose_hoover_integrator_get_average_temperature(
     double *temperature, const apo_cuda_nose_hoover_integrator *integrator);
+
 APOCHARMM_C_API apo_status
 apo_cuda_nose_hoover_integrator_get_instantaneous_temperature(
     double *temperature, const apo_cuda_nose_hoover_integrator *integrator);
-////////////////////////////////////////////////////////////////////////
 
-///////////////////
-//// Functions ////
-////////////////////////////////////////////////////////////////////////
 APOCHARMM_C_API apo_status apo_cuda_nose_hoover_integrator_as_cuda_integrator(
     apo_cuda_integrator **out, apo_cuda_nose_hoover_integrator *integrator);
-////////////////////////////////////////////////////////////////////////
 
 #ifdef __cplusplus
 }

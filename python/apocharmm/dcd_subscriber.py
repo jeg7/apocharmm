@@ -10,13 +10,14 @@
 import ctypes
 
 from ._lib import encode_path, lib
-from .errors import check_status
+from ._types import FilePath
+from .error import check_status
 from .subscriber import Subscriber
 
-_prototypes_initialized = False
+_prototypes_initialized: bool = False
 
 
-def _initialize_prototypes():
+def _initialize_prototypes() -> None:
     global _prototypes_initialized
 
     if _prototypes_initialized:
@@ -46,31 +47,33 @@ def _initialize_prototypes():
 
     _prototypes_initialized = True
 
+    return
+
 
 class DcdSubscriber(Subscriber):
     _destroy_function_name = "apo_dcd_subscriber_destroy"
 
-    def __init__(self, file_name, report_frequency=None):
+    def __init__(self, path: FilePath, report_frequency: int | None = None) -> None:
         _initialize_prototypes()
-        super().__init__
+        super().__init__()
 
         handle = ctypes.c_void_p()
-        encoded_file_name = encode_path(file_name)
+        encoded_path = encode_path(path)
 
         if report_frequency is None:
-            status = lib().apo_dcd_subscriber_create(
-                ctypes.byref(handle), encoded_file_name
-            )
+            status = lib().apo_dcd_subscriber_create(ctypes.byref(handle), encoded_path)
+            function_name = "apo_dcd_subscriber_create"
         else:
             status = lib().apo_dcd_subscriber_create_with_report_frequency(
-                ctypes.byref(handle), encoded_file_name, int(report_frequency)
+                ctypes.byref(handle), encoded_path, report_frequency
             )
+            function_name = "apo_dcd_subscriber_create_with_report_frequency"
 
         check_status(status, "DcdSubscriber construction failed")
 
         if handle.value is None:
             raise RuntimeError(
-                "apo_dcd_subscriber_create returned success but produced a NULL handle"
+                "{} returned success but produced a NULL handle".format(function_name)
             )
 
         self._handle = handle
@@ -89,8 +92,11 @@ class DcdSubscriber(Subscriber):
             )
 
         self._subscriber_handle = subscriber_handle
-        self._file_name = file_name
+        self._path: FilePath = path
 
-    def close(self):
+        return
+
+    def close(self) -> None:
         super().close()
         self._subscriber_handle = ctypes.c_void_p()
+        return

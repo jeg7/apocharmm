@@ -20,18 +20,17 @@ extern "C" {
 
 typedef struct apo_restart_subscriber apo_restart_subscriber;
 
-APOCHARMM_C_API apo_status apo_restart_subscriber_create(
-    apo_restart_subscriber **out, const char *file_name);
+APOCHARMM_C_API apo_status
+apo_restart_subscriber_create(apo_restart_subscriber **out, const char *path);
 
 APOCHARMM_C_API apo_status apo_restart_subscriber_create_with_report_frequency(
-    apo_restart_subscriber **out, const char *file_name,
-    const int report_frequency);
+    apo_restart_subscriber **out, const char *path, const int report_frequency);
 
 APOCHARMM_C_API void
 apo_restart_subscriber_destroy(apo_restart_subscriber *subscriber);
 
 // JEG260522: Returns a borrowed base-subscriber view.
-// The returned pointer is valud only while "subscriber" is alive.
+// The returned pointer is valid only while "subscriber" is alive.
 APOCHARMM_C_API apo_status apo_restart_subscriber_as_subscriber(
     apo_subscriber **out, apo_restart_subscriber *subscriber);
 

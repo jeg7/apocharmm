@@ -24,6 +24,10 @@ typedef struct apo_charmm_parameters apo_charmm_parameters;
 APOCHARMM_C_API apo_status
 apo_charmm_parameters_create(apo_charmm_parameters **out, const char *path);
 
+APOCHARMM_C_API apo_status apo_charmm_parameters_create_from_files(
+    apo_charmm_parameters **out, const char *const *paths,
+    const size_t num_paths);
+
 APOCHARMM_C_API void
 apo_charmm_parameters_destroy(apo_charmm_parameters *parameters);
 

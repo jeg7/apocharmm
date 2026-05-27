@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-typedef struct apo_cuda_integrator cuda_integrator;
+typedef struct apo_cuda_integrator apo_cuda_integrator;
 
 APOCHARMM_C_API apo_status apo_cuda_integrator_set_time_step(
     apo_cuda_integrator *integrator, const double time_step);

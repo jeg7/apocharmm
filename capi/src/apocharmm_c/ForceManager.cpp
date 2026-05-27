@@ -74,32 +74,3 @@ apo_force_manager_set_box_dimensions(apo_force_manager *force_manager,
       },
       function_name);
 }
-
-extern "C" apo_status
-apo_force_manager_get_box_dimensions(double *xyz, const size_t xyz_len,
-                                     const apo_force_manager *force_manager) {
-  const char *function_name = "apo_force_manager_get_box_dimensions";
-
-  return apocharmm_c::guard(
-      [&](void) -> apo_status {
-        APOCHARMM_C_RETURN_IF_ERROR(
-            apocharmm_c::require_pointer<double>(xyz, function_name, "xyz"));
-
-        APOCHARMM_C_RETURN_IF_ERROR(
-            apocharmm_c::require_handle_object<apo_force_manager>(
-                force_manager, function_name, "ForceManager handle"));
-
-        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_output_buffer<double>(
-            xyz, xyz_len, 3, function_name, "xyz"));
-
-        const std::vector<double> &box_dimensions =
-            force_manager->object->getBoxDimensions();
-
-        xyz[0] = box_dimensions[0];
-        xyz[1] = box_dimensions[1];
-        xyz[2] = box_dimensions[2];
-
-        return APO_STATUS_OK;
-      },
-      function_name);
-}

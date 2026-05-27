@@ -15,7 +15,7 @@
 #include <memory>
 
 extern "C" apo_status apo_dcd_subscriber_create(apo_dcd_subscriber **out,
-                                                const char *file_name) {
+                                                const char *path) {
   const char *function_name = "apo_dcd_subscriber_create";
 
   return apocharmm_c::guard(
@@ -24,11 +24,11 @@ extern "C" apo_status apo_dcd_subscriber_create(apo_dcd_subscriber **out,
             apocharmm_c::prepare_output_pointer<apo_dcd_subscriber>(
                 out, function_name, "out"));
 
-        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_c_string(
-            file_name, function_name, "file_name"));
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_c_string(path, function_name, "path"));
 
         std::unique_ptr<apo_dcd_subscriber> handle(new apo_dcd_subscriber());
-        handle->object = std::make_shared<DcdSubscriber>(file_name);
+        handle->object = std::make_shared<DcdSubscriber>(path);
         handle->base.object = handle->object;
 
         *out = handle.release();
@@ -38,10 +38,8 @@ extern "C" apo_status apo_dcd_subscriber_create(apo_dcd_subscriber **out,
       function_name);
 }
 
-extern "C" apo_status
-apo_dcd_subscriber_create_with_report_frequency(apo_dcd_subscriber **out,
-                                                const char *file_name,
-                                                const int report_frequency) {
+extern "C" apo_status apo_dcd_subscriber_create_with_report_frequency(
+    apo_dcd_subscriber **out, const char *path, const int report_frequency) {
   const char *function_name = "apo_dcd_subscriber_create_with_report_frequency";
 
   return apocharmm_c::guard(
@@ -50,12 +48,12 @@ apo_dcd_subscriber_create_with_report_frequency(apo_dcd_subscriber **out,
             apocharmm_c::prepare_output_pointer<apo_dcd_subscriber>(
                 out, function_name, "out"));
 
-        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_c_string(
-            file_name, function_name, "file_name"));
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_c_string(path, function_name, "path"));
 
         std::unique_ptr<apo_dcd_subscriber> handle(new apo_dcd_subscriber());
         handle->object =
-            std::make_shared<DcdSubscriber>(file_name, report_frequency);
+            std::make_shared<DcdSubscriber>(path, report_frequency);
         handle->base.object = handle->object;
 
         *out = handle.release();

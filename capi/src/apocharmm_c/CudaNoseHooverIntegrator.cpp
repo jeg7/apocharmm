@@ -45,9 +45,6 @@ extern "C" void apo_cuda_nose_hoover_integrator_destroy(
   return;
 }
 
-/////////////////
-//// Setters ////
-////////////////////////////////////////////////////////////////////////
 extern "C" apo_status apo_cuda_nose_hoover_integrator_set_reference_temperature(
     apo_cuda_nose_hoover_integrator *integrator, const double temperature) {
   const char *function_name =
@@ -120,11 +117,7 @@ extern "C" apo_status apo_cuda_nose_hoover_integrator_reset_average_temperature(
       },
       function_name);
 }
-////////////////////////////////////////////////////////////////////////
 
-/////////////////
-//// Getters ////
-////////////////////////////////////////////////////////////////////////
 extern "C" apo_status apo_cuda_nose_hoover_integrator_get_reference_temperature(
     double *temperature, const apo_cuda_nose_hoover_integrator *integrator) {
   const char *function_name =
@@ -193,11 +186,7 @@ apo_cuda_nose_hoover_integrator_get_instantaneous_temperature(
       },
       function_name);
 }
-////////////////////////////////////////////////////////////////////////
 
-///////////////////
-//// Functions ////
-////////////////////////////////////////////////////////////////////////
 extern "C" apo_status apo_cuda_nose_hoover_integrator_as_cuda_integrator(
     apo_cuda_integrator **out, apo_cuda_nose_hoover_integrator *integrator) {
   const char *function_name =
@@ -219,4 +208,3 @@ extern "C" apo_status apo_cuda_nose_hoover_integrator_as_cuda_integrator(
       },
       function_name);
 }
-////////////////////////////////////////////////////////////////////////

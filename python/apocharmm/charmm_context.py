@@ -10,13 +10,16 @@
 import ctypes
 
 from ._base import _ApoObject
-from ._lib import encode_path, lib
-from .errors import check_status
+from ._lib import lib
+from .error import check_status
 
-_prototypes_initialized = False
+from .charmm_crd import CharmmCrd
+from .force_manager import ForceManager
+
+_prototypes_initialized: bool = False
 
 
-def _initialize_prototypes():
+def _initialize_prototypes() -> None:
     global _prototypes_initialized
 
     if _prototypes_initialized:
@@ -31,9 +34,6 @@ def _initialize_prototypes():
     lib().apo_charmm_context_destroy.argtypes = [ctypes.c_void_p]
     lib().apo_charmm_context_destroy.restype = None
 
-    #################
-    #### Setters ####
-    #######################################################################
     lib().apo_charmm_context_set_coordinates.argtypes = [
         ctypes.c_void_p,
         ctypes.c_void_p,
@@ -51,16 +51,7 @@ def _initialize_prototypes():
         ctypes.c_bool,
     ]
     lib().apo_charmm_context_use_holonomic_constraints.restype = ctypes.c_int
-    #######################################################################
 
-    #################
-    #### Getters ####
-    #######################################################################
-    #######################################################################
-
-    ###################
-    #### Functions ####
-    #######################################################################
     lib().apo_charmm_context_assign_velocities_at_temperature.argtypes = [
         ctypes.c_void_p,
         ctypes.c_double,
@@ -72,15 +63,16 @@ def _initialize_prototypes():
         ctypes.c_void_p,
     ]
     lib().apo_charmm_context_compute_temperature.restype = ctypes.c_int
-    #######################################################################
 
     _prototypes_initialized = True
+
+    return
 
 
 class CharmmContext(_ApoObject):
     _destroy_function_name = "apo_charmm_context_destroy"
 
-    def __init__(self, force_manager):
+    def __init__(self, force_manager: ForceManager) -> None:
         _initialize_prototypes()
         super().__init__()
 
@@ -100,17 +92,18 @@ class CharmmContext(_ApoObject):
         self._handle = handle
         self._force_manager = force_manager
 
-    #################
-    #### Setters ####
-    #######################################################################
-    def setCoordinates(self, crd):
+        return
+
+    def setCoordinates(self, crd: CharmmCrd) -> None:
         _initialize_prototypes()
 
         status = lib().apo_charmm_context_set_coordinates(self.handle, crd.handle)
 
         check_status(status, "CharmmContext.setCoordinates(crd) failed")
 
-    def setRandomSeedForVelocities(self, seed):
+        return
+
+    def setRandomSeedForVelocities(self, seed: int) -> None:
         _initialize_prototypes()
 
         status = lib().apo_charmm_context_set_random_seed_for_velocities(
@@ -119,7 +112,9 @@ class CharmmContext(_ApoObject):
 
         check_status(status, "CharmmContext.setRandomSeedForVelocities(seed) failed")
 
-    def useHolonomicConstraints(self, use_holonomic_constraints):
+        return
+
+    def useHolonomicConstraints(self, use_holonomic_constraints: bool) -> None:
         _initialize_prototypes()
 
         status = lib().apo_charmm_context_use_holonomic_constraints(
@@ -131,17 +126,9 @@ class CharmmContext(_ApoObject):
             "CharmmContext.useHolonomicConstraints(useHolonomicConstraints) failed",
         )
 
-    #######################################################################
+        return
 
-    #################
-    #### Getters ####
-    #######################################################################
-    #######################################################################
-
-    ###################
-    #### Functions ####
-    #######################################################################
-    def assignVelocitiesAtTemperature(self, temperature):
+    def assignVelocitiesAtTemperature(self, temperature: float) -> None:
         _initialize_prototypes()
 
         status = lib().apo_charmm_context_assign_velocities_at_temperature(
@@ -152,16 +139,17 @@ class CharmmContext(_ApoObject):
             status, "CharmmContext.assignVelocitiesAtTemperature(temperature) failed"
         )
 
-    def computeTemperature(self):
+        return
+
+    def computeTemperature(self) -> float:
         _initialize_prototypes()
 
-        buffer_type = ctypes.c_double * 1
-        buffer = buffer_type()
+        temperature = ctypes.c_double()
 
-        status = lib().apo_charmm_context_compute_temperature(buffer, self.handle)
+        status = lib().apo_charmm_context_compute_temperature(
+            ctypes.byref(temperature), self.handle
+        )
 
         check_status(status, "CharmmContext.computeTemperature() failed")
 
-        return float(buffer[0])
-
-    #######################################################################
+        return float(temperature.value)

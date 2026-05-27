@@ -465,7 +465,7 @@ extern "C" apo_status apo_charmm_psf_get_total_mass(double *total_mass,
             apocharmm_c::require_handle_object<apo_charmm_psf>(
                 psf, function_name, "CharmmPsf"));
 
-        *total_mass = psf->object->getNetCharge();
+        *total_mass = psf->object->getTotalMass();
 
         return APO_STATUS_OK;
       },

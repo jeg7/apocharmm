@@ -7,7 +7,7 @@
 #
 # ENDLICENSE
 
-from .errors import ApoCharmmError
+from .error import ApoCharmmError
 
 from .charmm_context import CharmmContext
 from .force_manager import ForceManager
@@ -23,7 +23,7 @@ from .subscriber import Subscriber
 from .dcd_subscriber import DcdSubscriber
 from .restart_subscriber import RestartSubscriber
 
-__all__ = [
+__all__: list[str] = [
     # Utility
     "ApoCharmmError",
     # Manager objects

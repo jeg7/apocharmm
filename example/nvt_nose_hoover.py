@@ -13,7 +13,6 @@ import sys
 
 def main(argc, argv):
     # Input variables
-    test_path = "test/data/"
     box_dims = [50.0, 50.0, 50.0]
     random_seed = 314159
     temperature = 300.0
@@ -22,11 +21,11 @@ def main(argc, argv):
     time_step = 0.002
 
     # Load CHARMM force field
-    prm = apo.CharmmParameters(test_path + "toppar_water_ions.str")
+    prm = apo.CharmmParameters(["test/data/toppar_water_ions.str"])
 
     # Load PSF and coordinates
-    psf = apo.CharmmPsf(test_path + "waterbox.psf")
-    crd = apo.CharmmCrd(test_path + "waterbox.crd")
+    psf = apo.CharmmPsf("test/data/waterbox.psf")
+    crd = apo.CharmmCrd("test/data/waterbox.crd")
 
     # Setup the ForceManager
     fm = apo.ForceManager(psf, prm)
