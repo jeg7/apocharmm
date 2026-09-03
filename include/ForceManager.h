@@ -610,9 +610,9 @@ public:
   /**
    * @brief Sets the periodic boundary condition.
    *
-   * @param[in] _pbc Declared @ref PBC value to retain.
+   * @param[in] pbc Declared @ref PBC value to retain.
    *
-   * @post `getPeriodicBoundaryCondition()` returns `_pbc`.
+   * @post `getPeriodicBoundaryCondition()` returns `pbc`.
    * @post `isInitialized()` returns `false`.
    *
    * @warning The native C++ setter does not validate values produced by casting
