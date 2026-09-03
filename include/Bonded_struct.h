@@ -129,7 +129,8 @@ struct dihelist_t {
 };
 
 struct cmaplist_t {
-  int i1, j1, k1, l1, i2, j2, k2, l2, itype, ishift1, ishift2, ishift3;
+  int i1, j1, k1, l1, i2, j2, k2, l2, itype;
+  int ishift1, ishift2, ishift3, ishift4, ishift5, ishift6;
 };
 
 struct xx14list_t {

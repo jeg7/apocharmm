@@ -18,6 +18,8 @@ set(SOURCES_UNITTESTS_TESTS
   unittest-charmmCrd.cpp
   unittest-atomSelection.cpp
 
+  unittest-cmap.cpp
+
   # Subscriber tests
   unittest-subscriber.cpp
   unittest-dcdSubscriber.cpp

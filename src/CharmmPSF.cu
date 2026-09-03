@@ -819,21 +819,21 @@ void CharmmPSF::readCharmmPSF(const std::filesystem::path &filePath) {
 
     CrossTerm &crossTerm = m_CrossTerms[i];
     crossTerm.iatom1 = ParsePsfAtomNumber(tokens[0], "CROSS-TERM", fileName,
-                                          lineNumber, m_NumAtoms);
+                                          lineNumber, m_NumAtoms) - 1;
     crossTerm.jatom1 = ParsePsfAtomNumber(tokens[1], "CROSS-TERM", fileName,
-                                          lineNumber, m_NumAtoms);
+                                          lineNumber, m_NumAtoms) - 1;
     crossTerm.katom1 = ParsePsfAtomNumber(tokens[2], "CROSS-TERM", fileName,
-                                          lineNumber, m_NumAtoms);
+                                          lineNumber, m_NumAtoms) - 1;
     crossTerm.latom1 = ParsePsfAtomNumber(tokens[3], "CROSS-TERM", fileName,
-                                          lineNumber, m_NumAtoms);
+                                          lineNumber, m_NumAtoms) - 1;
     crossTerm.iatom2 = ParsePsfAtomNumber(tokens[4], "CROSS-TERM", fileName,
-                                          lineNumber, m_NumAtoms);
+                                          lineNumber, m_NumAtoms) - 1;
     crossTerm.jatom2 = ParsePsfAtomNumber(tokens[5], "CROSS-TERM", fileName,
-                                          lineNumber, m_NumAtoms);
+                                          lineNumber, m_NumAtoms) - 1;
     crossTerm.katom2 = ParsePsfAtomNumber(tokens[6], "CROSS-TERM", fileName,
-                                          lineNumber, m_NumAtoms);
+                                          lineNumber, m_NumAtoms) - 1;
     crossTerm.latom2 = ParsePsfAtomNumber(tokens[7], "CROSS-TERM", fileName,
-                                          lineNumber, m_NumAtoms);
+                                          lineNumber, m_NumAtoms) - 1;
   }
 
   return;
