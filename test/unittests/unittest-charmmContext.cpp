@@ -571,3 +571,101 @@ TEST_CASE("CharmmContextKineticEnergyReductionIsDeterministic") {
     checkKineticEnergy(131073);
   }
 }
+
+TEST_CASE("CharmmContextParameterReplacementRebuildsAffectedForceBackends") {
+  auto originalParameters = std::make_shared<CharmmParameters>(
+      apo_test::GetTopparDir() / "toppar_water_ions.str");
+  auto replacementParameters =
+      std::make_shared<CharmmParameters>(*originalParameters);
+
+  auto psf =
+      std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
+  auto crd =
+      std::make_shared<CharmmCrd>(apo_test::GetDataDir() / "nacl_pair.cor");
+
+  auto forceManager = std::make_shared<ForceManager>(psf, originalParameters);
+  forceManager->setBoxDimensions(BOX_DIMENSIONS);
+
+  auto context = std::make_shared<CharmmContext>(forceManager);
+  context->setCoordinates(crd);
+
+  struct ForceEvaluation {
+    std::vector<double> forces;
+    std::map<std::string, double> energyComponents;
+  };
+
+  const auto captureForceEvaluation =
+      [](const std::shared_ptr<CharmmContext> &testContext) -> ForceEvaluation {
+    testContext->calculatePotentialEnergy(false, false);
+
+    const std::shared_ptr<Force<double>> force = testContext->getForces();
+    REQUIRE(force != nullptr);
+
+    const std::shared_ptr<ForceManager> testForceManager =
+        testContext->getForceManager();
+    REQUIRE(testForceManager != nullptr);
+
+    const std::size_t numAtoms =
+        static_cast<std::size_t>(testContext->getNumAtoms());
+
+    ForceEvaluation evaluation;
+    evaluation.forces.resize(3 * numAtoms);
+
+    force->getXYZ(evaluation.forces.data(), evaluation.forces.data() + numAtoms,
+                  evaluation.forces.data() + 2 * numAtoms);
+
+    evaluation.energyComponents = testForceManager->getEnergyComponents();
+
+    return evaluation;
+  };
+
+  const ForceEvaluation expected = captureForceEvaluation(context);
+
+  const std::shared_ptr<cudaStream_t> bondedStream =
+      forceManager->getBondedStream();
+  const std::shared_ptr<cudaStream_t> reciprocalStream =
+      forceManager->getReciprocalStream();
+  const std::shared_ptr<cudaStream_t> directStream =
+      forceManager->getDirectStream();
+
+  const std::shared_ptr<Force<long long int>> bondedForceValues =
+      forceManager->getBondedForcevalues();
+  const std::shared_ptr<Force<long long int>> reciprocalForceValues =
+      forceManager->getReciprocalForcevalues();
+  const std::shared_ptr<Force<long long int>> directForceValues =
+      forceManager->getDirectForcevalues();
+
+  context->setPrm(replacementParameters);
+
+  // Parameter replacement defers backend reconstruction but does not make the
+  // configured manager unavailable.
+  CHECK(forceManager->isInitialized());
+  CHECK(context->getPrm() == replacementParameters);
+  CHECK(forceManager->getPrm() == replacementParameters);
+
+  const ForceEvaluation observed = captureForceEvaluation(context);
+
+  apo_test::CheckVectorsClose<double>("reconfigured force values",
+                                      observed.forces, expected.forces, 1.0e-6);
+
+  REQUIRE(observed.energyComponents.size() == expected.energyComponents.size());
+
+  for (const auto &entry : expected.energyComponents) {
+    INFO("Energy component: " << entry.first);
+
+    REQUIRE(observed.energyComponents.count(entry.first) == 1);
+
+    CHECK(observed.energyComponents.at(entry.first) ==
+          Approx(entry.second).margin(1.0e-6));
+  }
+
+  // Backend objects were reconstructed, but manager-owned component resources
+  // must retain their identities.
+  CHECK(forceManager->getBondedStream() == bondedStream);
+  CHECK(forceManager->getReciprocalStream() == reciprocalStream);
+  CHECK(forceManager->getDirectStream() == directStream);
+
+  CHECK(forceManager->getBondedForcevalues() == bondedForceValues);
+  CHECK(forceManager->getReciprocalForcevalues() == reciprocalForceValues);
+  CHECK(forceManager->getDirectForcevalues() == directForceValues);
+}

@@ -65,45 +65,84 @@ void ForceManagerComposite::addForceManager(std::shared_ptr<ForceManager> fm) {
 }
 
 void ForceManagerComposite::setBoxDimensions(const std::vector<double> &size) {
-  for (auto child : m_Children)
+  ForceManager::setBoxDimensions(size);
+
+  for (const auto &child : m_Children)
     child->setBoxDimensions(size);
+
   return;
 }
 
 void ForceManagerComposite::setKappa(const float kappa) {
-  for (auto child : m_Children)
+  ForceManager::setKappa(kappa);
+
+  for (const auto &child : m_Children)
     child->setKappa(kappa);
+
   return;
 }
 
 void ForceManagerComposite::setCutoff(const float cutoff) {
-  for (auto child : m_Children)
+  ForceManager::setCutoff(cutoff);
+
+  for (const auto &child : m_Children)
     child->setCutoff(cutoff);
+
   return;
 }
 
 void ForceManagerComposite::setCtonnb(const float ctonnb) {
-  for (auto child : m_Children)
+  ForceManager::setCtonnb(ctonnb);
+
+  for (const auto &child : m_Children)
     child->setCtonnb(ctonnb);
+
   return;
 }
 
 void ForceManagerComposite::setCtofnb(const float ctofnb) {
-  for (auto child : m_Children)
+  ForceManager::setCtofnb(ctofnb);
+
+  for (const auto &child : m_Children)
     child->setCtofnb(ctofnb);
+
   return;
 }
 
 void ForceManagerComposite::setFFTGrid(const int nfftx, const int nffty,
                                        const int nfftz) {
-  for (auto child : m_Children)
+  ForceManager::setFFTGrid(nfftx, nffty, nfftz);
+
+  for (const auto &child : m_Children)
     child->setFFTGrid(nfftx, nffty, nfftz);
+
   return;
 }
 
 void ForceManagerComposite::setPmeSplineOrder(const int pmeSplineOrder) {
-  for (auto child : m_Children)
+  ForceManager::setPmeSplineOrder(pmeSplineOrder);
+
+  for (const auto &child : m_Children)
     child->setPmeSplineOrder(pmeSplineOrder);
+
+  return;
+}
+
+void ForceManagerComposite::setPeriodicBoundaryCondition(const PBC pbc) {
+  ForceManager::setPeriodicBoundaryCondition(pbc);
+
+  for (const auto &child : m_Children)
+    child->setPeriodicBoundaryCondition(pbc);
+
+  return;
+}
+
+void ForceManagerComposite::setVdwType(const int vdwType) {
+  ForceManager::setVdwType(vdwType);
+
+  for (const auto &child : m_Children)
+    child->setVdwType(vdwType);
+
   return;
 }
 

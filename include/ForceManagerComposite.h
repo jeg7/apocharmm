@@ -88,6 +88,9 @@ public:
 
   void setPmeSplineOrder(const int pmeSplineOrder) override;
 
+  void setPeriodicBoundaryCondition(const PBC pbc) override;
+  void setVdwType(const int vdwType) override;
+
 public:
   /**
    * @brief Returns CharmmPSF of the first child

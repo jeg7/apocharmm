@@ -337,17 +337,6 @@ public:
    */
   ForceManager(const ForceManager &other);
 
-  // /** @brief WIP Tentative "copy-constructor-from-a-pointer". Will require
-  // some
-  //  * testing.
-  //  *
-  //  * Given a std::shared_ptr<ForceManager> object, generates a *deep* copy of
-  //  * the fm pointed at. Two parts :
-  //  *  - copy all attributes
-  //  *  - do any "initialization" work done by a standard constructor
-  //  */
-  // ForceManager(std::shared_ptr<ForceManager> fmIn);
-
   /**
    * @brief Destroys the manager and releases its owned native resources.
    *
@@ -630,7 +619,7 @@ public:
    * an arbitrary integer to `PBC`.
    * @warning Existing CUDA backend state is not deallocated by this call.
    */
-  void setPeriodicBoundaryCondition(const PBC _pbc);
+  virtual void setPeriodicBoundaryCondition(const PBC pbc);
 
   /**
    * @brief Sets the native van der Waals model code.
@@ -1553,6 +1542,40 @@ protected:
 
 private:
   /**
+   * @brief Constructs or reconstructs the bonded-force backend.
+   *
+   * The manager-owned CUDA stream, force storage, and energy-virial registry
+   * must already exist and remain unchanged.
+   */
+  void rebuildBondedForce(void);
+
+  /**
+   * @brief Constructs or reconstructs the reciprocal-space backend.
+   *
+   * The manager-owned CUDA stream, force storage, and energy-virial registry
+   * must already exist and remain unchanged.
+   */
+  void rebuildReciprocalForce(void);
+
+  /**
+   * @brief Constructs or reconstructs the direct-space backend.
+   *
+   * The manager-owned CUDA stream, force storage, and energy-virial registry
+   * must already exist and remain unchanged.
+   */
+  void rebuildDirectForce(void);
+
+  /**
+   * @brief Reconstructs every dirty built-in backend before force evaluation.
+   *
+   * When the direct backend is reconstructed, its neighbor list is also built
+   * from `xyzq` before this function returns.
+   *
+   * @param[in] xyzq Current device-resident coordinate-charge array.
+   */
+  void rebuildDirtyForces(const float4 *xyzq);
+
+  /**
    * @brief Requires successful manager initialization.
    *
    * @throws ApoCharmmError With code
@@ -1590,6 +1613,15 @@ protected:
    * PBC setters without deallocating existing resources.
    */
   bool m_IsInitialized;
+
+  /** Whether the bonded-force backend must be reconstructed before use. */
+  bool m_BondedForceDirty;
+
+  /** Whether the reciprocal-space backend must be reconstructed before use. */
+  bool m_ReciprocalForceDirty;
+
+  /** Whether the direct-space backend must be reconstructed before use. */
+  bool m_DirectForceDirty;
 
   /**
    * Host/device mirrored SHAKE atom groups. Each `int4` stores one heavy atom

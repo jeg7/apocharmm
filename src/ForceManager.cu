@@ -18,12 +18,17 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <utility>
 
 ForceManager::ForceManager(void) {
   m_Psf = nullptr;
   m_Prm = nullptr;
 
   m_IsInitialized = false;
+
+  m_BondedForceDirty = false;
+  m_ReciprocalForceDirty = false;
+  m_DirectForceDirty = false;
 
   m_BondedStream = nullptr;
   m_ReciprocalStream = nullptr;
@@ -146,8 +151,11 @@ void ForceManager::setPrm(std::shared_ptr<CharmmParameters> prm) {
                     "CharmmParameters must not be null");
 
   m_Prm = prm;
-  // If changing the CharmmPSF, set "initialized" flag to FALSE
-  m_IsInitialized = false;
+
+  if (m_IsInitialized) {
+    m_BondedForceDirty = true;
+    m_DirectForceDirty = true;
+  }
 
   return;
 }
@@ -160,16 +168,12 @@ void ForceManager::addPsf(const std::filesystem::path &psfPath) {
 }
 
 void ForceManager::addPrm(const std::filesystem::path &prmPath) {
-  m_Prm = std::make_unique<CharmmParameters>(prmPath);
-  // If changing the CharmmParameters, set "initialized" flag to FALSE
-  m_IsInitialized = false;
+  this->setPrm(std::make_shared<CharmmParameters>(prmPath));
   return;
 }
 
 void ForceManager::addPrm(const std::vector<std::filesystem::path> &prmList) {
-  m_Prm = std::make_unique<CharmmParameters>(prmList);
-  // If changing the CharmmParameters, set "initialized" flag to FALSE
-  m_IsInitialized = false;
+  this->setPrm(std::make_shared<CharmmParameters>(prmList));
   return;
 }
 
@@ -202,7 +206,15 @@ void ForceManager::setKappa(const float kappa) {
                     "Kappa must be non-negative; observed " +
                         std::to_string(kappa));
 
+  if (m_Kappa == kappa)
+    return;
+
   m_Kappa = kappa;
+
+  if (m_IsInitialized) {
+    m_ReciprocalForceDirty = true;
+    m_DirectForceDirty = true;
+  }
 
   return;
 }
@@ -216,7 +228,13 @@ void ForceManager::setCutoff(const float cutoff) {
                     "Cutoff must be positive; observed " +
                         std::to_string(cutoff));
 
+  if (m_Cutoff == cutoff)
+    return;
+
   m_Cutoff = cutoff;
+
+  if (m_IsInitialized)
+    m_DirectForceDirty = true;
 
   return;
 }
@@ -230,7 +248,13 @@ void ForceManager::setCtonnb(const float ctonnb) {
                     "Ctonnb must be positive; observed " +
                         std::to_string(ctonnb));
 
+  if (m_Ctonnb == ctonnb)
+    return;
+
   m_Ctonnb = ctonnb;
+
+  if (m_IsInitialized)
+    m_DirectForceDirty = true;
 
   return;
 }
@@ -244,7 +268,13 @@ void ForceManager::setCtofnb(const float ctofnb) {
                     "Ctofnb must be positive; observed " +
                         std::to_string(ctofnb));
 
+  if (m_Ctofnb == ctofnb)
+    return;
+
   m_Ctofnb = ctofnb;
+
+  if (m_IsInitialized)
+    m_DirectForceDirty = true;
 
   return;
 }
@@ -261,9 +291,15 @@ void ForceManager::setFFTGrid(const int nfftx, const int nffty,
                     "NFFTZ must be positive; observed " +
                         std::to_string(nfftz));
 
+  if ((m_NfftX == nfftx) && (m_NfftY == nffty) && (m_NfftZ == nfftz))
+    return;
+
   m_NfftX = nfftx;
   m_NfftY = nffty;
   m_NfftZ = nfftz;
+
+  if (m_IsInitialized)
+    m_ReciprocalForceDirty = true;
 
   return;
 }
@@ -273,15 +309,28 @@ void ForceManager::setPmeSplineOrder(const int pmeSplineOrder) {
                     "PME spline order must be positive; observed " +
                         std::to_string(pmeSplineOrder));
 
+  if (m_PmeSplineOrder == pmeSplineOrder)
+    return;
+
   m_PmeSplineOrder = pmeSplineOrder;
+
+  if (m_IsInitialized)
+    m_ReciprocalForceDirty = true;
 
   return;
 }
 
 void ForceManager::setPeriodicBoundaryCondition(const PBC pbc) {
+  if (m_Pbc == pbc)
+    return;
+
   m_Pbc = pbc;
-  // If changing the PBC, set "initialized" flag to FALSE
-  m_IsInitialized = false;
+
+  if (m_IsInitialized) {
+    m_ReciprocalForceDirty = true;
+    m_DirectForceDirty = true;
+  }
+
   return;
 }
 
@@ -291,7 +340,13 @@ void ForceManager::setVdwType(const int vdwType) {
                     "Van der Waals type must be in [1, 6]; observed " +
                         std::to_string(vdwType));
 
+  if (m_VdwType == vdwType)
+    return;
+
   m_VdwType = vdwType;
+
+  if (m_IsInitialized)
+    m_DirectForceDirty = true;
 
   return;
 }
@@ -592,19 +647,10 @@ void ForceManager::initialize(void) {
   m_BondedStream = std::make_shared<cudaStream_t>();
   cudaCheck(cudaStreamCreate(m_BondedStream.get()));
 
-  auto bondedParamsAndList = m_Prm->getBondedParamsAndLists(m_Psf);
   m_BondedForceValues = std::make_shared<Force<long long int>>();
   m_BondedForceValues->realloc(numAtoms, 1.5f);
 
-  m_BondedForcePtr = std::make_unique<CudaBondedForce<long long int, float>>(
-      m_BondedEnergyVirial, "bond", "ureyb", "angle", "dihe", "imdihe", "cmap");
-  m_BondedForcePtr->setup_list(bondedParamsAndList.listsSize,
-                               bondedParamsAndList.listVal, *m_BondedStream);
-  m_BondedForcePtr->setup_coef(bondedParamsAndList.paramsSize,
-                               bondedParamsAndList.paramsVal);
-  m_BondedForcePtr->setBoxDimensions(m_BoxDimensions);
-  m_BondedForcePtr->setForce(m_BondedForceValues);
-  m_BondedForcePtr->setStream(m_BondedStream);
+  this->rebuildBondedForce();
 
   // Reciprocal
   m_ReciprocalStream = std::make_shared<cudaStream_t>();
@@ -613,16 +659,7 @@ void ForceManager::initialize(void) {
   m_ReciprocalForceValues = std::make_shared<Force<long long int>>();
   m_ReciprocalForceValues->realloc(numAtoms, 1.5f);
 
-  m_ReciprocalForcePtr =
-      std::make_unique<CudaPMEReciprocalForce>(m_ReciprocalEnergyVirial);
-  m_ReciprocalForcePtr->setPBC(m_Pbc);
-  m_ReciprocalForcePtr->setParameters(m_NfftX, m_NfftY, m_NfftZ,
-                                      m_PmeSplineOrder, m_Kappa,
-                                      *m_ReciprocalStream);
-  m_ReciprocalForcePtr->setNumAtoms(numAtoms);
-  m_ReciprocalForcePtr->setBoxDimensions(m_BoxDimensions);
-  m_ReciprocalForcePtr->setForce(m_ReciprocalForceValues);
-  m_ReciprocalForcePtr->setStream(m_ReciprocalStream);
+  this->rebuildReciprocalForce();
 
   // Direct
   m_DirectStream = std::make_shared<cudaStream_t>();
@@ -631,37 +668,7 @@ void ForceManager::initialize(void) {
   m_DirectForceValues = std::make_shared<Force<long long int>>();
   m_DirectForceValues->realloc(numAtoms, 1.5f);
 
-  auto iblo14 = m_Psf->getIblo14();
-  auto inb14 = m_Psf->getInb14();
-  auto vdwParamsAndTypes = m_Prm->getVdwParamsAndTypes(m_Psf);
-  auto inExLists = m_Psf->getInclusionExclusionLists();
-
-  m_DirectForcePtr = std::make_unique<CudaPMEDirectForce<long long int, float>>(
-      m_DirectEnergyVirial, "vdw", "elec", "ewex");
-  const bool q_p21 = (m_Pbc == PBC::P21);
-  // TODO this seems to do the job twice ?
-  // 1. "directForcePtr->setup(boxx, kappa, ctofnb, (...) );"
-  // 2. "directForcePtr->setBoxDimensions({boxx...});"
-
-  // JEG260626: ctonnb and ctofnb were switched?
-  // m_DirectForcePtr->setup(m_BoxX, m_BoxY, m_BoxZ, m_Kappa, m_Ctofnb,
-  // m_Ctonnb,
-  //                         1.0, m_VdwType, EWALD, q_p21);
-  m_DirectForcePtr->setup(m_BoxX, m_BoxY, m_BoxZ, m_Kappa, m_Ctonnb, m_Ctofnb,
-                          1.0, m_VdwType, EWALD, q_p21);
-  m_DirectForcePtr->setBoxDimensions(m_BoxDimensions);
-  m_DirectForcePtr->setStream(m_DirectStream);
-  m_DirectForcePtr->setForce(m_DirectForceValues);
-  m_DirectForcePtr->setNumAtoms(numAtoms);
-  m_DirectForcePtr->setCutoff(m_Cutoff);
-  m_DirectForcePtr->setupSorted(numAtoms);
-  m_DirectForcePtr->setupTopologicalExclusions(numAtoms, iblo14, inb14);
-  m_DirectForcePtr->setupNeighborList(numAtoms);
-  m_DirectForcePtr->set_vdwparam(vdwParamsAndTypes.vdwParams);
-  m_DirectForcePtr->set_vdwparam14(vdwParamsAndTypes.vdw14Params);
-  m_DirectForcePtr->set_vdwtype(vdwParamsAndTypes.vdwTypes);
-  m_DirectForcePtr->set_vdwtype14(vdwParamsAndTypes.vdw14Types);
-  m_DirectForcePtr->set_14_list(inExLists.sizes, inExLists.in14_ex14);
+  this->rebuildDirectForce();
 
   // Initialize any forces that are already subscribed
   for (ForceView &forceView : m_ForceViews) {
@@ -679,7 +686,9 @@ void ForceManager::initialize(void) {
   cudaCheck(cudaDeviceSynchronize());
   m_TotalPotentialEnergy.resize(1); // doing it for diffave and difflc; for Now
 
-  this->initializeHolonomicConstraintsVariables();
+  m_BondedForceDirty = false;
+  m_ReciprocalForceDirty = false;
+  m_DirectForceDirty = false;
 
   m_IsInitialized = true;
 
@@ -690,7 +699,16 @@ void ForceManager::resetNeighborList(const float4 *xyzq) {
   // JEG260802: Did not add error checking here because this function is called
   // frequently. i.e. Did not want to slow dynamics down. Users should not be
   // calling this function themselves.
+
+  if (m_DirectForceDirty) {
+    // JEG260903: Reconstructing the direct backend also builds its new neighbor
+    // list.
+    this->rebuildDirtyForces(xyzq);
+    return;
+  }
+
   m_DirectForcePtr->resetNeighborList(xyzq, m_Psf->getNumAtoms());
+
   return;
 }
 
@@ -738,6 +756,12 @@ void ForceManager::calcForcePart1(const bool reset, const bool calcEnergy,
 
 void ForceManager::calcForcePart2(const float4 *xyzq, const bool calcEnergy,
                                   const bool calcVirial) {
+  // JEG260902: This is added here so the neighbor list can be rebuilt. It
+  // should not normally be called during dynamics unless you're doing something
+  // absolutely wild.
+  if (m_BondedForceDirty || m_ReciprocalForceDirty || m_DirectForceDirty)
+    this->rebuildDirtyForces(xyzq);
+
   // JEG260802: Did not add error checking here because this function is called
   // frequently. i.e. Did not want to slow dynamics down. Users should not be
   // calling this function themselves.
@@ -1177,6 +1201,154 @@ void ForceManager::checkBoxDimensions(
         "Box dimension at index " + std::to_string(i) +
             " must be positive; observed " + std::to_string(boxDimensions[i]));
   }
+
+  return;
+}
+
+void ForceManager::rebuildBondedForce(void) {
+  auto bondedParamsAndList = m_Prm->getBondedParamsAndLists(m_Psf);
+
+  if (m_BondedForcePtr != nullptr)
+    cudaCheck(cudaStreamSynchronize(*m_BondedStream));
+
+  m_BondedForcePtr.reset();
+
+  auto rebuiltForce = std::make_unique<CudaBondedForce<long long int, float>>(
+      m_BondedEnergyVirial, "bond", "ureyb", "angle", "dihe", "imdihe", "cmap");
+
+  rebuiltForce->setup_list(bondedParamsAndList.listsSize,
+                           bondedParamsAndList.listVal, *m_BondedStream);
+  rebuiltForce->setup_coef(bondedParamsAndList.paramsSize,
+                           bondedParamsAndList.paramsVal);
+  rebuiltForce->setBoxDimensions(m_BoxDimensions);
+  rebuiltForce->setForce(m_BondedForceValues);
+  rebuiltForce->setStream(m_BondedStream);
+
+  m_BondedForcePtr = std::move(rebuiltForce);
+
+  // SHAKE equilibrium bond lengths also depend on CharmmParameters
+  this->initializeHolonomicConstraintsVariables();
+
+  return;
+}
+
+void ForceManager::rebuildReciprocalForce(void) {
+  if (m_ReciprocalForcePtr != nullptr)
+    cudaCheck(cudaStreamSynchronize(*m_ReciprocalStream));
+
+  // Destroy the old PME object before configuring the new one. This avoids
+  // overlapping ownership of legacy reciprocal-grid texture state.
+  m_ReciprocalForcePtr.reset();
+
+  auto rebuiltForce =
+      std::make_unique<CudaPMEReciprocalForce>(m_ReciprocalEnergyVirial);
+
+  rebuiltForce->setPBC(m_Pbc);
+  rebuiltForce->setParameters(m_NfftX, m_NfftY, m_NfftZ, m_PmeSplineOrder,
+                              m_Kappa, *m_ReciprocalStream);
+  rebuiltForce->setNumAtoms(m_Psf->getNumAtoms());
+  rebuiltForce->setBoxDimensions(m_BoxDimensions);
+  rebuiltForce->setForce(m_ReciprocalForceValues);
+  rebuiltForce->setStream(m_ReciprocalStream);
+
+  m_ReciprocalForcePtr = std::move(rebuiltForce);
+
+  return;
+}
+
+void ForceManager::rebuildDirectForce(void) {
+  const bool calculateVdw =
+      (m_DirectForcePtr == nullptr) ? true : m_DirectForcePtr->get_calc_vdw();
+
+  const bool calculateElec =
+      (m_DirectForcePtr == nullptr) ? true : m_DirectForcePtr->get_calc_elec();
+
+  auto iblo14 = m_Psf->getIblo14();
+  auto inb14 = m_Psf->getInb14();
+  auto vdwParamsAndTypes = m_Prm->getVdwParamsAndTypes(m_Psf);
+  auto inExLists = m_Psf->getInclusionExclusionLists();
+
+  if (m_DirectForcePtr != nullptr)
+    cudaCheck(cudaStreamSynchronize(*m_DirectStream));
+
+  // This must precede construction of the replacement. The direct-force
+  // constructor requires its legacy texture references to be unbound.
+  m_DirectForcePtr.reset();
+
+  auto rebuiltForce =
+      std::make_unique<CudaPMEDirectForce<long long int, float>>(
+          m_DirectEnergyVirial, "vdw", "elec", "ewex");
+
+  const bool qP21 = (m_Pbc == PBC::P21);
+
+  // TODO this seems to do the job twice ?
+  // 1. "directForcePtr->setup(boxx, kappa, ctofnb, (...) );"
+  // 2. "directForcePtr->setBoxDimensions({boxx...});"
+
+  // JEG260626: ctonnb and ctofnb were switched?
+  // m_DirectForcePtr->setup(m_BoxX, m_BoxY, m_BoxZ, m_Kappa, m_Ctofnb,
+  // m_Ctonnb,
+  //                         1.0, m_VdwType, EWALD, q_p21);
+  rebuiltForce->setup(m_BoxX, m_BoxY, m_BoxZ, m_Kappa, m_Ctonnb, m_Ctofnb, 1.0,
+                      m_VdwType, EWALD, qP21);
+  rebuiltForce->setBoxDimensions(m_BoxDimensions);
+  rebuiltForce->setStream(m_DirectStream);
+  rebuiltForce->setForce(m_DirectForceValues);
+  rebuiltForce->setNumAtoms(m_Psf->getNumAtoms());
+  rebuiltForce->setCutoff(m_Cutoff);
+  rebuiltForce->setupSorted(m_Psf->getNumAtoms());
+  rebuiltForce->setupTopologicalExclusions(m_Psf->getNumAtoms(), iblo14, inb14);
+  rebuiltForce->setupNeighborList(m_Psf->getNumAtoms());
+  rebuiltForce->set_vdwparam(vdwParamsAndTypes.vdwParams);
+  rebuiltForce->set_vdwparam14(vdwParamsAndTypes.vdw14Params);
+  rebuiltForce->set_vdwtype(vdwParamsAndTypes.vdwTypes);
+  rebuiltForce->set_vdwtype14(vdwParamsAndTypes.vdw14Types);
+  rebuiltForce->set_14_list(inExLists.sizes, inExLists.in14_ex14);
+
+  // setup() enables both components. Preserve any component-selection state
+  // maintained by a specialized ForceManager.
+  rebuiltForce->set_calc_vdw(calculateVdw);
+  rebuiltForce->set_calc_elec(calculateElec);
+
+  m_DirectForcePtr = std::move(rebuiltForce);
+
+  return;
+}
+
+void ForceManager::rebuildDirtyForces(const float4 *xyzq) {
+  if (!m_BondedForceDirty && !m_ReciprocalForceDirty && !m_DirectForceDirty)
+    return;
+
+  if (m_DirectForceDirty) {
+    APOCHARMM_REQUIRE(xyzq != nullptr, ApoCharmmErrorCode::InvalidArgument,
+                      "Coordinate-charge array must not be null when "
+                      "rebuilding the direct-space force");
+  }
+
+  // Leave the manager uninitialized if any reconstruction or neighbor-list
+  // build fails. Dirty flags are cleared only after all requested work
+  // succeeds.
+  m_IsInitialized = false;
+
+  if (m_BondedForceDirty)
+    this->rebuildBondedForce();
+
+  if (m_ReciprocalForceDirty)
+    this->rebuildReciprocalForce();
+
+  if (m_DirectForceDirty)
+    this->rebuildDirectForce();
+
+  // A newly constructed direct backend owns a newly-constructed, but empty,
+  // neighbor-list object. Build it before making the manager usable again.
+  if (m_DirectForceDirty)
+    m_DirectForcePtr->resetNeighborList(xyzq, m_Psf->getNumAtoms());
+
+  m_BondedForceDirty = false;
+  m_ReciprocalForceDirty = false;
+  m_DirectForceDirty = false;
+
+  m_IsInitialized = true;
 
   return;
 }
