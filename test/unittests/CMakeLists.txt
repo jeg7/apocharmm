@@ -30,6 +30,7 @@ set(SOURCES_UNITTESTS_TESTS
   unittest-cudaLangevinPistonIntegrator.cpp
 
   # Restraint tests
+  unittest-distanceRestraintForce.cpp
   unittest-harmonicRestraintForce.cpp
   unittest-harmonicCenterOfMassRestraintForce.cpp
 )

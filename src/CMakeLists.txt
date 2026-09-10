@@ -57,6 +57,7 @@ add_library(apoCHARMMlib
   # ${apoCHARMM_SOURCE_DIR}/src/CudaExternalForce.cu
   ${apoCHARMM_SOURCE_DIR}/src/HarmonicRestraintForce.cu
   ${apoCHARMM_SOURCE_DIR}/src/HarmonicCenterOfMassRestraintForce.cu
+  ${apoCHARMM_SOURCE_DIR}/src/DistanceRestraintForce.cu
   ${apoCHARMM_SOURCE_DIR}/src/CompositeSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/DualTopologySubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/BEDSForceManager.cu

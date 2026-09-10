@@ -75,3 +75,21 @@ class VdwType(IntEnum):
     CUT = 5
     ## @brief Selects native model code `VDW_DBEXP`.
     DBEXP = 6
+
+
+class DistanceRestraintCondition(IntEnum):
+    """
+    @anchor python_distance_restraint_condition
+    @brief Selects the one-sided activation mode for a distance-restraint term.
+
+    `NONE` applies no one-sided activation gate. `POSITIVE` is active exactly
+    when the term deviation satisfies `D >= 0`. `NEGATIVE` is active exactly
+    when the term deviation satisfies `D <= 0`.
+    """
+
+    ## @brief Applies no one-sided activation gate.
+    NONE = 0
+    ## @brief Selects exact positive-side activation at `D >= 0`
+    POSITIVE = 1
+    ## @brief Selects exact negative-side activation at `D <= 0`
+    NEGATIVE = -1
