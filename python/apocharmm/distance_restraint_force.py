@@ -37,7 +37,7 @@ def _initialize_prototypes() -> None:
         return
 
     configure_status_function(
-        lib().apo_distnace_restraint_force_create,
+        lib().apo_distance_restraint_force_create,
         [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int],
         "DistanceRestraintForce construction",
     )
@@ -152,7 +152,7 @@ class DistanceRestraintForce(_ApoObject):
         storage.
 
         @post On success, this wrapper owns a live native handle and
-        `default_force_tag == "harm"`.
+        `default_force_tag == "resd"`.
         """
         super().__init__()
 

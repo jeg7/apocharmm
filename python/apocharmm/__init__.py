@@ -58,6 +58,7 @@ __all__: list[str] = [
     "APO_STATUS_NOT_IMPLEMENTED",
     # Enums
     "CrystalType",
+    "DistanceRestraintCondition",
     "PeriodicBoundaryCondition",
     "VdwType",
     # Atom selection
