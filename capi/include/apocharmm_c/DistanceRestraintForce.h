@@ -217,7 +217,7 @@ APOCHARMM_C_API apo_status apo_distance_restraint_force_set_scale(
  * @retval APO_STATUS_OK The term and independent copies of all pair data were
  * appended.
  * @retval APO_STATUS_INVALID_ARGUMENT `restraint` or any array pointer is
- * `NULL`; the handle contains no native object; the atom indices lengths
+ * `NULL`; the handle contains no native object; the atom-index array lengths
  * differ; appending would exceed a native `int` count limit; an atom index is
  * out of range; a pair contains the same atom twice; a coefficient is zero,
  * NaN, or infinite; `force_constant` is zero, NaN, or infinite;
@@ -291,8 +291,8 @@ apo_distance_restraint_force_reset(apo_distance_restraint_force *restraint);
  * string. Native code copies the bytes and retains no caller pointer.
  * @retval APO_STATUS_OK The manager retained the restraint and its resources.
  * @retval APO_STATUS_INVALID_ARGUMENT Either handle is `NULL`, either handle
- * contains no native object, `force_tag` is `NULL`, the restraint is already
- * subscribed, or immediate initialization detects an atom-count or box
+ * contains no native object, `force_tag` is `NULL` or  empty, the restraint is
+ * already subscribed, or immediate initialization detects an atom-count or box
  * mismatch.
  * @retval APO_STATUS_RUNTIME_ERROR Copying the tag, growing manager
  * subscription storage, diagnostic construction, or another standard or

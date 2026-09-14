@@ -10,26 +10,6 @@
 from enum import IntEnum
 
 
-class PeriodicBoundaryCondition(IntEnum):
-    """
-    @anchor python_periodic_boundary_condition
-    @brief Identifies the periodic boundary condition used by apoCHARMM.
-
-    `NONE` selects no periodic boundary condition. `P1` selects conventional
-    three-dimensional translational periodicity. `P21` selects the P2_1
-    screw-symmetry condition.
-
-    Integer values `0`, `1`, and `2` can be converted to this enumeration.
-    """
-
-    ## @brief Selects no periodic boundary condition.
-    NONE = 0
-    ## @brief Selects conventional translational periodicity.
-    P1 = 1
-    ## @brief Selects P2_1 screw-symmetry periodicity.
-    P21 = 2
-
-
 class CrystalType(IntEnum):
     """
     @brief Selects the Langevin-piston crystal symmetry.
@@ -48,6 +28,44 @@ class CrystalType(IntEnum):
     CUBIC = 1
     TETRAGONAL = 2
     ORTHORHOMBIC = 3
+
+
+class DistanceRestraintCondition(IntEnum):
+    """
+    @anchor python_distance_restraint_condition
+    @brief Selects the one-sided activation mode for a distance-restraint term.
+
+    `NONE` applies no one-sided activation gate. `POSITIVE` is active exactly
+    when the term deviation satisfies `D >= 0`. `NEGATIVE` is active exactly
+    when the term deviation satisfies `D <= 0`.
+    """
+
+    ## @brief Applies no one-sided activation gate.
+    NONE = 0
+    ## @brief Selects exact positive-side activation at `D >= 0`
+    POSITIVE = 1
+    ## @brief Selects exact negative-side activation at `D <= 0`
+    NEGATIVE = -1
+
+
+class PeriodicBoundaryCondition(IntEnum):
+    """
+    @anchor python_periodic_boundary_condition
+    @brief Identifies the periodic boundary condition used by apoCHARMM.
+
+    `NONE` selects no periodic boundary condition. `P1` selects conventional
+    three-dimensional translational periodicity. `P21` selects the P2_1
+    screw-symmetry condition.
+
+    Integer values `0`, `1`, and `2` can be converted to this enumeration.
+    """
+
+    ## @brief Selects no periodic boundary condition.
+    NONE = 0
+    ## @brief Selects conventional translational periodicity.
+    P1 = 1
+    ## @brief Selects P2_1 screw-symmetry periodicity.
+    P21 = 2
 
 
 class VdwType(IntEnum):
@@ -75,21 +93,3 @@ class VdwType(IntEnum):
     CUT = 5
     ## @brief Selects native model code `VDW_DBEXP`.
     DBEXP = 6
-
-
-class DistanceRestraintCondition(IntEnum):
-    """
-    @anchor python_distance_restraint_condition
-    @brief Selects the one-sided activation mode for a distance-restraint term.
-
-    `NONE` applies no one-sided activation gate. `POSITIVE` is active exactly
-    when the term deviation satisfies `D >= 0`. `NEGATIVE` is active exactly
-    when the term deviation satisfies `D <= 0`.
-    """
-
-    ## @brief Applies no one-sided activation gate.
-    NONE = 0
-    ## @brief Selects exact positive-side activation at `D >= 0`
-    POSITIVE = 1
-    ## @brief Selects exact negative-side activation at `D <= 0`
-    NEGATIVE = -1

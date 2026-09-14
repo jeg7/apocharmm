@@ -17,7 +17,12 @@ from .error import (
     APO_STATUS_NOT_IMPLEMENTED,
 )
 
-from .enums import CrystalType, PeriodicBoundaryCondition, VdwType
+from .enums import (
+    CrystalType,
+    DistanceRestraintCondition,
+    PeriodicBoundaryCondition,
+    VdwType,
+)
 
 from .atom_selection import AtomSelection
 from .atom_selector import AtomSelector
@@ -31,6 +36,7 @@ from .charmm_psf import CharmmPsf
 
 from .harmonic_restraint_force import HarmonicRestraintForce
 from .harmonic_center_of_mass_restraint_force import HarmonicCenterOfMassRestraintForce
+from .distance_restraint_force import DistanceRestraintForce
 
 from .cuda_integrator import CudaIntegrator
 from .cuda_langevin_piston_integrator import CudaLangevinPistonIntegrator
@@ -67,6 +73,7 @@ __all__: list[str] = [
     # Forces and restraints
     "HarmonicRestraintForce",
     "HarmonicCenterOfMassRestraintForce",
+    "DistanceRestraintForce",
     # Integrators
     "CudaIntegrator",
     "CudaLangevinPistonIntegrator",

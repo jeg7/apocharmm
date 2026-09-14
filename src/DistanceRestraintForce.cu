@@ -137,11 +137,6 @@ void DistanceRestraintForce<AT, CT>::addRestraint(
                           " must be nonzero");
   }
 
-  APOCHARMM_REQUIRE(
-      (coefficients.size() != 1) || (coefficients[0] != 0.0),
-      ApoCharmmErrorCode::InvalidArgument,
-      "A one-pair distance-restraint coefficient must be nonzero");
-
   APOCHARMM_REQUIRE(std::isfinite(forceConstant),
                     ApoCharmmErrorCode::InvalidArgument,
                     "Force constant must be finite; observed " +
