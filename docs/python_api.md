@@ -18,6 +18,10 @@ units, errors, limitations, and implementation details.
 - [apocharmm.ApoCharmmError](@ref python_apocharmm_error_class) reports nonzero
   native status results as an owned Python exception. See the
   [ApoCharmmError subsystem](@ref apocharmm_error).
+- [apocharmm.DistanceRestraintCondition](@ref python_distance_restraint_condition)
+  selects no gate, exact `D >= 0` activation, or exact `D <= 0` activation for
+  one distance-restraint term. See the
+  [DistanceRestraintForce subsystem](@ref distance_restraint_force).
 - [apocharmm.PeriodicBoundaryCondition](@ref python_periodic_boundary_condition)
   selects the periodic boundary model used by contexts and force managers. See
   the [CharmmContext subsystem](@ref charmm_context) and
@@ -57,6 +61,10 @@ Their meanings and Python exception mapping are documented in the
 - [apocharmm.CharmmContext](@ref python_charmm_context) owns mutable molecular
   state and coordinates force evaluation. See the
   [CharmmContext subsystem](@ref charmm_context).
+- [apocharmm.DistanceRestraintForce](@ref python_distance_restraint_force)
+  configures CHARMM RESDistance/RESD terms made from one or more weighted
+  atom-pair distances. See the
+  [DistanceRestraintForce subsystem](@ref distance_restraint_force).
 - [apocharmm.ForceManager](@ref python_force_manager) configures and owns native
   force backends. See the [ForceManager subsystem](@ref force_manager).
 - [apocharmm.HarmonicCenterOfMassRestraintForce](@ref python_harmonic_center_of_mass_restraint_force)
