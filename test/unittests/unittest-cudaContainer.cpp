@@ -13,6 +13,13 @@
 #include "apo_test_helpers.h"
 #include "catch.hpp"
 
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+static_assert(std::is_nothrow_move_constructible_v<CudaContainer<int>>);
+static_assert(std::is_nothrow_move_assignable_v<CudaContainer<int>>);
+
 TEST_CASE("CudaContainerConstruction") {
   SECTION("DefaultConstructor") {
     CudaContainer<int> c;
@@ -48,10 +55,15 @@ TEST_CASE("CudaContainerConstruction") {
     apo_test::CheckHostAndDeviceEqual(c, expected);
   }
 
-  SECTION("HostRvalueConstructor") {
+  SECTION("HostRvalueConstructorTransfersHostStorage") {
     const std::vector<int> expected = {1, 2, 3};
-    CudaContainer<int> c(std::vector<int>{1, 2, 3});
+    std::vector<int> source = expected;
+    int *const sourceData = source.data();
 
+    CudaContainer<int> c(std::move(source));
+
+    CHECK(c.getHostArray().data() == sourceData);
+    CHECK(source.empty() == true);
     apo_test::CheckHostAndDeviceEqual(c, expected);
   }
 
@@ -63,11 +75,17 @@ TEST_CASE("CudaContainerConstruction") {
     apo_test::CheckHostAndDeviceEqual(c, expected);
   }
 
-  SECTION("DeviceVectorRvalueConstructor") {
+  SECTION("DeviceVectorRvalueConstructorTransfersDeviceStorage") {
     const std::vector<int> expected = {1, 2, 3};
-    DeviceVector<int> deviceVector(expected);
-    CudaContainer<int> c(std::move(deviceVector));
+    DeviceVector<int> source(expected);
+    int *const sourceData = source.data();
 
+    CudaContainer<int> c(std::move(source));
+
+    CHECK(c.getDeviceArray().data() == sourceData);
+    CHECK(source.data() == nullptr);
+    CHECK(source.size() == 0);
+    CHECK(source.capacity() == 0);
     apo_test::CheckHostAndDeviceEqual(c, expected);
   }
 
@@ -88,12 +106,27 @@ TEST_CASE("CudaContainerConstruction") {
     apo_test::CheckHostAndDeviceEqual(c2, expected);
   }
 
-  SECTION("RvalueConstructor") {
-    const std::vector<int> expected = {1, 2, 3};
-    CudaContainer<int> c1(expected);
-    CudaContainer<int> c2(std::move(c1));
+  SECTION("MoveConstructorTransfersBothMirrors") {
+    const std::vector<int> deviceValues = {1, 2, 3};
+    const std::vector<int> hostValues = {9, 2, 3};
 
-    apo_test::CheckHostAndDeviceEqual(c2, expected);
+    CudaContainer<int> source(deviceValues);
+    source.getHostArray()[0] = hostValues[0];
+
+    int *const sourceHostData = source.getHostArray().data();
+    int *const sourceDeviceData = source.getDeviceArray().data();
+
+    CudaContainer<int> moved(std::move(source));
+
+    CHECK(moved.getHostArray().data() == sourceHostData);
+    CHECK(moved.getDeviceArray().data() == sourceDeviceData);
+    CHECK(moved.getHostArray() == hostValues);
+    CHECK(apo_test::CopyToHost(moved.getDeviceArray()) == deviceValues);
+
+    CHECK(source.getHostArray().empty() == true);
+    CHECK(source.getDeviceArray().size() == 0);
+    CHECK(source.getDeviceArray().capacity() == 0);
+    CHECK(source.getDeviceArray().data() == nullptr);
   }
 
   SECTION("DoubleContainer") {
@@ -172,12 +205,16 @@ TEST_CASE("CudaContainerAssignment") {
     apo_test::CheckHostAndDeviceEqual(c, expected);
   }
 
-  SECTION("AssignFromHostRvalueVector") {
+  SECTION("AssignFromHostRvalueVectorTransfersHostStorage") {
     const std::vector<int> expected = {1, 2, 3};
-    CudaContainer<int> c;
+    std::vector<int> source = expected;
+    int *const sourceData = source.data();
 
-    c = std::vector<int>{1, 2, 3};
+    CudaContainer<int> c(std::vector<int>{9});
+    c = std::move(source);
 
+    CHECK(c.getHostArray().data() == sourceData);
+    CHECK(source.empty() == true);
     apo_test::CheckHostAndDeviceEqual(c, expected);
   }
 
@@ -200,13 +237,18 @@ TEST_CASE("CudaContainerAssignment") {
     apo_test::CheckHostAndDeviceEqual(c, expected);
   }
 
-  SECTION("AssignFromDeviceRvalueVector") {
+  SECTION("AssignFromDeviceRvalueVectorTransfersDeviceStorage") {
     const std::vector<int> expected = {1, 2, 3};
-    DeviceVector<int> deviceVector(expected);
-    CudaContainer<int> c;
+    DeviceVector<int> source(expected);
+    int *const sourceData = source.data();
 
-    c = std::move(deviceVector);
+    CudaContainer<int> c(std::vector<int>{9});
+    c = std::move(source);
 
+    CHECK(c.getDeviceArray().data() == sourceData);
+    CHECK(source.data() == nullptr);
+    CHECK(source.size() == 0);
+    CHECK(source.capacity() == 0);
     apo_test::CheckHostAndDeviceEqual(c, expected);
   }
 
@@ -228,14 +270,28 @@ TEST_CASE("CudaContainerAssignment") {
     apo_test::CheckHostAndDeviceEqual(c2, expected);
   }
 
-  SECTION("RvalueAssignment") {
-    const std::vector<int> expected = {1, 2, 3};
-    CudaContainer<int> c1(expected);
-    CudaContainer<int> c2(std::vector<int>{9});
+  SECTION("MoveAssignmentTransfersBothMirrors") {
+    const std::vector<int> deviceValues = {1, 2, 3};
+    const std::vector<int> hostValues = {9, 2, 3};
 
-    c2 = std::move(c1);
+    CudaContainer<int> source(deviceValues);
+    source.getHostArray()[0] = hostValues[0];
 
-    apo_test::CheckHostAndDeviceEqual(c2, expected);
+    int *const sourceHostData = source.getHostArray().data();
+    int *const sourceDeviceData = source.getDeviceArray().data();
+
+    CudaContainer<int> assigned(std::vector<int>{8});
+    assigned = std::move(source);
+
+    CHECK(assigned.getHostArray().data() == sourceHostData);
+    CHECK(assigned.getDeviceArray().data() == sourceDeviceData);
+    CHECK(assigned.getHostArray() == hostValues);
+    CHECK(apo_test::CopyToHost(assigned.getDeviceArray()) == deviceValues);
+
+    CHECK(source.getHostArray().empty() == true);
+    CHECK(source.getDeviceArray().size() == 0);
+    CHECK(source.getDeviceArray().capacity() == 0);
+    CHECK(source.getDeviceArray().data() == nullptr);
   }
 
   SECTION("SelfAssignment") {
@@ -250,7 +306,13 @@ TEST_CASE("CudaContainerAssignment") {
     const std::vector<int> expected = {1, 2, 3};
     CudaContainer<int> c(expected);
 
+    int *const hostData = c.getHostArray().data();
+    int *const deviceData = c.getDeviceArray().data();
+
     CHECK_NOTHROW(c = std::move(c));
+
+    CHECK(c.getHostArray().data() == hostData);
+    CHECK(c.getDeviceArray().data() == deviceData);
     apo_test::CheckHostAndDeviceEqual(c, expected);
   }
 }

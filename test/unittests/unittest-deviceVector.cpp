@@ -15,9 +15,12 @@
 #include "cuda_utils.h"
 
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+static_assert(std::is_nothrow_move_constructible_v<DeviceVector<int>>);
+static_assert(std::is_nothrow_move_assignable_v<DeviceVector<int>>);
 static_assert(noexcept(std::declval<DeviceVector<int> &>().swap(
     std::declval<DeviceVector<int> &>())));
 
@@ -63,7 +66,7 @@ TEST_CASE("ConstructionDestruction") {
     CHECK(apo_test::CopyToHost<int>(v) == expected);
   }
 
-  SECTION("HostRvalueConstructor") {
+  SECTION("HostTemporaryConstructor") {
     const std::vector<int> expected = {1, 2, 3, 4};
     DeviceVector<int> v(std::vector<int>{1, 2, 3, 4});
 
@@ -270,7 +273,7 @@ TEST_CASE("CopyAssignmentSwap") {
     CHECK(apo_test::CopyToHost<int>(v) == expected);
   }
 
-  SECTION("RvalueVectorAssign") {
+  SECTION("HostTemporaryAssignment") {
     const std::vector<int> expected = {5, 6, 7};
     DeviceVector<int> v;
 
@@ -305,24 +308,47 @@ TEST_CASE("CopyAssignmentSwap") {
     CHECK(apo_test::CopyToHost<int>(v3) == expected);
   }
 
-  SECTION("RvalueConstructor") {
+  SECTION("MoveConstructorTransfersAllocation") {
     const std::vector<int> expected = {1, 2, 3, 4};
-    DeviceVector<int> v1(expected);
-    DeviceVector<int> v2(std::move(v1));
 
-    CHECK(v2.size() == expected.size());
-    CHECK(apo_test::CopyToHost<int>(v2) == expected);
+    DeviceVector<int> source(expected);
+    int *const sourceData = source.data();
+    const std::size_t sourceSize = source.size();
+    const std::size_t sourceCapacity = source.capacity();
+
+    DeviceVector<int> moved(std::move(source));
+
+    CHECK(moved.data() == sourceData);
+    CHECK(moved.size() == sourceSize);
+    CHECK(moved.capacity() == sourceCapacity);
+    CHECK(apo_test::CopyToHost<int>(moved) == expected);
+
+    CHECK(source.data() == nullptr);
+    CHECK(source.size() == 0);
+    CHECK(source.capacity() == 0);
+    CHECK(source.empty() == true);
   }
 
-  SECTION("RvalueAssignment") {
+  SECTION("MoveAssignmentTransfersAllocation") {
     const std::vector<int> expected = {1, 2, 3, 4};
-    DeviceVector<int> v1(expected);
-    DeviceVector<int> v2({9});
 
-    v2 = std::move(v1);
+    DeviceVector<int> source(expected);
+    int *const sourceData = source.data();
+    const std::size_t sourceSize = source.size();
+    const std::size_t sourceCapacity = source.capacity();
 
-    CHECK(v2.size() == expected.size());
-    CHECK(apo_test::CopyToHost<int>(v2) == expected);
+    DeviceVector<int> assigned({9});
+    assigned = std::move(source);
+
+    CHECK(assigned.data() == sourceData);
+    CHECK(assigned.size() == sourceSize);
+    CHECK(assigned.capacity() == sourceCapacity);
+    CHECK(apo_test::CopyToHost<int>(assigned) == expected);
+
+    CHECK(source.data() == nullptr);
+    CHECK(source.size() == 0);
+    CHECK(source.capacity() == 0);
+    CHECK(source.empty() == true);
   }
 
   SECTION("SelfAssignment") {
@@ -338,8 +364,15 @@ TEST_CASE("CopyAssignmentSwap") {
     const std::vector<int> expected = {1, 2, 3, 4};
     DeviceVector<int> v(expected);
 
+    int *const originalData = v.data();
+    const std::size_t originalSize = v.size();
+    const std::size_t originalCapacity = v.capacity();
+
     CHECK_NOTHROW(v = std::move(v));
-    CHECK(v.size() == expected.size());
+
+    CHECK(v.data() == originalData);
+    CHECK(v.size() == originalSize);
+    CHECK(v.capacity() == originalCapacity);
     CHECK(apo_test::CopyToHost<int>(v) == expected);
   }
 

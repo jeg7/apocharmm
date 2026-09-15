@@ -33,14 +33,6 @@ DeviceVector<T>::DeviceVector(const std::vector<T> &other)
 }
 
 template <typename T>
-DeviceVector<T>::DeviceVector(const std::vector<T> &&other)
-    : DeviceVector(other.size()) {
-  cudaCheck(cudaMemcpy(static_cast<void *>(m_Data),
-                       static_cast<const void *>(other.data()),
-                       other.size() * sizeof(T), cudaMemcpyHostToDevice));
-}
-
-template <typename T>
 DeviceVector<T>::DeviceVector(const DeviceVector<T> &other)
     : DeviceVector(other.size()) {
   cudaCheck(cudaMemcpy(static_cast<void *>(m_Data),
@@ -49,11 +41,9 @@ DeviceVector<T>::DeviceVector(const DeviceVector<T> &other)
 }
 
 template <typename T>
-DeviceVector<T>::DeviceVector(const DeviceVector<T> &&other)
-    : DeviceVector(other.size()) {
-  cudaCheck(cudaMemcpy(static_cast<void *>(m_Data),
-                       static_cast<const void *>(other.data()),
-                       other.size() * sizeof(T), cudaMemcpyDeviceToDevice));
+DeviceVector<T>::DeviceVector(DeviceVector<T> &&other) noexcept
+    : DeviceVector() {
+  this->swap(other);
 }
 
 template <typename T> DeviceVector<T>::~DeviceVector(void) noexcept {
@@ -73,16 +63,6 @@ DeviceVector<T> &DeviceVector<T>::operator=(const std::vector<T> &other) {
 }
 
 template <typename T>
-DeviceVector<T> &DeviceVector<T>::operator=(const std::vector<T> &&other) {
-  this->reallocate(other.capacity());
-  m_Size = other.size();
-  cudaCheck(cudaMemcpy(static_cast<void *>(m_Data),
-                       static_cast<const void *>(other.data()),
-                       other.size() * sizeof(T), cudaMemcpyHostToDevice));
-  return *this;
-}
-
-template <typename T>
 DeviceVector<T> &DeviceVector<T>::operator=(const DeviceVector<T> &other) {
   this->reallocate(other.capacity());
   m_Size = other.size();
@@ -93,12 +73,12 @@ DeviceVector<T> &DeviceVector<T>::operator=(const DeviceVector<T> &other) {
 }
 
 template <typename T>
-DeviceVector<T> &DeviceVector<T>::operator=(const DeviceVector<T> &&other) {
-  this->reallocate(other.capacity());
-  m_Size = other.size();
-  cudaCheck(cudaMemcpy(static_cast<void *>(m_Data),
-                       static_cast<const void *>(other.data()),
-                       other.size() * sizeof(T), cudaMemcpyDeviceToDevice));
+DeviceVector<T> &DeviceVector<T>::operator=(DeviceVector<T> &&other) noexcept {
+  if (this != &other) {
+    DeviceVector<T> replacement(std::move(other));
+    this->swap(replacement);
+  }
+
   return *this;
 }
 

@@ -51,9 +51,14 @@ host-to-device copy of the active host elements. Construction from another
 `DeviceVector<T>` performs a deep device-to-device copy and sets capacity to the
 source size rather than the source capacity.
 
-The overloads taking `const std::vector<T> &&` and
-`const DeviceVector<T> &&` are copies, not ownership-transferring moves. Their
-sources remain unchanged.
+A temporary `std::vector<T>` is accepted by the same const-reference overload as
+a host lvalue because its host allocation cannot be transferred into CUDA device
+memory. The active elements are copied host-to-device.
+
+Move construction from another `DeviceVector<T>` transfers its device pointer,
+size, and capacity without allocation, copying, synchronization, or another CUDA
+runtime call. The moved-from vector becomes empty with zero capacity and a null
+device pointer.
 
 CUDA allocation and copy calls use the CUDA runtime state current on the calling
 thread. `DeviceVector` does not retain a device identifier or stream. Code must
@@ -80,6 +85,12 @@ The destructor is `noexcept`. It attempts `cudaFree`, discards the CUDA return
 status, and clears the object's metadata. Explicit `clear()` reports a CUDA
 failure instead, although the current cleanup helper has already cleared the
 stored pointer when that failure is reported.
+
+Move assignment transfers allocation ownership and metadata, then releases the
+destination's previous allocation through the non-throwing destruction path.
+Consequently, move assignment is `noexcept`; a failure while releasing the old
+CUDA allocation is discarded and that allocation may remain reserved. Self-move
+assignment is a no-op.
 
 `assignData()` is an unchecked legacy ownership escape hatch. It replaces only
 the stored pointer; it does not free the old allocation or change size or
@@ -185,10 +196,11 @@ the old-buffer helper clears the pointer before checking `cudaFree`, a failure
 at that step cannot restore the old ownership state.
 
 Host constructors and host assignments copy active `std::vector` elements with
-`cudaMemcpyHostToDevice`. Copy construction and device-vector assignment use
-`cudaMemcpyDeviceToDevice`. `push_back()` is the only element-writing primitive;
-it invokes the internal `SetBackKernel` with one block and one thread. None of
-these paths stores a stream for later use.
+`cudaMemcpyHostToDevice`. Copy construction and copy assignment use
+`cudaMemcpyDevicetoDevice`. Move construction and move assignment transfer the
+device pointer and metadata without copying device data. `push_back()` is the
+only element-writing primitive; it invokes the internal `SetBackKernel` with one
+block and one thread. None of these paths stores a stream for later use.
 
 The native CUDA checker is the subsystem's error boundary: CUDA return codes and
 immediate launch errors become `ApoCharmmErrorCode::Cuda`. Destruction uses the
@@ -207,9 +219,9 @@ The focused native regression suite is
 capacity changes, prefix preservation, append behavior, immediate launch-error
 reporting, assignments, and swaps. `test/unittests/unittest-cudaContainer.cpp`
 exercises the principal owning collaborator. Current technical debt visible at
-this layer includes unchecked `assignData()` ownership replacement, const-rvalue
-copy overloads named like move operations, unchecked size arithmetic, and loss
-of the old allocation pointer when `cudaFree` reports failure.
+this layer includes unchecked `assignData()` ownership replacement, unchecked
+size arithmetic, and loss of the old allocation pointer when `cudaFree` reports
+failure.
 
 ## API Reference
 

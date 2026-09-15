@@ -31,6 +31,11 @@
  * `longlong2`, `longlong3`, `longlong4`, `unsigned long long int`,
  * `std::size_t`, `double`, `double2`, `double3`, and `double4`.
  *
+ * Copy construction and copy assignment allocate independent device storage and
+ * copy the active elements. Move construction and move assignment transfer the
+ * device pointer and its size and capacity metadata without a CUDA operation. A
+ * moved-from vector is empty, has zero capacity, and stores a null pointer.
+ *
  * @tparam T Element representation stored in device memory. A specialization
  * must be safe to copy byte-for-byte and pass by value to a CUDA kernel.
  *
@@ -90,27 +95,6 @@ public: // Member functions
   DeviceVector(const std::vector<T> &other);
 
   /**
-   * @brief Constructs a device vector by copying a const host rvalue.
-   *
-   * @param[in] other Borrowed, read-only host vector. Its active elements are
-   * copied during the call, and no reference to it is retained.
-   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if device allocation
-   * or the host-to-device copy fails.
-   * @throws std::bad_alloc If reporting a CUDA failure cannot allocate
-   * diagnostic storage.
-   * @throws std::length_error If a CUDA failure diagnostic exceeds an
-   * implementation-defined string limit.
-   *
-   * @post On success, `size()` and `capacity()` equal `other.size()`, and the
-   * active device elements are an independent copy of `other`.
-   * @note This overload does not move from or modify `other`; it performs the
-   * same host-to-device copy as the lvalue overload.
-   * @note The copy uses `cudaMemcpy` without an explicit stream and performs no
-   * separate device synchronization.
-   */
-  DeviceVector(const std::vector<T> &&other);
-
-  /**
    * @brief Constructs an independent copy of another device vector.
    *
    * @param[in] other Borrowed, read-only source vector. Its active device
@@ -131,25 +115,21 @@ public: // Member functions
   DeviceVector(const DeviceVector<T> &other);
 
   /**
-   * @brief Constructs an independent copy of a const device-vector rvalue.
+   * @brief Constructs a device vector by transferring another allocation.
    *
-   * @param[in] other Borrowed, read-only source vector. Its active device
-   * elements are copied during the call, and no pointer into it is retained.
-   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if device allocation
-   * or the device-to-device copy fails.
-   * @throws std::bad_alloc If reporting a CUDA failure cannot allocate
-   * diagnostic storage.
-   * @throws std::length_error If a CUDA failure diagnostic exceeds an
-   * implementation-defined string limit.
+   * The device pointer, active size, and capacity are transferred without
+   * allocation, copying, synchronization, or another CUDA runtime call.
    *
-   * @post On success, `size()` and `capacity()` equal `other.size()`, and the
-   * active elements reside in an allocation independent of `other`.
-   * @note This overload does not transfer ownership from or modify `other`; it
-   * performs the same deep copy as the lvalue copy constructor.
-   * @note The copy uses `cudaMemcpy` without an explicit stream and performs no
-   * separate device synchronization.
+   * @param[in,out] other Vector whose allocation and metadata are transferred.
+   *
+   * @post `data()`, `size()`, and `capacity()` equal the corresponding pre-move
+   * values from `other`.
+   * @post `other.data() == nullptr`, `other.size() == 0`, and
+   * `other.capacity() == 0`.
+   * @note Previously borrowed pointers into `other` retain their pointer values
+   * but are now owned by this object.
    */
-  DeviceVector(const DeviceVector<T> &&other);
+  DeviceVector(DeviceVector<T> &&other) noexcept;
 
   /**
    * @brief Releases owned device storage without propagating CUDA failures.
@@ -196,39 +176,6 @@ public: // Member functions
   DeviceVector<T> &operator=(const std::vector<T> &other);
 
   /**
-   * @brief Replaces the vector with a copy of a const host rvalue.
-   *
-   * The destination capacity is changed to `other.capacity()`, then
-   * `other.size()` active elements are copied from host to device.
-   *
-   * @param[in] other Borrowed, read-only host vector. No reference to it is
-   * retained after the call.
-   * @return A borrowed reference aliasing this destination object. It remains
-   * valid for the lifetime of the destination.
-   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if allocation,
-   * device-to-device prefix preservation, deallocation, or the final
-   * host-to-device copy fails.
-   * @throws std::bad_alloc If reporting a CUDA failure cannot allocate
-   * diagnostic storage.
-   * @throws std::length_error If a CUDA failure diagnostic exceeds an
-   * implementation-defined string limit.
-   *
-   * @post On success, `size()` equals `other.size()`, `capacity()` equals
-   * `other.capacity()`, and the active device elements copy `other`.
-   * @note This overload does not move from or modify `other`.
-   * @note Any capacity change invalidates previously returned device pointers.
-   * @note CUDA copies use `cudaMemcpy` without an explicit stream and perform
-   * no separate device synchronization.
-   * @warning If provisional allocation or prefix preservation fails, the
-   * destination remains unchanged. If capacity adjustment fails while
-   * releasing the old allocation, the destination is reset to an empty state
-   * and the old allocation may remain reserved. If the final host-to-device
-   * copy fails, the new size and capacity remain observable and active contents
-   * are unspecified.
-   */
-  DeviceVector<T> &operator=(const std::vector<T> &&other);
-
-  /**
    * @brief Replaces the vector with a deep copy of another device vector.
    *
    * The destination capacity is changed to `other.capacity()`, then
@@ -264,41 +211,26 @@ public: // Member functions
   DeviceVector<T> &operator=(const DeviceVector<T> &other);
 
   /**
-   * @brief Replaces the vector with a deep copy of a const device-vector
-   * rvalue.
+   * @brief Replaces this vector by transferring another vector's allocation.
    *
-   * The destination capacity is changed to `other.capacity()`, then
-   * `other.size()` active elements are copied device-to-device.
+   * The source device pointer, active size, and capacity are transfered without
+   * allocation, copying, or synchronization. The destination's former
+   * allocation is released through the same non-throwing cleanup path used by
+   * destruction. Self-move assignment is a no-op.
    *
-   * @param[in] other Borrowed, read-only source vector. No pointer into it is
-   * retained after the call.
-   * @return A borrowed reference aliasing this destination object. It remains
-   * valid for the lifetime of the destination.
-   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if allocation,
-   * device-to-device prefix preservation, deallocation, or the final
-   * device-to-device copy fails.
-   * @throws std::bad_alloc If reporting a CUDA failure cannot allocate
-   * diagnostic storage.
-   * @throws std::length_error If a CUDA failure diagnostic exceeds an
-   * implementation-defined string limit.
+   * @param[in,out] other Vector whose allocation and metadata are transferred.
+   * @return A borrowed mutable reference to this vector.
    *
-   * @post On success, `size()` equals `other.size()`, `capacity()` equals
-   * `other.capacity()`, and the active elements are an independent copy.
-   * @note Source slots in `[other.size(), other.capacity())` are not copied.
-   * @note This overload does not transfer ownership from or modify `other`.
-   * @note Any capacity change invalidates previously returned device pointers.
-   * @note The implementation does not special-case self-assignment and still
-   * issues the device-to-device copy.
-   * @note CUDA copies use `cudaMemcpy` without an explicit stream and perform
-   * no separate device synchronization.
-   * @warning If provisional allocation or prefix preservation fails, the
-   * destination remains unchanged. If capacity adjustment fails while
-   * releasing the old allocation, the destination is reset to an empty state
-   * and the old allocation may remain reserved. If the final device-to-device
-   * copy fails, the new size and capacity remain observable and active contents
-   * are unspecified.
+   * @post For distinct objects, `data()`, `size()`, and `capacity()` equal the
+   * corresponding pre-move values from `other`.
+   * @post For distinct objects, `other.data() == nullptr`, `other.size() == 0`,
+   * and `other.capacity() == 0`.
+   * @post Self-move assignment leaves the vector unchanged.
+   * @warning A CUDA failure while releasing the destination's previous
+   * allocation is discarded, consistent with destructor cleanup. That
+   * allocation may remain reserved.
    */
-  DeviceVector<T> &operator=(const DeviceVector<T> &&other);
+  DeviceVector<T> &operator=(DeviceVector<T> &&other) noexcept;
 
 public: // Element access
   /**

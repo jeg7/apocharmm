@@ -15,6 +15,7 @@
 
 #include <cstdio>
 #include <string>
+#include <utility>
 
 template <typename T>
 CudaContainer<T>::CudaContainer(void) : m_HostArray(), m_DeviceArray() {}
@@ -30,8 +31,9 @@ CudaContainer<T>::CudaContainer(const std::vector<T> &other)
 }
 
 template <typename T>
-CudaContainer<T>::CudaContainer(const std::vector<T> &&other)
-    : m_HostArray(other), m_DeviceArray(other.size()) {
+CudaContainer<T>::CudaContainer(std::vector<T> &&other)
+    : m_HostArray(), m_DeviceArray(other.size()) {
+  m_HostArray.swap(other);
   this->transferToDevice();
 }
 
@@ -42,8 +44,9 @@ CudaContainer<T>::CudaContainer(const DeviceVector<T> &other)
 }
 
 template <typename T>
-CudaContainer<T>::CudaContainer(const DeviceVector<T> &&other)
-    : m_HostArray(other.size()), m_DeviceArray(other) {
+CudaContainer<T>::CudaContainer(DeviceVector<T> &&other)
+    : m_HostArray(other.size()), m_DeviceArray() {
+  m_DeviceArray.swap(other);
   this->transferToHost();
 }
 
@@ -53,8 +56,10 @@ CudaContainer<T>::CudaContainer(const CudaContainer<T> &other)
 }
 
 template <typename T>
-CudaContainer<T>::CudaContainer(const CudaContainer<T> &&other)
-    : m_HostArray(other.getHostArray()), m_DeviceArray(other.getDeviceArray()) {
+CudaContainer<T>::CudaContainer(CudaContainer<T> &&other) noexcept
+    : m_HostArray(), m_DeviceArray() {
+  m_HostArray.swap(other.m_HostArray);
+  m_DeviceArray.swap(other.m_DeviceArray);
 }
 
 template <typename T>
@@ -66,10 +71,9 @@ CudaContainer<T> &CudaContainer<T>::operator=(const std::vector<T> &other) {
 }
 
 template <typename T>
-CudaContainer<T> &CudaContainer<T>::operator=(const std::vector<T> &&other) {
-  m_HostArray = other;
-  m_DeviceArray.resize(other.size());
-  this->transferToDevice();
+CudaContainer<T> &CudaContainer<T>::operator=(std::vector<T> &&other) {
+  CudaContainer<T> replacement(std::move(other));
+  *this = std::move(replacement);
   return *this;
 }
 
@@ -82,10 +86,9 @@ CudaContainer<T> &CudaContainer<T>::operator=(const DeviceVector<T> &other) {
 }
 
 template <typename T>
-CudaContainer<T> &CudaContainer<T>::operator=(const DeviceVector<T> &&other) {
-  m_DeviceArray = other;
-  m_HostArray.resize(other.size());
-  this->transferToHost();
+CudaContainer<T> &CudaContainer<T>::operator=(DeviceVector<T> &&other) {
+  CudaContainer<T> replacement(std::move(other));
+  *this = std::move(replacement);
   return *this;
 }
 
@@ -97,9 +100,14 @@ CudaContainer<T> &CudaContainer<T>::operator=(const CudaContainer<T> &other) {
 }
 
 template <typename T>
-CudaContainer<T> &CudaContainer<T>::operator=(const CudaContainer<T> &&other) {
-  m_HostArray = other.getHostArray();
-  m_DeviceArray = other.getDeviceArray();
+CudaContainer<T> &
+CudaContainer<T>::operator=(CudaContainer<T> &&other) noexcept {
+  if (this != &other) {
+    CudaContainer<T> replacement(std::move(other));
+    m_HostArray.swap(replacement.m_HostArray);
+    m_DeviceArray.swap(replacement.m_DeviceArray);
+  }
+
   return *this;
 }
 

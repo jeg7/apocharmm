@@ -126,10 +126,17 @@ or device reallocation can invalidate previously borrowed addresses.
 
 Copy construction creates independent host storage and independently copies the
 host and device mirrors of the residue, water, and group CudaContainers.
-Pre-existing divergence between a source container's mirrors is preserved
-rather than reconciled. The overload accepting `const CharmmPSF &&` also copies
-and leaves its source unchanged. The implicit copy-assignment operator performs
-memberwise assignment and is not transactional.
+Pre-existing divergence between a source container's mirrors is preserved rather
+than reconciled. Copy assignment is explicitly defaulted, performs sequential
+memberwise assignment, and is not transactional.
+
+Move construction and move assignment transfer all host containers, all three
+CudaContainer mirrors, and the stored file path without copying topology or
+device data. The moved-from source is restored to the exact default-constructed
+state: all six counts are `-1`, all host containers and CudaContainers are
+empty, and the stored path is empty. Move assignment is `noexcept`; cleanup
+failure while releasing the destination's former device allocations is discarded
+through the normal non-throwing destruction path.
 
 The implicit destructor is non-throwing. Nested device allocations are released
 through [CudaContainer](@ref CudaContainer) and
@@ -402,10 +409,9 @@ Focused native coverage is in
 `test/data/nacl_pair.psf` and the larger PSF fixtures used by those suites.
 
 Known architectural constraints directly visible in the implementation include
-the const-rvalue copying constructor, unrestricted mutable access, one-based
-cross terms, residue grouping that ignores segment changes, connected-component
-interval assumptions, fixed-width C ABI text fields, and the Python file-name
-buffer limit.
+unrestricted mutable access, one-based cross terms, residue grouping that
+ignores segment changes, connected-component interval assumptions, fixed-width C
+ABI text fields, and the Python file-name buffer limit.
 
 ## API Reference
 

@@ -75,9 +75,10 @@ by `SelectionTokenizer::tokenize()`, including its terminal token.
 
 In C++, `AtomSelector` shares ownership of its const PSF. It does not clone the
 topology. Each returned `AtomSelection` owns independent bit storage and retains
-neither the selector nor the PSF. Copy construction creates independent storage.
-The current `const AtomSelection &&` constructor and assignment overloads also
-copy rather than transfer ownership.
+neither the selector nor the PSF. Copy construction and copy assignment create
+independent storage. Move construction and move assignment transfer the owned
+word storage without allocation and leave the source as a valid zero-atom
+selection.
 
 The C ABI returns newly owned `apo_atom_selector` and `apo_atom_selection`
 handles. Destroy them with `apo_atom_selector_destroy()` and
@@ -278,10 +279,9 @@ Relevant tests are `test/unittests/unittest-atomSelection.cpp`,
 `test/pytest/python_api_atom_selection.py`. The restraint example
 `example/cons_harm.py` demonstrates using a selection as a collaborating object.
 
-Visible technical debt includes copy-like const-rvalue overloads in
-`AtomSelection`, nontransactional copy assignment, incomplete validation of
-mutably corrupted PSF per-atom arrays, `int` token positions, and embedded-null
-truncation at the Python-to-C boundary.
+Visible technical debt includes nontransactional copy assignment, incomplete
+validation of mutably corrupted PSF per-atom arrays, `int` token positions, and
+embedded-null truncation at the Python-to-C boundary.
 
 ## API Reference
 

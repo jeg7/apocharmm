@@ -164,11 +164,11 @@ struct InclusionExclusion {
  * dependent tables, or host/device coherence. See @ref charmm_psf_mutation.
  *
  * Copy construction deep-copies all host vectors and both mirrors of each
- * CudaContainer. The `const CharmmPSF &&` overload also copies and leaves its
- * source unchanged; it is not an ownership-transferring move constructor. The
- * compiler-generated copy-assignment operator performs memberwise assignment
- * and can leave partially assigned state if a later allocation or CUDA
- * operation fails. No move assignment operator is generated.
+ * CudaContainer. Copy assignment is explicitly defaulted and performs
+ * sequential memberwise assignment, so a later allocation or CUDA failure can
+ * leave partially assigned state. Move construction and move assignment
+ * transfer all owned host and device storage and leave the source in the exact
+ * default-constructed state.
  *
  * The compiler-generated destructor is non-throwing. Nested CUDA-owning
  * containers use non-throwing destruction and discard CUDA cleanup failures
@@ -256,25 +256,51 @@ public:
   CharmmPSF(const CharmmPSF &other);
 
   /**
-   * @brief Constructs an independent copy from a const rvalue.
+   * @brief Constructs a PSF by transferring another PSF's complete state.
    *
-   * This compatibility overload performs the same deep-copy operations as the
-   * const-lvalue copy constructor. Because the source is const, no ownership is
-   * transferred and the source remains unchanged.
+   * Host vectors, connectivity sets, file-path storage, and all three
+   * CudaContainer mirrors are transferred without allocation, copying,
+   * transfer, or synchronization.
    *
-   * @param[in] other PSF object to copy. The source is not moved from or
-   * retained.
-   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if copying a
-   * CudaContainer device allocation fails.
-   * @throws std::bad_alloc If a host or device-copy diagnostic allocation
-   * fails.
-   * @throws std::length_error If copied storage exceeds an
-   * implementation-defined limit.
+   * @param[in,out] other PSF whose complete owned state is transferred.
    *
-   * @post On success, the new object owns storage independent of `other`.
-   * @warning This overload is not a C++ move constructor.
+   * @post This object contains the state that `other` held before construction.
+   * @post `other` is equivalent to a default-constructed `CharmmPSF`: all six
+   * counts are `-1`, all host containers are empty, all CudaContainers are
+   * empty, and the stored file path is empty.
    */
-  CharmmPSF(const CharmmPSF &&other);
+  CharmmPSF(CharmmPSF &&other) noexcept;
+
+public:
+  /**
+   * @brief Replaces this PSF with an independent memberwise copy.
+   *
+   * @param[in] other PSF whose complete stored state is copied.
+   * @return A borrowed mutable reference to this object.
+   *
+   * @warning Assignment is sequential rather than transactional. A later host
+   * allocation or CUDA failure can leave earlier members assigned.
+   */
+  CharmmPSF &operator=(const CharmmPSF &other) = default;
+
+  /**
+   * @brief Replaces this PSF by transferring another PSF's complete state.
+   *
+   * The destination's previous state is released through normal non-throwing
+   * destruction. Self-move assignment is a no-op.
+   *
+   * @param[in,out] other PSF whose complete owned state is transferred.
+   * @return A borrowed mutable reference to this object.
+   *
+   * @post For distinct objects, this object contains the state that `other`
+   * held before assignment.
+   * @post For distinct objects, `other` is equivalent to a
+   * default-constructed `CharmmPSF`.
+   * @post Self-move assignment leaves the PSF unchanged.
+   * @warning CUDA cleanup failure while releasing the destination's former
+   * CudaContainer storage is discarded, consistent with destruction.
+   */
+  CharmmPSF &operator=(CharmmPSF &&other) noexcept;
 
 public:
   /**
@@ -876,6 +902,18 @@ public:
   InclusionExclusion getInclusionExclusionLists(void) const;
 
 private:
+  /**
+   * @brief Exchanges complete owned PSF state with another object.
+   *
+   * @param[in,out] other PSF whose scalar, host, device, and path state is
+   * exchanged with this object.
+   *
+   * @post Each object contains the complete previous state of the other.
+   * @note The operation performs no allocation, data copy, CUDA transfer, or
+   * synchronization.
+   */
+  void swap(CharmmPSF &other) noexcept;
+
   /**
    * @brief Rebuilds recognized three-site water tuples from atom types.
    *

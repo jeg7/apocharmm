@@ -23,10 +23,12 @@
  * Unused high bits in the final word are always cleared. Counts and indices are
  * dimensionless.
  *
- * The object exclusively owns its host storage. Copy construction and the
- * copy-like `const AtomSelection &&` overload create independent storage.
- * Logical operations require both operands to describe the same atom count.
- * Resizing resets the complete selection rather than preserving an overlap.
+ * The object exclusively owns its host storage. Copy construction and copy
+ * assignment create independent storage. Move construction and move assignment
+ * transfer the owned word storage without allocation and leave the source as a
+ * valid zero-atom selection. Logical operations require both operands to
+ * describe the same atom count. Resizing resets the complete selection rather
+ * than preserving an overlap.
  *
  * This class performs no CUDA allocation, transfer, stream operation, or
  * synchronization. The compiler-generated destructor only releases host
@@ -95,20 +97,19 @@ public:
   AtomSelection(const AtomSelection &other);
 
   /**
-   * @brief Constructs an independent copy from a const rvalue.
+   * @brief Constructs a selection by transferring another selection's storage.
    *
-   * @param[in] other Const selection rvalue borrowed during construction. The
-   * source remains unchanged and is not retained.
-   * @throws std::bad_alloc If the owned word vector cannot be copied.
-   * @throws std::length_error If the copied storage exceeds an
-   * implementation-defined limit.
+   * No word storage is allocated or copied. The source is reset to the valid
+   * zero-atom representation.
    *
-   * @post The new object has the same atom count and selected indices as
-   * `other`, without aliasing its storage.
-   * @warning Because `other` is `const`, this overload copies and is not an
-   * ownership-transferring move constructor.
+   * @param[in,out] other Selection whose owned word storage is transferred.
+   *
+   * @post The new object has the same atom count and selected indices that
+   * `other` had before construction.
+   * @post `other.getNumAtoms() == 0` and `other.getNumSelected() == 0`.
+   * @note This operation performs no allocation and does not throw.
    */
-  AtomSelection(const AtomSelection &&other);
+  AtomSelection(AtomSelection &&other) noexcept;
 
 public:
   /**
@@ -129,23 +130,22 @@ public:
   AtomSelection &operator=(const AtomSelection &other);
 
   /**
-   * @brief Replaces this selection with a copy of a const rvalue.
+   * @brief Replaces this selection by transferring another selection's storage.
    *
-   * @param[in] other Const selection rvalue borrowed during assignment. The
-   * source remains unchanged and is not retained.
+   * The destinations's previous word storage is released through normal
+   * non-throwing container destruction. Self-move assignment is a no-op.
+   *
+   * @param[in,out] other Selection whose owned word storage is transferred.
    * @return A borrowed mutable reference to this object.
-   * @throws std::bad_alloc If the owned word vector cannot be copied.
-   * @throws std::length_error If the copied storage exceeds an
-   * implementation-defined limit.
    *
-   * @post On success, this object has the same atom count and selected indices
-   * as `other` without aliasing its storage.
-   * @warning Because `other` is `const`, this overload copies and does not
-   * transfer ownership.
-   * @warning The atom count is assigned before the word vector. A failed vector
-   * assignment can leave this object with a new count and old word storage.
+   * @post For distinct objects, this object has the atom count and selected
+   * indices that `other` had before assignment.
+   * @post For distinct objects, `other.getNumAtoms() == 0` and
+   * `other.getNumSelected() == 0`.
+   * @post Self-move assignment leaves the object unchanged.
+   * @note This operation performs no allocation and does not throw.
    */
-  AtomSelection &operator=(const AtomSelection &&other);
+  AtomSelection &operator=(AtomSelection &&other) noexcept;
 
   /**
    * @brief Intersects this selection with another selection.

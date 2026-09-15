@@ -60,9 +60,14 @@ transfers a nonempty range to a new host vector. Nonempty transfers finish with
 Copy construction from another `CudaContainer<T>` instead copies the two source
 mirrors independently and does not reconcile existing divergence between them.
 
-The overloads taking `const std::vector<T> &&`, `const DeviceVector<T> &&`, and
-`const CudaContainer<T> &&` are copies, not ownership-transferring moves. Their
-sources remain unchanged.
+Rvalue construction from `std::vector<T>` transfers its host allocation and
+creates the device mirror. Rvalue construction from `DeviceVector<T>` transfers
+its device allocation and creates the host mirror. These converting operations
+can still throw while allocating or populating the missing mirror.
+
+Move construction from another `CudaContainer<T>` transfers both mirrors without
+allocation, copying, transfer, or synchronization. Existing divergence between
+the source mirrors is preserved, and the moved-from container becomes empty.
 
 Normal successful modifiers maintain equal active lengths. `resize()` changes
 both lengths but does not copy values between the mirrors: new host elements are
@@ -85,8 +90,9 @@ the device allocation.
 
 A `CudaContainer<T>` exclusively owns its `std::vector<T>` host mirror and its
 [DeviceVector](@ref DeviceVector) device mirror. Copying creates independent
-storage. No constructor, assignment, setter, or accessor retains ownership of an
-input vector or transfers ownership from it.
+storage. Rvalue conversion from a host or device vector transfers the compatible
+source allocation. Moving another `CudaContainer<T>` transfers both mirrors and
+preserves any existing divergence. No accessor or setter transfers ownership.
 
 `at()` and `operator[]` return borrowed references to host elements.
 `getHostArray()` and `getDeviceArray()` return borrowed references to the member
@@ -136,6 +142,14 @@ before host resizing and copying. A later failure can therefore leave different
 lengths or values observable in the two mirrors. Re-establish a known state with
 `clear()`, a successful `set()` call, or another fully successful assignment
 before relying on mirror coherence.
+
+Rvalue conversion assignment constructs a complete temporary replacement before
+changing the destination. If replacement construction fails, the destination is
+unchanged. A failure after the source allocation has been transferred can still
+leave the source empty. Same-type move construction and assignment do not
+allocate or perform a CUDA transfer. Same-type move assignment releases the
+destination's former device allocation through non-throwing cleanup, so a
+cleanup failure is discarded.
 
 `push_back()` checks the CUDA status returned by `cudaGetLastError()`
 immediately after its one-thread append kernel is launched. The checker does not
@@ -220,7 +234,9 @@ constructors, device assignments, device setters, and `transferToHost()` end at
 the reverse boundary. For nonempty mirrors, the explicit transfer routines
 perform `cudaMemcpy` and then `cudaDeviceSynchronize()`.
 CudaContainer-to-CudaContainer copy paths copy each owner separately and do not
-issue an explicit container-level synchronization.
+issue an explicit container-level synchronization. Same-type move paths exchange
+both owners without a CUDA operation. Host- and device-rvalue conversion paths
+exchange the compatible owner and explicitly populate the missing mirror.
 
 The native CUDA checker is the error boundary. CUDA runtime statuses and
 immediate kernel-launch statuses become `ApoCharmmErrorCode::Cuda`. The
@@ -251,11 +267,10 @@ aliases. `test/unittests/unittest-nothrowDestruction.cpp` statically verifies
 the no-throw destructor contract. The current suite does not exercise
 `printDeviceArray()` or deliberate mirror-length divergence.
 
-Architectural constraints visible in the current implementation include
-const-rvalue copy overloads that cannot transfer ownership, mutable accessors
-that can bypass the equal-length invariant, sequential two-mirror updates with a
-weak failure guarantee, device-wide synchronization in explicit transfers, and a
-print path whose launch size is derived from the host mirror.
+Architectural constraints visible in the current implementation include mutable
+accessors that can bypass the equal-length invariant, sequential two-mirror
+updates with a weak failure guarantee, device-wide synchronization in explicit
+transfers, and a print path whose launch size is derived from the host mirror.
 
 ## API Reference
 

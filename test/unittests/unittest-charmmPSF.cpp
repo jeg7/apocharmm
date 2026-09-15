@@ -15,8 +15,13 @@
 
 #include <string>
 #include <type_traits>
+#include <utility>
 
 static_assert(std::is_nothrow_destructible_v<CharmmPSF>);
+static_assert(std::is_copy_constructible_v<CharmmPSF>);
+static_assert(std::is_copy_assignable_v<CharmmPSF>);
+static_assert(std::is_nothrow_move_constructible_v<CharmmPSF>);
+static_assert(std::is_nothrow_move_assignable_v<CharmmPSF>);
 
 namespace {
 
@@ -34,29 +39,7 @@ const std::string EMPTY_IMPROPER_SECTION = "       0 !NIMPHI: impropers\n";
 const std::string EMPTY_DONOR_SECTION = "       0 !NDON: donors\n";
 const std::string EMPTY_ACCEPTOR_SECTION = "       0 !NACC: acceptors\n";
 
-void CheckPsfFileError(const std::string &fileName, const std::string &contents,
-                       const ApoCharmmErrorCode expectedCode,
-                       const std::string &expectedMessage) {
-  apo_test::RemoveIfExists(fileName);
-  apo_test::WriteTextFile(fileName, contents);
-
-  apo_test::CheckApoCharmmError(
-      [&fileName](void) {
-        CharmmPSF psf(fileName);
-        static_cast<void>(psf);
-      },
-      expectedCode, expectedMessage);
-
-  apo_test::RemoveIfExists(fileName);
-
-  return;
-}
-
-} // namespace
-
-TEST_CASE("CharmPSFDefaultConstructor") {
-  CharmmPSF psf;
-
+void CheckDefaultPsfState(const CharmmPSF &psf) {
   CHECK(psf.getNumAtoms() == -1);
   CHECK(psf.getNumBonds() == -1);
   CHECK(psf.getNumAngles() == -1);
@@ -85,9 +68,37 @@ TEST_CASE("CharmPSFDefaultConstructor") {
   CHECK(psf.getInb14().empty() == true);
 
   CHECK(psf.getWaterMolecules().size() == 0);
+  CHECK(psf.getWaterMolecules().getDeviceArray().data() == nullptr);
   CHECK(psf.getResidues().size() == 0);
+  CHECK(psf.getResidues().getDeviceArray().data() == nullptr);
   CHECK(psf.getGroups().size() == 0);
+  CHECK(psf.getGroups().getDeviceArray().data() == nullptr);
   CHECK(psf.getFilePath().empty() == true);
+}
+
+void CheckPsfFileError(const std::string &fileName, const std::string &contents,
+                       const ApoCharmmErrorCode expectedCode,
+                       const std::string &expectedMessage) {
+  apo_test::RemoveIfExists(fileName);
+  apo_test::WriteTextFile(fileName, contents);
+
+  apo_test::CheckApoCharmmError(
+      [&fileName](void) {
+        CharmmPSF psf(fileName);
+        static_cast<void>(psf);
+      },
+      expectedCode, expectedMessage);
+
+  apo_test::RemoveIfExists(fileName);
+
+  return;
+}
+
+} // namespace
+
+TEST_CASE("CharmmPSFDefaultConstructor") {
+  CharmmPSF psf;
+  CheckDefaultPsfState(psf);
 }
 
 TEST_CASE("CharmmPSFParsesLinearChain") {
@@ -240,16 +251,70 @@ TEST_CASE("CharmmPSFParsesLinearChain") {
     CHECK(copy.getNetCharge() == Approx(9.3));
   }
 
-  SECTION("RvalueConstructor") {
+  SECTION("MoveConstructorTransfersStorage") {
     CharmmPSF source(fileName);
-    CharmmPSF copy(std::move(source));
 
-    CHECK(copy.getFilePath() == fileName);
-    CHECK(copy.getNumAtoms() == 4);
-    CHECK(copy.getNumBonds() == 3);
-    CHECK(copy.getAtomNames() ==
+    double *const chargesData = source.getCharges().data();
+    int2 *const residuesHostData = source.getResidues().getHostArray().data();
+    int2 *const residuesDeviceData =
+        source.getResidues().getDeviceArray().data();
+
+    CharmmPSF moved(std::move(source));
+
+    CHECK(moved.getCharges().data() == chargesData);
+    CHECK(moved.getResidues().getHostArray().data() == residuesHostData);
+    CHECK(moved.getResidues().getDeviceArray().data() == residuesDeviceData);
+
+    CHECK(moved.getFilePath() == fileName);
+    CHECK(moved.getNumAtoms() == 4);
+    CHECK(moved.getNumBonds() == 3);
+    CHECK(moved.getAtomNames() ==
           std::vector<std::string>{"C1", "H1", "C2", "H2"});
-    CHECK(copy.getNetCharge() == Approx(0.0).margin(1.0e-12));
+    CHECK(moved.getNetCharge() == Approx(0.0).margin(1.0e-12));
+
+    CheckDefaultPsfState(source);
+  }
+
+  SECTION("MoveAssignmentTransfersStorage") {
+    CharmmPSF source(fileName);
+
+    double *const chargesData = source.getCharges().data();
+    int2 *const residuesHostData = source.getResidues().getHostArray().data();
+    int2 *const residuesDeviceData =
+        source.getResidues().getDeviceArray().data();
+
+    CharmmPSF assigned(fileName);
+    assigned = std::move(source);
+
+    CHECK(assigned.getCharges().data() == chargesData);
+    CHECK(assigned.getResidues().getHostArray().data() == residuesHostData);
+    CHECK(assigned.getResidues().getDeviceArray().data() == residuesDeviceData);
+
+    CHECK(assigned.getFilePath() == fileName);
+    CHECK(assigned.getNumAtoms() == 4);
+    CHECK(assigned.getNumBonds() == 3);
+    CHECK(assigned.getAtomNames() ==
+          std::vector<std::string>{"C1", "H1", "C2", "H2"});
+    CHECK(assigned.getNetCharge() == Approx(0.0).margin(1.0e-12));
+
+    CheckDefaultPsfState(source);
+  }
+
+  SECTION("SelfMoveAssignmentIsNoOp") {
+    CharmmPSF psf(fileName);
+
+    double *const chargesData = psf.getCharges().data();
+    int2 *const residuesHostData = psf.getResidues().getHostArray().data();
+    int2 *const residuesDeviceData = psf.getResidues().getDeviceArray().data();
+
+    psf = std::move(psf);
+
+    CHECK(psf.getCharges().data() == chargesData);
+    CHECK(psf.getResidues().getHostArray().data() == residuesHostData);
+    CHECK(psf.getResidues().getDeviceArray().data() == residuesDeviceData);
+    CHECK(psf.getNumAtoms() == 4);
+    CHECK(psf.getNumBonds() == 3);
+    CHECK(psf.getNetCharge() == Approx(0.0).margin(1.0e-12));
   }
 
   apo_test::RemoveIfExists(fileName);

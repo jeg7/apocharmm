@@ -13,6 +13,7 @@
 #include "ApoCharmmError.h"
 
 #include <string>
+#include <utility>
 
 AtomSelection::AtomSelection(const int numAtoms,
                              const InitialValue initialValue)
@@ -23,8 +24,11 @@ AtomSelection::AtomSelection(const int numAtoms,
 AtomSelection::AtomSelection(const AtomSelection &other)
     : m_NumAtoms(other.m_NumAtoms), m_Words(other.m_Words) {}
 
-AtomSelection::AtomSelection(const AtomSelection &&other)
-    : m_NumAtoms(other.m_NumAtoms), m_Words(other.m_Words) {}
+AtomSelection::AtomSelection(AtomSelection &&other) noexcept
+    : m_NumAtoms(0), m_Words() {
+  std::swap(m_NumAtoms, other.m_NumAtoms);
+  m_Words.swap(other.m_Words);
+}
 
 AtomSelection &AtomSelection::operator=(const AtomSelection &other) {
   m_NumAtoms = other.m_NumAtoms;
@@ -32,9 +36,13 @@ AtomSelection &AtomSelection::operator=(const AtomSelection &other) {
   return *this;
 }
 
-AtomSelection &AtomSelection::operator=(const AtomSelection &&other) {
-  m_NumAtoms = other.m_NumAtoms;
-  m_Words = other.m_Words;
+AtomSelection &AtomSelection::operator=(AtomSelection &&other) noexcept {
+  if (this != &other) {
+    AtomSelection replacement(std::move(other));
+    std::swap(m_NumAtoms, replacement.m_NumAtoms);
+    m_Words.swap(replacement.m_Words);
+  }
+
   return *this;
 }
 

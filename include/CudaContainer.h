@@ -38,6 +38,12 @@
  * The class does not retain a CUDA device identifier or stream and provides
  * no internal host-thread synchronization.
  *
+ * Copying a container duplicates its host and device mirrors independently and
+ * preserves any existing divergence. Moving a container transfers both mirrors
+ * without allocation, copying, transfer, or synchronization and leaves the
+ * source empty. Rvalue construction from a host or device vector transfers the
+ * compatible source allocation and creates the missing mirror.
+ *
  * @tparam T Element representation copied byte-for-byte between host and
  * device memory. The library currently instantiates `int`, `int2`, `int3`,
  * `int4`, `unsigned int`, `float`, `float2`, `float3`, `float4`,
@@ -114,25 +120,26 @@ public: // Member functions
   CudaContainer(const std::vector<T> &other);
 
   /**
-   * @brief Constructs coherent mirrors by copying a const host-vector rvalue.
+   * @brief Constructs coherent mirrors by transferring a host vector.
    *
-   * This legacy overload performs the same deep copy, host-to-device transfer,
-   * and device-wide synchronization as the const-lvalue overload.
+   * Device storage is allocated before the host allocation is transferred. The
+   * source host allocation is then exchanged into this container and copied to
+   * the device, followed by `cudaDeviceSynchronize()` for a nonempty range.
    *
-   * @param[in] other Const host-vector rvalue whose active elements are
-   * copied. The source is borrowed during construction and remains unchanged.
+   * @param[in,out] other Host vector whose allocation is transferred.
    * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if device
-   * allocation, host-to-device copying, or device synchronization fails.
-   * @throws std::bad_alloc If host allocation or error-diagnostic construction
-   * fails.
-   * @throws std::length_error If the source length or an error diagnostic
-   * exceeds an implementation limit.
+   * allocation, host-to-device copying, or synchronization fails.
+   * @throws std::bad_alloc If allocation or diagnostic construction fails.
+   * @throws std::length_error If storage or a diagnostic exceeds an
+   * implementation limit.
    *
-   * @post On success, both mirrors contain independent copies of `other`.
-   * @note Because `other` is `const`, this overload does not move storage from
-   * the source.
+   * @post On success, both mirrors contain the original values from `other`.
+   * @post On success, `other.empty()` is `true`.
+   * @warning A transfer or synchronization failure after the host allocation
+   * has been exchanged leaves `other` empty; failed construction releases the
+   * transferred host and device storage.
    */
-  CudaContainer(const std::vector<T> &&other);
+  CudaContainer(std::vector<T> &&other);
 
   /**
    * @brief Constructs coherent mirrors by copying a device vector.
@@ -159,27 +166,29 @@ public: // Member functions
   CudaContainer(const DeviceVector<T> &other);
 
   /**
-   * @brief Constructs coherent mirrors by copying a const device-vector
-   * rvalue.
+   * @brief Constructs coherent mirrors by transferring a device vector.
    *
-   * This legacy overload performs the same device copy, device-to-host
-   * transfer, and device-wide synchronization as the const-lvalue overload.
+   * Host storage is allocated first. The source device allocation is then
+   * exchanged into this container and copied to the host, followed by
+   * `cudaDeviceSynchronize()` for a nonempty range.
    *
-   * @param[in] other Const device-vector rvalue whose active range is copied.
-   * The source allocation remains owned by `other` and is not modified.
-   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if device
-   * allocation, device-to-device copying, device-to-host copying, or
-   * synchronization fails.
-   * @throws std::bad_alloc If host allocation or error-diagnostic construction
-   * fails.
-   * @throws std::length_error If the source length or an error diagnostic
-   * exceeds an implementation limit.
+   * @param[in,out] other Device vector whose allocation and metadata are
+   * transferred.
+   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if device-to-host
+   * copying or synchronization fails.
+   * @throws std::bad_alloc If host allocation or diagnostic construction fails.
+   * @throws std::length_error If storage or a diagnostic exceeds an
+   * implementation limit.
    *
-   * @post On success, both mirrors contain independent copies of `other`.
-   * @note Because `other` is `const`, this overload does not move its
-   * allocation.
+   * @post On success, both mirrors contain the original active values from
+   * `other`.
+   * @post On success, `other.data() == nullptr`, `other.size() == 0`, and
+   * `other.capacity() == 0`.
+   * @warning A transfer or synchronization failure after the device allocation
+   * has been exchanged leaves `other` empty; failed construction releases the
+   * transferred allocation.
    */
-  CudaContainer(const DeviceVector<T> &&other);
+  CudaContainer(DeviceVector<T> &&other);
 
   /**
    * @brief Constructs independent copies of another container's two mirrors.
@@ -203,26 +212,20 @@ public: // Member functions
   CudaContainer(const CudaContainer<T> &other);
 
   /**
-   * @brief Constructs independent copies of a const container rvalue.
+   * @brief Constructs a container by transferring both source mirrors.
    *
-   * The host and device mirrors are copied separately, exactly as for the
-   * const-lvalue copy constructor. Existing divergence between the source
-   * mirrors is preserved.
+   * Existing host/device length or value divergence is preserved exactly. No
+   * allocation, CUDA copy, transfer, or synchronization is performed.
    *
-   * @param[in] other Const container rvalue borrowed during construction. Its
-   * storage and values remain unchanged.
-   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if device
-   * allocation or device-to-device copying fails.
-   * @throws std::bad_alloc If host allocation or error-diagnostic construction
-   * fails.
-   * @throws std::length_error If a mirror length or an error diagnostic
-   * exceeds an implementation limit.
+   * @param[in,out] other Container whose two mirrors are transferred.
    *
-   * @post On success, neither mirror aliases storage owned by `other`.
-   * @note Because `other` is `const`, this overload does not transfer
-   * ownership.
+   * @post This object owns the host and device storage previously owned by
+   * `other`.
+   * @post `other.size() == 0`, `other.getHostArray().empty()` is `true`,
+   * `other.getDeviceArray().size() == 0`, and
+   * `other.getDeviceArray().data() == nullptr`.
    */
-  CudaContainer(const CudaContainer<T> &&other);
+  CudaContainer(CudaContainer<T> &&other) noexcept;
 
   /**
    * @brief Destroys both owned mirrors without propagating cleanup failures.
@@ -260,26 +263,26 @@ public: // Member functions
   CudaContainer<T> &operator=(const std::vector<T> &other);
 
   /**
-   * @brief Replaces both mirrors with a copy of a const host-vector rvalue.
+   * @brief Replaces both mirrors from a transferred host vector.
    *
-   * This legacy overload has the same transfer, synchronization, and failure
-   * behavior as assignment from a const host-vector lvalue.
-   *
-   * @param[in] other Const host-vector rvalue borrowed during the assignment.
-   * Its storage and values remain unchanged.
-   * @return A borrowed reference to this container.
-   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if device resizing,
-   * host-to-device copying, or device synchronization fails.
-   * @throws std::bad_alloc If host allocation or error-diagnostic construction
+   * A complete replacement container is constructed first and then moved into
+   * this object. The destination is unchanged if replacement construction
    * fails.
-   * @throws std::length_error If the source length or an error diagnostic
-   * exceeds an implementation limit.
    *
-   * @post On success, both mirrors contain independent copies of `other`.
-   * @warning On failure after host assignment, the two mirrors can diverge.
-   * @note Because `other` is `const`, this overload does not move from it.
+   * @param[in,out] other Host vector whose allocation is transferred.
+   * @return A borrowed mutable reference to this container.
+   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if allocation,
+   * host-to-device copying, or synchronization fails.
+   * @throws std::bad_alloc If allocation or diagnostic construction fails.
+   * @throws std::length_error If storage or a diagnostic exceeds an
+   * implementation limit.
+   *
+   * @post On success, both mirrors contain the original values from `other`
+   * and `other.empty()` is `true`.
+   * @warning If replacement construction fails after consuming `other`, the
+   * destination remains unchanged but `other` remains empty.
    */
-  CudaContainer<T> &operator=(const std::vector<T> &&other);
+  CudaContainer<T> &operator=(std::vector<T> &&other);
 
   /**
    * @brief Replaces both mirrors with a coherent copy of a device vector.
@@ -309,27 +312,29 @@ public: // Member functions
   CudaContainer<T> &operator=(const DeviceVector<T> &other);
 
   /**
-   * @brief Replaces both mirrors with a copy of a const device-vector rvalue.
+   * @brief Replaces both mirrors from a transferred device vector.
    *
-   * This legacy overload has the same transfer, synchronization, and failure
-   * behavior as assignment from a const device-vector lvalue.
-   *
-   * @param[in] other Const device-vector rvalue borrowed during assignment.
-   * Its allocation and values remain unchanged.
-   * @return A borrowed reference to this container.
-   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if device
-   * allocation, device-to-device copying, device-to-host copying, or
-   * synchronization fails.
-   * @throws std::bad_alloc If host allocation or error-diagnostic construction
+   * A complete replacement container is constructed first and then moved into
+   * this object. The destination is unchanged if replacement construction
    * fails.
-   * @throws std::length_error If the source length or an error diagnostic
-   * exceeds an implementation limit.
    *
-   * @post On success, both mirrors contain independent copies of `other`.
-   * @warning On failure after device assignment, the two mirrors can diverge.
-   * @note Because `other` is `const`, this overload does not move from it.
+   * @param[in,out] other Device vector whose allocation and metadata are
+   * transferred.
+   * @return A borrowed mutable reference to this container.
+   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if device-to-host
+   * copying or synchronization fails.
+   * @throws std::bad_alloc If host allocation or diagnostic construction fails.
+   * @throws std::length_error If storage or a diagnostic exceeds an
+   * implementation limit.
+   *
+   * @post On success, both mirrors contain the original active values from
+   * `other`.
+   * @post On success, `other.data() == nullptr`, `other.size() == 0`, and
+   * `other.capacity() == 0`.
+   * @warning If replacement construction fails after consuming `other`, the
+   * destination remains unchanged but `other` remains empty.
    */
-  CudaContainer<T> &operator=(const DeviceVector<T> &&other);
+  CudaContainer<T> &operator=(DeviceVector<T> &&other);
 
   /**
    * @brief Replaces each mirror with the corresponding mirror from another
@@ -355,29 +360,26 @@ public: // Member functions
   CudaContainer<T> &operator=(const CudaContainer<T> &other);
 
   /**
-   * @brief Replaces each mirror with copies from a const container rvalue.
+   * @brief Replaces this container by transferring both source mirrors.
    *
-   * This legacy overload copies the host and device mirrors separately and
-   * does not reconcile source divergence.
+   * Existing source divergence is preserved exactly. The destination's former
+   * mirrors are released through non-throwing destruction. Self-move assignment
+   * is a no-op.
    *
-   * @param[in] other Const container rvalue borrowed during assignment. It
-   * remains unchanged.
-   * @return A borrowed reference to this container.
-   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if device
-   * allocation, device-to-device copying, or device cleanup fails.
-   * @throws std::bad_alloc If host allocation or error-diagnostic construction
-   * fails.
-   * @throws std::length_error If a mirror length or an error diagnostic
-   * exceeds an implementation limit.
+   * @param[in,out] other Container whose two mirrors are transferred.
+   * @return A borrowed mutable reference to this container.
    *
-   * @post On success, both destination mirrors own independent copies of the
-   * corresponding source mirrors.
-   * @warning On failure after host assignment, the destination mirrors can
-   * diverge.
-   * @note Because `other` is `const`, this overload does not transfer
-   * ownership.
+   * @post For distinct objects, this container owns the host and device storage
+   * previously owned by `other`.
+   * @post For distinct objects, `other.size() == 0`,
+   * `other.getHostArray().empty()` is `true`,
+   * `other.getDeviceArray().size() == 0`, and
+   * `other.getDeviceArray().data() == nullptr`.
+   * @post Self-move assignment leaves the container unchanged.
+   * @warning CUDA cleanup failure for the destination's former device
+   * allocation is discarded, consistent with destruction.
    */
-  CudaContainer<T> &operator=(const CudaContainer<T> &&other);
+  CudaContainer<T> &operator=(CudaContainer<T> &&other) noexcept;
 
 public: // Element access
   /**

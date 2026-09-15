@@ -23,10 +23,14 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace {
+
+static_assert(std::is_nothrow_move_constructible_v<AtomSelection>);
+static_assert(std::is_nothrow_move_assignable_v<AtomSelection>);
 
 const std::string TEST_PSF_TEXT = R"PSF(PSF
 
@@ -153,16 +157,23 @@ TEST_CASE("AtomSelectionBitsetBehavior") {
     CheckSelection(assigned, 70, {0, 64, 69});
   }
 
-  SECTION("RvalueConstructorAndAssignment") {
+  SECTION("MoveConstructorAndAssignmentTransferStorage") {
     AtomSelection source(70);
     source.set(1);
     source.set(65);
 
     AtomSelection moved(std::move(source));
-    CheckSelection(moved, 70, {1, 65});
 
-    AtomSelection assigned(70);
+    CheckSelection(moved, 70, {1, 65});
+    CheckSelection(source, 0, {});
+
+    AtomSelection assigned(4, AtomSelection::InitialValue::ALL);
     assigned = std::move(moved);
+
+    CheckSelection(assigned, 70, {1, 65});
+    CheckSelection(moved, 0, {});
+
+    assigned = std::move(assigned);
     CheckSelection(assigned, 70, {1, 65});
   }
 

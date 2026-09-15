@@ -20,6 +20,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector_functions.h>
 
 namespace {
@@ -114,22 +115,18 @@ CharmmPSF::CharmmPSF(const CharmmPSF &other)
       m_WaterMolecules(other.m_WaterMolecules), m_Residues(other.m_Residues),
       m_Groups(other.m_Groups), m_FilePath(other.m_FilePath) {}
 
-CharmmPSF::CharmmPSF(const CharmmPSF &&other)
-    : m_NumAtoms(other.m_NumAtoms),
-      m_SegmentIdentifiers(other.m_SegmentIdentifiers),
-      m_ResidueIdentifiers(other.m_ResidueIdentifiers),
-      m_ResidueNames(other.m_ResidueNames), m_AtomNames(other.m_AtomNames),
-      m_AtomTypes(other.m_AtomTypes), m_Charges(other.m_Charges),
-      m_Masses(other.m_Masses), m_NumBonds(other.m_NumBonds),
-      m_Bonds(other.m_Bonds), m_NumAngles(other.m_NumAngles),
-      m_Angles(other.m_Angles), m_NumDihedrals(other.m_NumDihedrals),
-      m_Dihedrals(other.m_Dihedrals), m_NumImpropers(other.m_NumImpropers),
-      m_Impropers(other.m_Impropers), m_NumCrossTerms(other.m_NumCrossTerms),
-      m_CrossTerms(other.m_CrossTerms), m_Connected12(other.m_Connected12),
-      m_Connected13(other.m_Connected13), m_Connected14(other.m_Connected14),
-      m_Iblo14(other.m_Iblo14), m_Inb14(other.m_Inb14),
-      m_WaterMolecules(other.m_WaterMolecules), m_Residues(other.m_Residues),
-      m_Groups(other.m_Groups), m_FilePath(other.m_FilePath) {}
+CharmmPSF::CharmmPSF(CharmmPSF &&other) noexcept : CharmmPSF() {
+  this->swap(other);
+}
+
+CharmmPSF &CharmmPSF::operator=(CharmmPSF &&other) noexcept {
+  if (this != &other) {
+    CharmmPSF replacement(std::move(other));
+    this->swap(replacement);
+  }
+
+  return *this;
+}
 
 void CharmmPSF::setNumAtoms(const int numAtoms) {
   APOCHARMM_REQUIRE(numAtoms >= 0, ApoCharmmErrorCode::InvalidArgument,
@@ -399,6 +396,47 @@ InclusionExclusion CharmmPSF::getInclusionExclusionLists(void) const {
   //   std::cout << "in14_ex14[" << i << "] = " << in14_ex14[i] << std::endl;
 
   return InclusionExclusion(sizes, in14_ex14);
+}
+
+void CharmmPSF::swap(CharmmPSF &other) noexcept {
+  std::swap(m_NumAtoms, other.m_NumAtoms);
+
+  m_SegmentIdentifiers.swap(other.m_SegmentIdentifiers);
+  m_ResidueIdentifiers.swap(other.m_ResidueIdentifiers);
+  m_ResidueNames.swap(other.m_ResidueNames);
+  m_AtomNames.swap(other.m_AtomNames);
+  m_AtomTypes.swap(other.m_AtomTypes);
+  m_Charges.swap(other.m_Charges);
+  m_Masses.swap(other.m_Masses);
+
+  std::swap(m_NumBonds, other.m_NumBonds);
+  m_Bonds.swap(other.m_Bonds);
+
+  std::swap(m_NumAngles, other.m_NumAngles);
+  m_Angles.swap(other.m_Angles);
+
+  std::swap(m_NumDihedrals, other.m_NumDihedrals);
+  m_Dihedrals.swap(other.m_Dihedrals);
+
+  std::swap(m_NumImpropers, other.m_NumImpropers);
+  m_Impropers.swap(other.m_Impropers);
+
+  std::swap(m_NumCrossTerms, other.m_NumCrossTerms);
+  m_CrossTerms.swap(other.m_CrossTerms);
+
+  m_Connected12.swap(other.m_Connected12);
+  m_Connected13.swap(other.m_Connected13);
+  m_Connected14.swap(other.m_Connected14);
+  m_Iblo14.swap(other.m_Iblo14);
+  m_Inb14.swap(other.m_Inb14);
+
+  std::swap(m_WaterMolecules, other.m_WaterMolecules);
+  std::swap(m_Residues, other.m_Residues);
+  std::swap(m_Groups, other.m_Groups);
+
+  m_FilePath.swap(other.m_FilePath);
+
+  return;
 }
 
 void CharmmPSF::initializeWaterMolecules(void) {
