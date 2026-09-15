@@ -92,13 +92,19 @@ errors.
 
 ## Atom Selection
 
+- [apocharmm.AtomReference](@ref python_atom_reference) owns one validated,
+  topology-aware, zero-based atom identity. Native PSF object identity defines
+  topology identity, and equality also requires an equal atom index.
+- [apocharmm.AtomSelection](@ref python_atom_selection) owns a set-valued bitset
+  result containing zero or more atom indices.
 - [apocharmm.AtomSelector](@ref python_atom_selector) evaluates CHARMM-style
-  atom-selection expressions.
-- [apocharmm.AtomSelection](@ref python_atom_selection) owns and queries one
-  selection result.
+  expressions. `select()` returns `AtomSelection`; `selectAtom()` requires
+  exactly one match and returns `AtomReference`.
 
-See the [Atom Selection subsystem](@ref atom_selection) for the expression
-language, index conventions, ownership, and error behavior.
+See the [Atom Selection and Atom References subsystem](@ref atom_selection) for
+construction, expression syntax, pointer-identity topology semantics, shared
+native PSF ownership, equality, lifetime, exact-one errors, and cross-language
+behavior.
 
 ## Output Subscribers
 

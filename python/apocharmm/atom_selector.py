@@ -11,7 +11,9 @@
 @brief Provides the Python atom-selection evaluator.
 
 `AtomSelector` evaluates CHARMM-style selection strings against one
-`CharmmPsf` and returns independently owned `AtomSelection` objects.
+`CharmmPsf`. `select()` returns independently owned set-valued `AtomSelection`
+objects, while `selectAtom()` requires exactly one match and returns an
+independently owned topology-aware `AtomReference`.
 
 @anchor python_atom_selector_module
 @see atom_selection
@@ -21,6 +23,8 @@ import ctypes
 
 from ._base import _ApoObject
 from ._lib import lib
+from ._validation import require_c_int
+from .atom_reference import AtomReference
 from .atom_selection import AtomSelection
 from .charmm_psf import CharmmPsf
 from .error import configure_status_function
@@ -49,6 +53,12 @@ def _initialize_prototypes() -> None:
         "AtomSelector.select(selection_string)",
     )
 
+    configure_status_function(
+        lib().apo_atom_selector_select_atom,
+        [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_char_p],
+        "AtomSelector.selectAtom(selection_string)",
+    )
+
     _prototypes_initialized = True
 
     return
@@ -63,14 +73,17 @@ class AtomSelector(_ApoObject):
     closing the original PSF wrapper after construction does not invalidate the
     selector. The topology is shared rather than copied.
 
-    Each successful `select()` call returns a new owning `AtomSelection` that
-    remains valid after this selector is closed. Selection evaluation is
-    host-only and performs no CUDA transfer or synchronization.
+    Each successful `select()` call returns a new owning set-valued
+    `AtomSelection` that remains valid after this selector is closed. Each
+    successful `selectAtom()` call requires exactly one selected atom and
+    returns a new owning topology-aware `AtomReference` that retains shared
+    native PSF ownership. Selection evaluation is host-only and performs no CUDA
+    transfer or synchronization.
 
     `close()`, `destroy()`, context-manager exit, or finalization releases the
-    selector handle and is idempotent. Calling `select()` after closure raises
-    `RuntimeError`. The wrapper provides no internal synchronization; do not
-    overlap closure with selection from another thread.
+    selector handle and is idempotent. Calling either selection method after
+    closure raises `RuntimeError`. The wrapper provides no internal
+    synchronization; do not overlap closure with selection from another thread.
 
     @anchor python_atom_selector
     @see atom_selection
@@ -120,7 +133,7 @@ class AtomSelector(_ApoObject):
 
     def select(self, selection_string: str) -> AtomSelection:
         """
-        @brief Evaluates an atom-selection string.
+        @brief Evaluates an atom-selection string as a set-valued result.
 
         The string is encoded as UTF-8 and passed to the null-terminated C ABI.
         Recognized keywords and dotted operators use ASCII spellings and
@@ -139,8 +152,9 @@ class AtomSelector(_ApoObject):
         @param[in] selection_string Python `str` containing one complete
         expression. The encoded bytes are copied during the native call and are
         not retained.
-        @return A newly owned `AtomSelection` independent of this selector and
-        the source PSF wrapper.
+        @return A newly owned set-valued `AtomSelection` independent of this
+        selector and the source PSF wrapper. Zero, one, or many atoms may be
+        selected.
         @throws TypeError If `selection_string` is not a `str`.
         @throws UnicodeEncodeError If UTF-8 encoding rejects the string, such as
         for an unpaired surrogate.
@@ -178,3 +192,64 @@ class AtomSelector(_ApoObject):
             )
 
         return AtomSelection(handle)
+
+    def selectAtom(self, selection_string: str) -> AtomReference:
+        """
+        @brief Evaluates an expression that must match exactly one atom.
+
+        The method uses the same UTF-8 conversion and native grammar as
+        `select()`. Cardinality is checked only by native
+        `AtomSelector::selectAtom()`: zero or multiple matches are errors rather
+        than Python-side special cases.
+
+        Example:
+
+        @code{.py}
+        selector = apo.AtomSelector(psf)
+        alpha_carbon = selector.selectAtom("atom PROA 42 CA")
+        atom_index = alpha_carbon.getAtomIndex()
+        @endcode
+
+        @param[in] selection_string Python `str` containing one complete
+        expression. The encoded bytes are copied during the native call and are
+        not retained.
+        @return A newly owned `AtomReference` that retains shared native
+        ownership of the selector's PSF and remains valid after the selector or
+        source PSF wrapper is closed.
+        @throws TypeError If `selection_string` is not a `str`.
+        @throws UnicodeEncodeError If UTF-8 encoding rejects the string, such as
+        for an unpaired surrogate.
+        @throws RuntimeError If this selector has been closed or if the C ABI
+        reports success but returns a NULL atom-reference handle.
+        @throws ApoCharmmError With native status
+        `APO_STATUS_INVALID_ARGUMENT` if the string is empty, the expression is
+        invalid, a stored PSF bonded-neighbor index is out of range, or the
+        expression selects anything other than exactly one atom; or with
+        `APO_STATUS_RUNTIME_ERROR` for malformed PSF state, allocation failure,
+        or an internal parser failure.
+
+        @post This selector and its PSF are unchanged.
+        @warning The current wrapper does not reject embedded `"\\0"`
+        characters. Because the C ABI accepts a C string, only the prefix before
+        the first embedded null byte is parsed. Avoid embedded null characters.
+        """
+        _initialize_prototypes()
+
+        if not isinstance(selection_string, str):
+            raise TypeError("selection_string must be a str")
+
+        handle: ctypes.c_void_p = ctypes.c_void_p()
+
+        encoded_selection: bytes = selection_string.encode("utf-8")
+        c_selection_string: ctypes.c_char_p = ctypes.c_char_p(encoded_selection)
+
+        lib().apo_atom_selector_select_atom(
+            ctypes.byref(handle), self.handle, c_selection_string
+        )
+
+        if handle.value is None:
+            raise RuntimeError(
+                "apo_atom_selector_select_atom returned success but produced a NULL handle"
+            )
+
+        return AtomReference._from_handle(handle)

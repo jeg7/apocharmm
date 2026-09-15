@@ -67,6 +67,7 @@ set(APOCHARMM_DOCUMENTATION_CPP_API
 )
 
 set(APOCHARMM_DOCUMENTATION_C_API
+  "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/AtomReference.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/AtomSelection.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/AtomSelector.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/CharmmContext.h"
@@ -90,6 +91,7 @@ set(APOCHARMM_DOCUMENTATION_C_API
 )
 
 set(APOCHARMM_DOCUMENTATION_PYTHON_API
+  "${apoCHARMM_SOURCE_DIR}/python/apocharmm/atom_reference.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/atom_selection.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/atom_selector.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/charmm_context.py"

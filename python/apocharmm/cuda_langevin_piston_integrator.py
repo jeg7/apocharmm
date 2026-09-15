@@ -11,6 +11,7 @@ from collections.abc import Sequence
 import ctypes
 
 from ._lib import lib
+from ._validation import require_c_uint64
 from .enums import CrystalType
 from .error import configure_status_function
 from .cuda_integrator import CudaIntegrator
@@ -478,10 +479,8 @@ class CudaLangevinPistonIntegrator(CudaIntegrator):
         """
         _initialize_prototypes()
 
-        if seed < 0 or seed > 2**64 - 1:
-            raise ValueError("seed must fit in uint64_t")
-
-        c_seed: ctypes.c_uint64 = ctypes.c_uint64(seed)
+        seed_value: int = require_c_uint64(seed, "seed", allow_bool=True)
+        c_seed: ctypes.c_uint64 = ctypes.c_uint64(seed_value)
 
         lib().apo_cuda_langevin_piston_integrator_set_langevin_piston_friction_seed(
             self.handle, c_seed

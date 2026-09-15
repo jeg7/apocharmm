@@ -15,6 +15,7 @@
 #ifndef __APOCHARMM_C_ATOM_SELECTOR_H__
 #define __APOCHARMM_C_ATOM_SELECTOR_H__
 
+#include "apocharmm_c/AtomReference.h"
 #include "apocharmm_c/AtomSelection.h"
 #include "apocharmm_c/CharmmPsf.h"
 #include "apocharmm_c/Export.h"
@@ -33,9 +34,13 @@ extern "C" {
  * The topology is shared rather than cloned, so mutation through another native
  * owner can affect later selections.
  *
- * Selection calls read host-resident PSF metadata and produce independently
- * owned @ref apo_atom_selection handles. No CUDA allocation, transfer, stream
- * work, or synchronization is performed by the selector.
+ * Selection calls read host-resident PSF metadata. The set-valued
+ * @ref apo_atom_selector_select operation produces an independently owned
+ * @ref apo_atom_selection containing zero or more atoms. The exact-one
+ * @ref apo_atom_selector_select_atom operation requires exactly one selected
+ * atom and produces an independently owned @ref apo_atom_reference that keeps
+ * the native PSF alive. No CUDA allocation, transfer, stream work, or
+ * synchronization is performed by the selector.
  *
  * A non-NULL pointer must designate a live handle created by apoCHARMM. Passing
  * a dangling, already-destroyed, or foreign pointer has undefined behavior.
@@ -130,6 +135,46 @@ APOCHARMM_C_API void apo_atom_selector_destroy(apo_atom_selector *selector);
  */
 APOCHARMM_C_API apo_status apo_atom_selector_select(
     apo_atom_selection **out, const apo_atom_selector *selector,
+    const char *selection_string);
+
+/**
+ * @brief Evaluates one expression that must select exactly one atom.
+ *
+ * The same native tokenizer, parser, fields, wildcards, ranges, precedence,
+ * and expansion operators used by @ref apo_atom_selector_select are applied.
+ * Native AtomSelector code creates a temporary set-valued AtomSelection,
+ * validates that its cardinality is exactly one, and then returns the
+ * topology-aware atom identity. The temporary selection is destroyed before
+ * this function returns.
+ *
+ * @param[out] out Non-NULL address receiving a newly owned atom-reference
+ * handle. The function stores `NULL` before validating other arguments and
+ * leaves `*out == NULL` on every failure path. Release a successful result with
+ * @ref apo_atom_reference_destroy.
+ * @param[in] selector Borrowed live selector handle. The pointer may not be
+ * `NULL` and is not retained.
+ * @param[in] selection_string Borrowed nonempty, null-terminated expression.
+ * The bytes are copied during tokenization and are not retained.
+ * @retval APO_STATUS_OK A new owned atom reference was stored in `*out`.
+ * @retval APO_STATUS_INVALID_ARGUMENT `out` is `NULL`, `selector` is `NULL`,
+ * the selector handle contains no native object, `selection_string` is `NULL`
+ * or empty, the expression is invalid, a stored PSF bonded-neighbor index is
+ * out of range, or the result contains zero or more than one atom.
+ * @retval APO_STATUS_RUNTIME_ERROR The shared PSF violates parser residue,
+ * group, or bonded-connectivity invariants; an internal parser invariant
+ * failed; allocation failed; or another unexpected standard or nonstandard
+ * C++ exception crossed the boundary.
+ *
+ * @pre Per-atom PSF metadata arrays remain consistent with the PSF atom count.
+ * @post On success, `*out` owns one immutable topology-aware atom reference
+ * that remains valid after the selector and public PSF handles are destroyed.
+ * @post On failure with a valid `out` pointer, `*out == NULL`.
+ * @note The function clears the previous thread-local diagnostic at entry.
+ * Success leaves it empty; failure leaves text available through
+ * @ref apo_last_error.
+ */
+APOCHARMM_C_API apo_status apo_atom_selector_select_atom(
+    apo_atom_reference **out, const apo_atom_selector *selector,
     const char *selection_string);
 
 #ifdef __cplusplus

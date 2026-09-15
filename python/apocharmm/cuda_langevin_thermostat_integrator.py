@@ -10,6 +10,7 @@
 import ctypes
 
 from ._lib import lib
+from ._validation import require_c_uint64
 from .error import configure_status_function
 from .cuda_integrator import CudaIntegrator
 
@@ -218,10 +219,8 @@ class CudaLangevinThermostatIntegrator(CudaIntegrator):
         """
         _initialize_prototypes()
 
-        if seed < 0 or seed > 2**64 - 1:
-            raise ValueError("seed must fit in uint64_t")
-
-        c_seed: ctypes.c_uint64 = ctypes.c_uint64(seed)
+        seed_value: int = require_c_uint64(seed, "seed", allow_bool=True)
+        c_seed: ctypes.c_uint64 = ctypes.c_uint64(seed_value)
 
         lib().apo_cuda_langevin_thermostat_integrator_set_thermostat_rng_seed(
             self.handle, c_seed

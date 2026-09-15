@@ -13,6 +13,7 @@ import ctypes
 from ._base import _ApoObject
 from ._lib import encode_path, lib
 from ._types import FilePath
+from ._validation import require_c_uint64
 from .enums import PeriodicBoundaryCondition, VdwType
 from .error import configure_status_function
 
@@ -824,10 +825,8 @@ class CharmmContext(_ApoObject):
         """
         _initialize_prototypes()
 
-        if seed < 0 or seed > 2**64 - 1:
-            raise ValueError("seed must fit in uint64_t")
-
-        c_seed: ctypes.c_uint64 = ctypes.c_uint64(seed)
+        seed_value: int = require_c_uint64(seed, "seed", allow_bool=True)
+        c_seed: ctypes.c_uint64 = ctypes.c_uint64(seed_value)
 
         lib().apo_charmm_context_set_random_seed(self.handle, c_seed)
 

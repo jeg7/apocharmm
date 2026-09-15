@@ -24,6 +24,7 @@ from .enums import (
     VdwType,
 )
 
+from .atom_reference import AtomReference
 from .atom_selection import AtomSelection
 from .atom_selector import AtomSelector
 
@@ -62,6 +63,7 @@ __all__: list[str] = [
     "PeriodicBoundaryCondition",
     "VdwType",
     # Atom selection
+    "AtomReference",
     "AtomSelection",
     "AtomSelector",
     # Manager objects

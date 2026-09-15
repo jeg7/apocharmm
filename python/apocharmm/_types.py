@@ -7,7 +7,6 @@
 #
 # ENDLICENSE
 
-from collections.abc import Sequence
 import os
 
 FilePath = str | bytes | os.PathLike[str] | os.PathLike[bytes]

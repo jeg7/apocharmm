@@ -8,11 +8,6 @@
 //
 // ENDLICENSE
 
-/**
- * @file
- * @brief Declares a topology-aware reference to one atom.
- */
-
 #pragma once
 
 #include "CharmmPSF.h"

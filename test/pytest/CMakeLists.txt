@@ -12,6 +12,7 @@ set(PYTHON_API_TESTS
   python_api_charmm_parameters.py
   python_api_charmm_psf.py
   python_api_charmm_crd.py
+  python_api_atom_reference.py
   python_api_atom_selection.py
 
   # Subscriber tests
