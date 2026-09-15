@@ -122,7 +122,7 @@ private:
   cmaplist_t *cmaplist;
 
   int cmapcoef_len;
-  float2 *cmapcoef;
+  float *cmapcoef;
 
   std::shared_ptr<Force<long long int>> forceVal;
   std::shared_ptr<cudaStream_t> bondedStream;
@@ -150,7 +150,7 @@ public:
                   const int nanglecoef, const float2 *h_anglecoef,
                   const int ndihecoef, const float4 *h_dihecoef,
                   const int nimdihecoef, const float4 *h_imdihecoef,
-                  const int ncmapcoef, const float2 *h_cmapcoef);
+                  const int ncmapcoef, const float *h_cmapcoef);
 
   void setup_list(const int nbondlist, const bondlist_t *h_bondlist,
                   const int nureyblist, const bondlist_t *h_ureyblist,

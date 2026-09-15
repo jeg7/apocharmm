@@ -467,8 +467,6 @@ public:
 /**
  * @brief Stores the two torsion keys that identify one CMAP interaction.
  *
- * CMAP records are not currently parsed or packed by CharmmParameters; this
- * value type is retained for the unfinished extension point.
  */
 struct CmapKey {
 public:
@@ -483,11 +481,91 @@ public:
    */
   CmapKey(const DihedralKey &d1, const DihedralKey &d2) : dih1(d1), dih2(d2) {}
 
+  friend bool operator<(const CmapKey &lhs, const CmapKey &rhs) {
+    if (lhs.dih1 < rhs.dih1)
+      return true;
+    if (rhs.dih1 < lhs.dih1)
+      return false;
+    return lhs.dih2 < rhs.dih2;
+  }
+
+  friend bool operator==(const CmapKey &lhs, const CmapKey &rhs) {
+    return lhs.dih1 == rhs.dih1 && lhs.dih2 == rhs.dih2;
+  }
+  
+  /**
+   * @brief Writes the two torsion keys that identify the CMAP interaction.
+   *
+   * @param[in,out] output Stream that receives the text.
+   * @param[in] ck CMAP key to write.
+   * @return `output` after the write.
+   */
+  friend std::ostream &operator<<(std::ostream &output, const CmapKey &ck) {
+    output << ck.dih1 << ck.dih2;
+    return output;
+  }
+
 public:
   /** Stores the first torsion key. */
   DihedralKey dih1;
   /** Stores the second torsion key. */
   DihedralKey dih2;
+};
+
+/**
+ * @brief Stores one CHARMM CMAP parameter record.
+ *
+ * A CMAP parameter consists of a 24 x 24 grid of energy correction values
+ * and 16 bicubic polynomial coefficients for each grid cell.
+ */
+struct CmapValues {
+public:
+  static constexpr int gridSize = 24;
+  static constexpr std::size_t numValues = gridSize * gridSize;
+  static constexpr std::size_t coefficientsPerCell = 16;
+  static constexpr std::size_t numCoefficients = coefficientsPerCell * numValues;
+
+  CmapValues(void) : values(), coeff() {}
+
+  explicit CmapValues(const std::vector<double> &values)
+      : values(values), coeff() {}
+
+  CmapValues(const CmapValues &other) = default;
+
+public:
+  friend std::ostream &operator<<(std::ostream &output, const CmapValues &cv) {
+    output << "(gridSize : " << CmapValues::gridSize
+           << ", values : " << cv.values.size()
+           << ", coeff : " << cv.coeff.size() << ")\n";
+
+    if (cv.values.size() != CmapValues::numValues)
+      return output;
+
+    for (int i = 0; i < CmapValues::gridSize; ++i) {
+      for (int j = 0; j < CmapValues::gridSize; ++j)
+        output << cv.values[i * CmapValues::gridSize + j] << " ";
+      output << "\n";
+    }
+
+    return output;
+  }
+
+public:
+  // Original CHARMM CMAP energy grid.
+  std::vector<double> values;
+
+  // 16 bicubic polynomial coefficients per grid cell.
+  //
+  // Cell (i,j) occupies:
+  //
+  //  ((i * gridSize + j) * 16) ... + 15
+  //
+  // and is evaluated as
+  //
+  //   E(t,u) = sum_i sum_j c[i*4+j] t^i u^j
+  //
+  // with t,u in [0,1].
+  std::vector<double> coeff;
 };
 
 /**
@@ -618,7 +696,8 @@ public:
  *   nonterminal rows for a multi-term key use a negative multiplicity;
  * - improper dihedral: `[psi0_degrees, kPsi, 0, 1]` in
  *   `[degree, kcal mol^-1 radian^-2, dimensionless, dimensionless]`;
- * - CMAP: no rows in the current implementation.
+ * - CMAP: 16 bicubic polynomial coefficients per grid cell, 
+ *   stored as one float per row.
  *
  * `listVal` concatenates zero-based PSF atom-index rows. Bond and
  * Urey-Bradley rows are `[i, j, type, 13]`; angle rows are
@@ -855,6 +934,21 @@ public: // Getters
   const std::map<DihedralKey, ImDihedralValues> &getImproperParams(void) const;
 
   /**
+   * @brief Returns the parsed CMAP parameter map.
+   *
+   * Each key identifies the two canonical dihedrals defining the CMAP
+   * interaction and maps to its square energy grid.
+   *
+   * @return Borrowed const reference to the map owned by this object.
+   * CMAP energy values are stored in kcal mol^-1 in row-major order.
+   *
+   * @note The reference aliases this object and remains valid only while the
+   * object is alive and has not been assigned from or moved. Later successful
+   * reads are observable through the same map.
+   */
+  const std::map<CmapKey, CmapValues> &getCmapParams(void) const;
+
+  /**
    * @brief Returns the parsed regular Lennard-Jones parameter map.
    *
    * @return Borrowed const reference to the atom-type map owned by this object.
@@ -1053,6 +1147,27 @@ private:
                            const std::size_t lineNumber);
 
   /**
+   * @brief Parses one CMAP header and its associated grid values.
+   *
+   * @param[in] tokens Nine normalized CMAP header tokens containing two
+   * torsion keys followed by the grid size.
+   * @param[in,out] prmFile Parameter file stream used to read the CMAP grid.
+   * @param[in] line Normalized CMAP header text used in diagnostics.
+   * @param[in] fileName Source path used in diagnostics.
+   * @param[in,out] lineNumber One-based source line number, updated as CMAP
+   * grid lines are consumed.
+   *
+   * @throws ApoCharmmError with code `ApoCharmmErrorCode::Runtime` if the
+   * header, grid size, or grid values are invalid, or if the file ends before
+   * the complete grid is read.
+   * @post The CMAP grid is stored under its two canonical torsion keys.
+   */
+  void parseCmapRecord(
+      const std::vector<std::string> &tokens, std::ifstream &prmFile,
+      const std::string &line, const std::string &fileName,
+      std::size_t &lineNumber);
+
+  /**
    * @brief Parses and stores one normalized NONBONDED record.
    *
    * @param[in] tokens Four regular tokens or seven tokens including explicit
@@ -1101,6 +1216,9 @@ private:
   std::map<DihedralKey, std::vector<DihedralValues>> m_DihedralParams;
   /** Stores one harmonic value for each canonical improper-dihedral key. */
   std::map<DihedralKey, ImDihedralValues> m_ImproperParams;
+
+  /** Stores one CMAP grid for each pair of torsion keys. */
+  std::map<CmapKey, CmapValues> m_CmapParams;
 
   /** Stores canonical pair-specific NBFIX overrides. */
   std::map<std::tuple<std::string, std::string>, NBFixParameters> m_NbfixParams;

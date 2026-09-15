@@ -512,6 +512,86 @@ __forceinline__ __device__ void imdihe_pot(const float4 *dihecoef,
   }
 }
 
+template <typename T, bool calc_energy>
+__forceinline__ __device__ void cmap_pot(const float *cmapcoef, 
+                                         const int cmap_type, const T phi, 
+                                         const T psi, T &dE_dphi, T &dE_dpsi, 
+                                         double &e) {
+
+  constexpr int n = 24;
+  constexpr int ncell = n * n;
+  constexpr int ncoef = 16;
+
+  constexpr T xmin = (T)-180.0;
+  constexpr T dx = (T)15.0;
+  constexpr T inv_dx = (T)(1.0 / 15.0);
+
+  // Convert angles to CMAP cell coordinates.
+  const T x = (phi - xmin) * inv_dx;
+  const T y = (psi - xmin) * inv_dx;
+
+  const int ix = (int)floorf((float)x);
+  const int iy = (int)floorf((float)y);
+
+  const T tx = x - (T)ix;
+  const T ty = y - (T)iy;
+
+  // Periodic cell index.
+  const int i = ((ix % n) + n) % n;
+  const int j = ((iy % n) + n) % n;
+
+  const int cell = i * n + j;
+
+  // 16 bicubic polynomial coefficients.
+  const float *c = cmapcoef + (cmap_type * ncell + cell) * ncoef;
+
+  // Coefficients for each power of ty.
+  const T a0 = c[0];
+  const T a1 = c[4];
+  const T a2 = c[8];
+  const T a3 = c[12];
+
+  const T b0 = c[1];
+  const T b1 = c[5];
+  const T b2 = c[9];
+  const T b3 = c[13];
+
+  const T c0 = c[2];
+  const T c1 = c[6];
+  const T c2 = c[10];
+  const T c3 = c[14];
+
+  const T d0 = c[3];
+  const T d1 = c[7];
+  const T d2 = c[11];
+  const T d3 = c[15];
+
+  // Cubic polynomials in x.
+  const T px0 = ((a3 * tx + a2) * tx + a1) * tx + a0;
+  const T px1 = ((b3 * tx + b2) * tx + b1) * tx + b0;
+  const T px2 = ((c3 * tx + c2) * tx + c1) * tx + c0;
+  const T px3 = ((d3 * tx + d2) * tx + d1) * tx + d0;
+
+  // Energy: cubic in y whose coefficients are the cubic-in-x evaluations above.
+  if constexpr (calc_energy) {
+    e = (double)(((px3 * ty + px2) * ty + px1) * ty + px0);
+  }
+
+  // dE/dx.
+  const T dx0 = (3.0 * a3 * tx + 2.0 * a2) * tx + a1;
+  const T dx1 = (3.0 * b3 * tx + 2.0 * b2) * tx + b1;
+  const T dx2 = (3.0 * c3 * tx + 2.0 * c2) * tx + c1;
+  const T dx3 = (3.0 * d3 * tx + 2.0 * d2) * tx + d1;
+  const T de_dx = ((dx3 * ty + dx2) * ty + dx1) * ty + dx0;
+
+  // dE/dy.
+  const T de_dy = ((3.0 * px3 * ty + 2.0 * px2) * ty + px1);
+
+  // Convert from normalized cell coordinates to degrees.
+  dE_dphi = de_dx * inv_dx;
+  dE_dpsi = de_dy * inv_dx;
+}
+
 template <typename AT, typename CT, bool q_dihe, bool calc_energy,
           bool calc_virial>
 __device__ void calc_dihe_force_device(
@@ -761,6 +841,336 @@ __global__ void calc_imdihe_force_kernel(
   }
 }
 
+template <typename AT, typename CT, bool calc_energy, bool calc_virial>
+__device__ void calc_cmap_force_device(
+    const int pos, const cmaplist_t *__restrict__ cmaplist,
+    const float *__restrict__ cmapcoef, const float4 *__restrict__ xyzq,
+    const int stride, const CT boxx, const CT boxy, const CT boxz,
+    AT *__restrict__ force, double &epot, Virial_t *__restrict__ virial) {
+
+  const int i1 = cmaplist[pos].i1;
+  const int j1 = cmaplist[pos].j1;
+  const int k1 = cmaplist[pos].k1;
+  const int l1 = cmaplist[pos].l1;
+
+  const int i2 = cmaplist[pos].i2;
+  const int j2 = cmaplist[pos].j2;
+  const int k2 = cmaplist[pos].k2;
+  const int l2 = cmaplist[pos].l2;
+
+  const int ic = cmaplist[pos].itype;
+
+  const int ish1 = cmaplist[pos].ishift1;
+  const int jsh1 = cmaplist[pos].ishift2;
+  const int lsh1 = cmaplist[pos].ishift3;
+  const int ish2 = cmaplist[pos].ishift4;
+  const int jsh2 = cmaplist[pos].ishift5;
+  const int lsh2 = cmaplist[pos].ishift6;
+
+  // Calculate shifts for the first dihedral.
+  CT ish1x, ish1y, ish1z;
+  calc_box_shift<CT>(ish1, boxx, boxy, boxz, ish1x, ish1y, ish1z);
+  CT jsh1x, jsh1y, jsh1z;
+  calc_box_shift<CT>(jsh1, boxx, boxy, boxz, jsh1x, jsh1y, jsh1z);
+  CT lsh1x, lsh1y, lsh1z;
+  calc_box_shift<CT>(lsh1, boxx, boxy, boxz, lsh1x, lsh1y, lsh1z);
+
+  // Calculate shifts for the second dihedral.
+  CT ish2x, ish2y, ish2z;
+  calc_box_shift<CT>(ish2, boxx, boxy, boxz, ish2x, ish2y, ish2z);
+  CT jsh2x, jsh2y, jsh2z;
+  calc_box_shift<CT>(jsh2, boxx, boxy, boxz, jsh2x, jsh2y, jsh2z);
+  CT lsh2x, lsh2y, lsh2z;
+  calc_box_shift<CT>(lsh2, boxx, boxy, boxz, lsh2x, lsh2y, lsh2z);
+
+  // First dihedral: i1-j1-k1-l1.
+  const CT fx1 = (xyzq[i1].x + ish1x) - (xyzq[j1].x + jsh1x);
+  const CT fy1 = (xyzq[i1].y + ish1y) - (xyzq[j1].y + jsh1y);
+  const CT fz1 = (xyzq[i1].z + ish1z) - (xyzq[j1].z + jsh1z);
+
+  const CT gx1 = xyzq[j1].x + jsh1x - xyzq[k1].x;
+  const CT gy1 = xyzq[j1].y + jsh1y - xyzq[k1].y;
+  const CT gz1 = xyzq[j1].z + jsh1z - xyzq[k1].z;
+
+  const CT hx1 = xyzq[l1].x + lsh1x - xyzq[k1].x;
+  const CT hy1 = xyzq[l1].y + lsh1y - xyzq[k1].y;
+  const CT hz1 = xyzq[l1].z + lsh1z - xyzq[k1].z;
+
+  const CT ax1 = fy1 * gz1 - fz1 * gy1;
+  const CT ay1 = fz1 * gx1 - fx1 * gz1;
+  const CT az1 = fx1 * gy1 - fy1 * gx1;
+
+  const CT bx1 = hy1 * gz1 - hz1 * gy1;
+  const CT by1 = hz1 * gx1 - hx1 * gz1;
+  const CT bz1 = hx1 * gy1 - hy1 * gx1;
+
+  const CT ra21 = ax1 * ax1 + ay1 * ay1 + az1 * az1;
+  const CT rb21 = bx1 * bx1 + by1 * by1 + bz1 * bz1;
+  const CT rg1 = sqrtf(gx1 * gx1 + gy1 * gy1 + gz1 * gz1);
+
+  const CT ra2r1 = 1.0f / ra21;
+  const CT rb2r1 = 1.0f / rb21;
+  const CT rabr1 = sqrtf(ra2r1 * rb2r1);
+
+  const CT ct1 = (ax1 * bx1 + ay1 * by1 + az1 * bz1) * rabr1;
+
+  const CT st1 = rg1 * rabr1 * (ax1 * hx1 + ay1 * hy1 + az1 * hz1);
+
+  // Second dihedral: i2-j2-k2-l2.
+  const CT fx2 = (xyzq[i2].x + ish2x) - (xyzq[j2].x + jsh2x);
+  const CT fy2 = (xyzq[i2].y + ish2y) - (xyzq[j2].y + jsh2y);
+  const CT fz2 = (xyzq[i2].z + ish2z) - (xyzq[j2].z + jsh2z);
+
+  const CT gx2 = xyzq[j2].x + jsh2x - xyzq[k2].x;
+  const CT gy2 = xyzq[j2].y + jsh2y - xyzq[k2].y;
+  const CT gz2 = xyzq[j2].z + jsh2z - xyzq[k2].z;
+
+  const CT hx2 = xyzq[l2].x + lsh2x - xyzq[k2].x;
+  const CT hy2 = xyzq[l2].y + lsh2y - xyzq[k2].y;
+  const CT hz2 = xyzq[l2].z + lsh2z - xyzq[k2].z;
+
+  const CT ax2 = fy2 * gz2 - fz2 * gy2;
+  const CT ay2 = fz2 * gx2 - fx2 * gz2;
+  const CT az2 = fx2 * gy2 - fy2 * gx2;
+
+  const CT bx2 = hy2 * gz2 - hz2 * gy2;
+  const CT by2 = hz2 * gx2 - hx2 * gz2;
+  const CT bz2 = hx2 * gy2 - hy2 * gx2;
+
+  const CT ra22 = ax2 * ax2 + ay2 * ay2 + az2 * az2;
+  const CT rb22 = bx2 * bx2 + by2 * by2 + bz2 * bz2;
+  const CT rg2 = sqrtf(gx2 * gx2 + gy2 * gy2 + gz2 * gz2);
+
+  const CT ra2r2 = 1.0f / ra22;
+  const CT rb2r2 = 1.0f / rb22;
+  const CT rabr2 = sqrtf(ra2r2 * rb2r2);
+
+  const CT ct2 = (ax2 * bx2 + ay2 * by2 + az2 * bz2) * rabr2;
+  const CT st2 = rg2 * rabr2 * (ax2 * hx2 + ay2 * hy2 + az2 * hz2);
+
+  // Convert sin/cos to dihedral angles in degrees.
+  const CT pi = static_cast<CT>(3.14159265358979323846);
+  const CT phi1 = atan2f(st1, ct1) * (180.0 / pi);
+  const CT phi2 = atan2f(st2, ct2) * (180.0 / pi);
+
+  CT dE_dphi;
+  CT dE_dpsi;
+  double e;
+
+  cmap_pot<CT, calc_energy>(cmapcoef, ic, phi1, phi2, dE_dphi, dE_dpsi, e);
+
+  if (calc_energy)
+    epot += e;
+
+  // cmap_pot returns derivatives per degree, while the Cartesian dihedral
+  // derivatives are with respect to angles in radians.
+  const CT radians_to_degrees = (CT)180.0 / pi;
+  const CT df1 = dE_dphi * radians_to_degrees;
+  const CT df2 = dE_dpsi * radians_to_degrees;
+
+  // Cartesian force contributions from the first dihedral.
+  const CT fg1 = fx1 * gx1 + fy1 * gy1 + fz1 * gz1;
+  const CT hg1 = hx1 * gx1 + hy1 * gy1 + hz1 * gz1;
+  const CT rgr1 = (CT)1.0 / rg1;
+  const CT ra2df1 = ra2r1 * df1;
+  const CT rb2df1 = rb2r1 * df1;
+  const CT fga1 = fg1 * ra2df1 * rgr1;
+  const CT hgb1 = hg1 * rb2df1 * rgr1;
+  const CT gaa1 = ra2df1 * rg1;
+  const CT gbb1 = rb2df1 * rg1;
+
+  AT dfx1, dfy1, dfz1;
+  calc_component_force<AT, CT>(-gaa1, ax1, ay1, az1, dfx1, dfy1, dfz1);
+
+  AT dgx1, dgy1, dgz1;
+  calc_component_force<AT, CT>(fga1, ax1, ay1, az1, -hgb1, bx1, by1, bz1,
+                               dgx1, dgy1, dgz1);
+
+  AT dhx1, dhy1, dhz1;
+  calc_component_force<AT, CT>(gbb1, bx1, by1, bz1, dhx1, dhy1, dhz1);
+
+  write_force<AT>(dfx1, dfy1, dfz1, i1, stride, force);
+  write_force<AT>(dgx1 - dfx1, dgy1 - dfy1, dgz1 - dfz1, j1, stride, force);
+  write_force<AT>(-dhx1 - dgx1, -dhy1 - dgy1, -dhz1 - dgz1, k1, stride,
+                  force);
+  write_force<AT>(dhx1, dhy1, dhz1, l1, stride, force);
+
+  // Cartesian force contributions from the second dihedral.
+  const CT fg2 = fx2 * gx2 + fy2 * gy2 + fz2 * gz2;
+  const CT hg2 = hx2 * gx2 + hy2 * gy2 + hz2 * gz2;
+  const CT rgr2 = (CT)1.0 / rg2;
+  const CT ra2df2 = ra2r2 * df2;
+  const CT rb2df2 = rb2r2 * df2;
+  const CT fga2 = fg2 * ra2df2 * rgr2;
+  const CT hgb2 = hg2 * rb2df2 * rgr2;
+  const CT gaa2 = ra2df2 * rg2;
+  const CT gbb2 = rb2df2 * rg2;
+
+  AT dfx2, dfy2, dfz2;
+  calc_component_force<AT, CT>(-gaa2, ax2, ay2, az2, dfx2, dfy2, dfz2);
+
+  AT dgx2, dgy2, dgz2;
+  calc_component_force<AT, CT>(fga2, ax2, ay2, az2, -hgb2, bx2, by2, bz2,
+                               dgx2, dgy2, dgz2);
+
+  AT dhx2, dhy2, dhz2;
+  calc_component_force<AT, CT>(gbb2, bx2, by2, bz2, dhx2, dhy2, dhz2);
+
+  write_force<AT>(dfx2, dfy2, dfz2, i2, stride, force);
+  write_force<AT>(dgx2 - dfx2, dgy2 - dfy2, dgz2 - dfz2, j2, stride, force);
+  write_force<AT>(-dhx2 - dgx2, -dhy2 - dgy2, -dhz2 - dgz2, k2, stride, force);
+  write_force<AT>(dhx2, dhy2, dhz2, l2, stride, force);
+
+  // Store periodic-image virial corrections for both dihedrals.
+  if (calc_virial) {
+#ifdef USE_DP_SFORCE
+    if (ish1 != 13) {
+      atomicAdd(&virial->sforce_dp[ish1][0], (double)(-gaa1 * ax1));
+      atomicAdd(&virial->sforce_dp[ish1][1], (double)(-gaa1 * ay1));
+      atomicAdd(&virial->sforce_dp[ish1][2], (double)(-gaa1 * az1));
+    }
+    if (jsh1 != 13) {
+      atomicAdd(&virial->sforce_dp[jsh1][0],
+                (double)(fga1 * ax1 - hgb1 * bx1 + gaa1 * ax1));
+      atomicAdd(&virial->sforce_dp[jsh1][1],
+                (double)(fga1 * ay1 - hgb1 * by1 + gaa1 * ay1));
+      atomicAdd(&virial->sforce_dp[jsh1][2],
+                (double)(fga1 * az1 - hgb1 * bz1 + gaa1 * az1));
+    }
+    if (lsh1 != 13) {
+      atomicAdd(&virial->sforce_dp[lsh1][0], (double)(gbb1 * bx1));
+      atomicAdd(&virial->sforce_dp[lsh1][1], (double)(gbb1 * by1));
+      atomicAdd(&virial->sforce_dp[lsh1][2], (double)(gbb1 * bz1));
+    }
+
+    if (ish2 != 13) {
+      atomicAdd(&virial->sforce_dp[ish2][0], (double)(-gaa2 * ax2));
+      atomicAdd(&virial->sforce_dp[ish2][1], (double)(-gaa2 * ay2));
+      atomicAdd(&virial->sforce_dp[ish2][2], (double)(-gaa2 * az2));
+    }
+    if (jsh2 != 13) {
+      atomicAdd(&virial->sforce_dp[jsh2][0],
+                (double)(fga2 * ax2 - hgb2 * bx2 + gaa2 * ax2));
+      atomicAdd(&virial->sforce_dp[jsh2][1],
+                (double)(fga2 * ay2 - hgb2 * by2 + gaa2 * ay2));
+      atomicAdd(&virial->sforce_dp[jsh2][2],
+                (double)(fga2 * az2 - hgb2 * bz2 + gaa2 * az2));
+    }
+    if (lsh2 != 13) {
+      atomicAdd(&virial->sforce_dp[lsh2][0], (double)(gbb2 * bx2));
+      atomicAdd(&virial->sforce_dp[lsh2][1], (double)(gbb2 * by2));
+      atomicAdd(&virial->sforce_dp[lsh2][2], (double)(gbb2 * bz2));
+    }
+#else
+    dfx1 /= CONVERT_TO_VIR;
+    dfy1 /= CONVERT_TO_VIR;
+    dfz1 /= CONVERT_TO_VIR;
+    dgx1 /= CONVERT_TO_VIR;
+    dgy1 /= CONVERT_TO_VIR;
+    dgz1 /= CONVERT_TO_VIR;
+    if (ish1 != 13) {
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[ish1][0],
+                llitoulli(dfx1));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[ish1][1],
+                llitoulli(dfy1));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[ish1][2],
+                llitoulli(dfz1));
+    }
+    if (jsh1 != 13) {
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[jsh1][0],
+                llitoulli(dgx1 - dfx1));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[jsh1][1],
+                llitoulli(dgy1 - dfy1));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[jsh1][2],
+                llitoulli(dgz1 - dfz1));
+    }
+    if (lsh1 != 13) {
+      dhx1 /= CONVERT_TO_VIR;
+      dhy1 /= CONVERT_TO_VIR;
+      dhz1 /= CONVERT_TO_VIR;
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[lsh1][0],
+                llitoulli(dhx1));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[lsh1][1],
+                llitoulli(dhy1));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[lsh1][2],
+                llitoulli(dhz1));
+    }
+
+    dfx2 /= CONVERT_TO_VIR;
+    dfy2 /= CONVERT_TO_VIR;
+    dfz2 /= CONVERT_TO_VIR;
+    dgx2 /= CONVERT_TO_VIR;
+    dgy2 /= CONVERT_TO_VIR;
+    dgz2 /= CONVERT_TO_VIR;
+    if (ish2 != 13) {
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[ish2][0],
+                llitoulli(dfx2));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[ish2][1],
+                llitoulli(dfy2));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[ish2][2],
+                llitoulli(dfz2));
+    }
+    if (jsh2 != 13) {
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[jsh2][0],
+                llitoulli(dgx2 - dfx2));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[jsh2][1],
+                llitoulli(dgy2 - dfy2));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[jsh2][2],
+                llitoulli(dgz2 - dfz2));
+    }
+    if (lsh2 != 13) {
+      dhx2 /= CONVERT_TO_VIR;
+      dhy2 /= CONVERT_TO_VIR;
+      dhz2 /= CONVERT_TO_VIR;
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[lsh2][0],
+                llitoulli(dhx2));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[lsh2][1],
+                llitoulli(dhy2));
+      atomicAdd((unsigned long long int *)&virial->sforce_fp[lsh2][2],
+                llitoulli(dhz2));
+    }
+#endif
+  }
+}
+
+//
+// cmapcoef contains flattened 24x24 CMAP grids.
+// Each grid has 576 consecutive float values.
+//
+// Grid for cmapType:
+//   cmapcoef[cmapType * 576 ... cmapType * 576 + 575]
+//
+// cmapType is stored in cmaplist.itype.
+//
+template <typename AT, typename CT, bool calc_energy, bool calc_virial>
+__global__ void calc_cmap_force_kernel(
+    const int ncmaplist, const cmaplist_t *__restrict__ cmaplist,
+    const float *__restrict__ cmapcoef,
+    const float4 *__restrict__ xyzq, const int stride,
+    const CT boxx, const CT boxy, const CT boxz,
+    AT *__restrict__ force, double *__restrict__ energy_cmap,
+    Virial_t *__restrict__ virial) {
+  extern __shared__ double sh_epot[];
+
+  int pos = threadIdx.x + blockIdx.x * blockDim.x;
+
+  double epot;
+  if (calc_energy)
+    epot = 0.0;
+
+  while (pos < ncmaplist) {
+    calc_cmap_force_device<AT, CT, calc_energy, calc_virial>(
+        pos, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz,
+        (AT *)force, epot, virial);
+
+    pos += blockDim.x * gridDim.x;
+  }
+
+  if (calc_energy) {
+    reduce_energy(epot, sh_epot, energy_cmap);
+  }
+}
+
 /*
 template <typename AT, typename CT, bool calc_energy, bool calc_virial>
 __global__ void calc_all_forces_kernel() {
@@ -839,6 +1249,9 @@ __global__ void calc_all_forces_kernel(
     const int nimdihelist, const dihelist_t *__restrict__ imdihelist,
     const float4 *__restrict__ imdihecoef,
 
+    const int ncmaplist, const cmaplist_t *__restrict__ cmaplist,
+    const float *__restrict__ cmapcoef,
+
     const float4 *__restrict__ xyzq, const int stride, const CT boxx,
     const CT boxy, const CT boxz, AT *__restrict__ force,
     Virial_t *__restrict__ virial) {
@@ -868,6 +1281,11 @@ __global__ void calc_all_forces_kernel(
     calc_dihe_force_device<AT, CT, false, false, calc_virial>(
         pos - ndihelist - nanglelist - nureyblist - nbondlist, imdihelist,
         imdihecoef, xyzq, stride, boxx, boxy, boxz, force, epot, virial);
+  } else if (pos < ncmaplist + nimdihelist + ndihelist + nanglelist +
+                         nureyblist + nbondlist) {
+    calc_cmap_force_device<AT, CT, false, calc_virial>(
+        pos - nimdihelist - ndihelist - nanglelist - nureyblist - nbondlist,
+        cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz, force, epot, virial);
   }
 }
 
@@ -965,14 +1383,17 @@ __device__ void setup_cmaplist_kernel(const int i,
   float4 xyzq_j1 = xyzq[cmaplistv.j1];
   float4 xyzq_k1 = xyzq[cmaplistv.k1];
   float4 xyzq_l1 = xyzq[cmaplistv.l1];
-  /* not used in this function
   float4 xyzq_i2 = xyzq[cmaplistv.i2];
   float4 xyzq_j2 = xyzq[cmaplistv.j2];
   float4 xyzq_k2 = xyzq[cmaplistv.k2];
-  float4 xyzq_l2 = xyzq[cmaplistv.l2]; */
+  float4 xyzq_l2 = xyzq[cmaplistv.l2];
+  // JM260901: We can probably get away with less ishift calculations
   cmaplistv.ishift1 = calc_ishift(xyzq_i1, xyzq_k1, half_box);
   cmaplistv.ishift2 = calc_ishift(xyzq_j1, xyzq_k1, half_box);
   cmaplistv.ishift3 = calc_ishift(xyzq_l1, xyzq_k1, half_box);
+  cmaplistv.ishift4 = calc_ishift(xyzq_i2, xyzq_k2, half_box);
+  cmaplistv.ishift5 = calc_ishift(xyzq_j2, xyzq_k2, half_box);
+  cmaplistv.ishift6 = calc_ishift(xyzq_l2, xyzq_k2, half_box);
   cmaplist[i] = cmaplistv;
 }
 
@@ -1231,7 +1652,7 @@ CudaBondedForce<AT, CT>::~CudaBondedForce() noexcept {
   deallocate_noexcept<float4>(&imdihecoef);
 
   deallocate_noexcept<cmaplist_t>(&cmaplist);
-  deallocate_noexcept<float2>(&cmapcoef);
+  deallocate_noexcept<float>(&cmapcoef);
 }
 
 //
@@ -1306,11 +1727,12 @@ void CudaBondedForce<AT, CT>::setup_coef(
   }
 
   if (ncmapcoef > 0) {
-    std::vector<float2> h_cmapcoef(ncmapcoef);
+    std::vector<float> h_cmapcoef(ncmapcoef);
     for (int i = 0; i < ncmapcoef; i++)
-      h_cmapcoef[i] = make_float2(val[pos + i][0], val[pos + i][1]);
-    reallocate<float2>(&cmapcoef, &cmapcoef_len, ncmapcoef, 1.2f);
-    copy_HtoD<float2>(h_cmapcoef.data(), cmapcoef, ncmapcoef);
+      h_cmapcoef[i] = val[pos + i][0];
+
+    reallocate<float>(&cmapcoef, &cmapcoef_len, ncmapcoef, 1.2f);
+    copy_HtoD<float>(h_cmapcoef.data(), cmapcoef, ncmapcoef);
     pos += ncmapcoef;
   }
   assert(pos == val.size());
@@ -1325,7 +1747,7 @@ void CudaBondedForce<AT, CT>::setup_coef(
     const int nbondcoef, const float2 *h_bondcoef, const int nureybcoef,
     const float2 *h_ureybcoef, const int nanglecoef, const float2 *h_anglecoef,
     const int ndihecoef, const float4 *h_dihecoef, const int nimdihecoef,
-    const float4 *h_imdihecoef, const int ncmapcoef, const float2 *h_cmapcoef) {
+    const float4 *h_imdihecoef, const int ncmapcoef, const float *h_cmapcoef) {
   assert((nureybcoef == 0) || (nureybcoef > 0 && nureybcoef == nanglecoef));
 
   this->nbondcoef = nbondcoef;
@@ -1360,8 +1782,8 @@ void CudaBondedForce<AT, CT>::setup_coef(
 
   this->ncmapcoef = ncmapcoef;
   if (ncmapcoef > 0) {
-    reallocate<float2>(&cmapcoef, &cmapcoef_len, ncmapcoef, 1.2f);
-    copy_HtoD<float2>(h_cmapcoef, cmapcoef, ncmapcoef);
+    reallocate<float>(&cmapcoef, &cmapcoef_len, ncmapcoef, 1.2f);
+    copy_HtoD<float>(h_cmapcoef, cmapcoef, ncmapcoef);
   }
 }
 
@@ -1471,6 +1893,9 @@ void CudaBondedForce<AT, CT>::setup_list(
       h_cmaplist[i].ishift1 = val[pos + i][9];
       h_cmaplist[i].ishift2 = val[pos + i][10];
       h_cmaplist[i].ishift3 = val[pos + i][11];
+      h_cmaplist[i].ishift4 = val[pos + i][12];
+      h_cmaplist[i].ishift5 = val[pos + i][13];
+      h_cmaplist[i].ishift6 = val[pos + i][14];
     }
     reallocate<cmaplist_t>(&cmaplist, &cmaplist_len, ncmaplist, 1.2f);
     copy_HtoD<cmaplist_t>(h_cmaplist.data(), cmaplist, ncmaplist, stream);
@@ -1631,13 +2056,7 @@ void CudaBondedForce<AT, CT>::calc_force(
     const bool calc_bond, const bool calc_ureyb, const bool calc_angle,
     const bool calc_dihe, const bool calc_imdihe, const bool calc_cmap,
     cudaStream_t stream) {
-  if (ncmaplist > 0) {
-    // std::cerr << "CudaBondedForce<AT, CT>::calc_force, cmap not implemented"
-    //           << std::endl;
-    throw std::invalid_argument(
-        "CudaBondedForce<AT, CT>::calc_force, cmap not implemented\n");
-    exit(1);
-  }
+
   if (calc_energy) {
     if (calc_bond) {
       int nthread = 512;
@@ -1741,8 +2160,27 @@ void CudaBondedForce<AT, CT>::calc_force(
       cudaCheck(cudaGetLastError());
     }
 
-    if (calc_cmap) {
-      std::cout << "CMAP CALCULATION NOT IMPLEMENTED" << std::endl;
+    //JM260901 should we add size check to other kernel launches?
+    if (calc_cmap && ncmaplist > 0) {
+      int nthread = 128;
+      int nblock = (ncmaplist - 1) / nthread + 1;
+      int shmem_size =
+          (nthread / ((get_cuda_arch() < 300) ? 1 : warpsize)) * sizeof(double);
+
+      if (calc_virial) {
+        calc_cmap_force_kernel<AT, CT, true, true>
+            <<<nblock, nthread, shmem_size, stream>>>(
+                ncmaplist, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz,
+                force, energyVirial.getEnergyPointer(strCmap),
+                energyVirial.getVirialPointer());
+      } else {
+        calc_cmap_force_kernel<AT, CT, true, false>
+            <<<nblock, nthread, shmem_size, stream>>>(
+                ncmaplist, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz,
+                force, energyVirial.getEnergyPointer(strCmap), NULL);
+      }
+
+      cudaCheck(cudaGetLastError());
     }
   } else {
     int nbondlist_loc = (calc_bond) ? nbondlist : 0;
@@ -1750,11 +2188,12 @@ void CudaBondedForce<AT, CT>::calc_force(
     int nanglelist_loc = (calc_angle) ? nanglelist : 0;
     int ndihelist_loc = (calc_dihe) ? ndihelist : 0;
     int nimdihelist_loc = (calc_imdihe) ? nimdihelist : 0;
+    int ncmaplist_loc = (calc_cmap) ? ncmaplist : 0;
 
     // int nthread = 512;
     int nthread = 128;
     int nblock = (nbondlist_loc + nureyblist_loc + nanglelist_loc +
-                  ndihelist_loc + nimdihelist_loc - 1) /
+                  ndihelist_loc + nimdihelist_loc + ncmaplist_loc - 1) /
                      nthread +
                  1;
     int shmem_size = 0;
@@ -1764,15 +2203,17 @@ void CudaBondedForce<AT, CT>::calc_force(
           <<<nblock, nthread, shmem_size, stream>>>(
               nbondlist_loc, bondlist, bondcoef, nureyblist_loc, ureyblist,
               ureybcoef, nanglelist_loc, anglelist, anglecoef, ndihelist_loc,
-              dihelist, dihecoef, nimdihelist_loc, imdihelist, imdihecoef, xyzq,
-              stride, boxx, boxy, boxz, force, energyVirial.getVirialPointer());
+              dihelist, dihecoef, nimdihelist_loc, imdihelist, imdihecoef, 
+              ncmaplist_loc, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz,
+              force, energyVirial.getVirialPointer());
     } else {
       calc_all_forces_kernel<AT, CT, false>
           <<<nblock, nthread, shmem_size, stream>>>(
               nbondlist_loc, bondlist, bondcoef, nureyblist_loc, ureyblist,
               ureybcoef, nanglelist_loc, anglelist, anglecoef, ndihelist_loc,
-              dihelist, dihecoef, nimdihelist_loc, imdihelist, imdihecoef, xyzq,
-              stride, boxx, boxy, boxz, force, NULL);
+              dihelist, dihecoef, nimdihelist_loc, imdihelist, imdihecoef, 
+              ncmaplist_loc, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz, 
+              force, NULL);
     }
     cudaCheck(cudaGetLastError());
   }
@@ -1796,7 +2237,7 @@ void CudaBondedForce<AT, CT>::calc_force(const float4 *xyzq, bool calcEnergy,
 
   calc_force(xyzq, boxDimensions[0], boxDimensions[1], boxDimensions[2],
              calcEnergy, calcVirial, forceVal->stride(), forceVal->xyz(), true,
-             true, true, true, true, false, *bondedStream);
+             true, true, true, true, true, *bondedStream);
 }
 
 template <typename AT, typename CT>
