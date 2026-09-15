@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "AtomReference.h"
 #include "AtomSelection.h"
 #include "CharmmPSF.h"
 
@@ -23,8 +24,10 @@
  * its host-resident atom metadata, residue and group intervals, and direct
  * bonded-connectivity table. Each call to `select()` tokenizes and parses the
  * supplied expression synchronously, then returns an independent
- * @ref AtomSelection. The returned object does not retain this selector or its
- * PSF.
+ * @ref AtomSelection. Each call to `selectAtom()` delegates to `select()`,
+ * requires exactly one selected atom, and returns an @ref AtomReference.
+ * AtomSelection results retain neither this selector nor its PSF. AtomReference
+ * results share ownership of the same native PSF object.
  *
  * The selector does not snapshot the topology. Mutating the shared PSF through
  * another non-const owner can change later results or violate parser
@@ -101,6 +104,38 @@ public:
    * synchronize a CUDA stream.
    */
   AtomSelection select(const std::string_view selectionString) const;
+
+  /**
+   * @brief Evaluates an expression that must select exactly one atom.
+   *
+   * This method delegates tokenization, parsing, and all selection-language
+   * behavior to `select()`. It requires exactly one selected atom, copies the
+   * sole zero-based index, releases the temporary @ref AtomSelection storage,
+   * and returns an @ref AtomReference that retains shared ownership of the
+   * selector's PSF.
+   *
+   * @param[in] selectionString Expression bytes to parse. The view has the same
+   * borrowing, termination, and control-byte behavior as for `select()`.
+   * @return A topology-aware reference to the sole selected atom. The result
+   * remains valid after this selector and the caller's other shared owners of
+   * the PSF are destroyed.
+   * @throws ApoCharmmError With `ApoCharmmErrorCode::InvalidArgument` for any
+   * lexical, syntax, range, or connectivity-index error reported by `select()`,
+   * or when the resulting selection contains zero or multiple atoms.
+   * @throws ApoCharmmError With `ApoCharmmErrorCode::Runtime` for any malformed
+   * retained PSF or internal parser state reported by `select()`.
+   * @throws std::bad_alloc If token, parser-stack, selection, index-vector, or
+   * diagnostic allocation fails.
+   * @throws std::length_error If token text, a parser container, selection
+   * storage, an index vector, or a diagnostic exceeds an
+   * implementation-defined limit.
+   *
+   * @pre The retained PSF satisfies the same requirements as for `select()`.
+   * @post The retained PSF and this selector are unchanged.
+   * @post No temporary @ref AtomSelection or its bitset storage is retained by
+   * the returned reference.
+   */
+  AtomReference selectAtom(const std::string_view selectionString) const;
 
 private:
   /** Shares ownership of the immutable topology used for selection. */

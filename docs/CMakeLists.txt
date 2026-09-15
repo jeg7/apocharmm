@@ -39,6 +39,7 @@ set(APOCHARMM_DOCUMENTATION_PAGES
 
 set(APOCHARMM_DOCUMENTATION_CPP_API
   "${apoCHARMM_SOURCE_DIR}/include/ApoCharmmError.h"
+  "${apoCHARMM_SOURCE_DIR}/include/AtomReference.h"
   "${apoCHARMM_SOURCE_DIR}/include/AtomSelection.h"
   "${apoCHARMM_SOURCE_DIR}/include/AtomSelector.h"
   "${apoCHARMM_SOURCE_DIR}/include/CharmmContext.h"

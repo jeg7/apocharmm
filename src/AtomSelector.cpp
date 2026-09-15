@@ -35,3 +35,18 @@ AtomSelector::select(const std::string_view selectionString) const {
 
   return SelectionParser::parse(m_Psf, std::move(tokens));
 }
+
+AtomReference
+AtomSelector::selectAtom(const std::string_view selectionString) const {
+  const AtomSelection selection = this->select(selectionString);
+  const int numSelected = selection.getNumSelected();
+
+  APOCHARMM_REQUIRE(numSelected == 1, ApoCharmmErrorCode::InvalidArgument,
+                    "Atom selection must match exactly one atom; observed " +
+                        std::to_string(numSelected));
+
+  const std::vector<int> atomIndices = selection.getAtomIndices();
+  const int atomIndex = atomIndices.front();
+
+  return AtomReference(m_Psf, atomIndex);
+}

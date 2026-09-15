@@ -16,6 +16,7 @@ set(SOURCES_UNITTESTS_TESTS
   unittest-charmmPSF.cpp
   unittest-coordinates.cpp
   unittest-charmmCrd.cpp
+  unittest-atomReference.cpp
   unittest-atomSelection.cpp
 
   # Subscriber tests

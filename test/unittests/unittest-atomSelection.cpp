@@ -9,6 +9,7 @@
 // ENDLICENSE
 
 #include "ApoCharmmError.h"
+#include "AtomReference.h"
 #include "AtomSelection.h"
 #include "AtomSelector.h"
 #include "CharmmPSF.h"
@@ -377,6 +378,74 @@ TEST_CASE("AtomSelectorSelectionLanguage") {
         },
         ApoCharmmErrorCode::InvalidArgument,
         "Unexpected character in atom selection at position 7");
+  }
+
+  apo_test::RemoveIfExists(fileName);
+}
+
+TEST_CASE("AtomSelectorSelectAtom") {
+  const std::string fileName = "tmp_atom_selector_select_atom_test.psf";
+  apo_test::WriteTextFile(fileName, TEST_PSF_TEXT);
+
+  auto psf = std::make_shared<CharmmPSF>(fileName);
+
+  SECTION("ReturnsSingletonIndexAndSourceTopology") {
+    const AtomSelector selector(psf);
+    const AtomReference reference = selector.selectAtom("atom SEG1 1 CA");
+
+    CHECK(reference.getAtomIndex() == 1);
+    CHECK(reference.getPsf().get() == psf.get());
+  }
+
+  SECTION("RejectsZeroMatches") {
+    const AtomSelector selector(psf);
+
+    apo_test::CheckApoCharmmError(
+        [&selector](void) -> void {
+          static_cast<void>(selector.selectAtom("none"));
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Atom selection must match exactly one atom; observed 0");
+  }
+
+  SECTION("RejectsMultipleMatches") {
+    const AtomSelector selector(psf);
+
+    apo_test::CheckApoCharmmError(
+        [&selector](void) -> void {
+          static_cast<void>(selector.selectAtom("type CA"));
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Atom selection must match exactly one atom; observed 2");
+  }
+
+  SECTION("PropagatesParserErrors") {
+    const AtomSelector selector(psf);
+
+    apo_test::CheckApoCharmmError(
+        [&selector](void) -> void {
+          static_cast<void>(selector.selectAtom("type"));
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Expected selection value after type at position 4");
+  }
+
+  SECTION("ReferenceOutlivesSelctorAndOriginalPsfOwner") {
+    std::weak_ptr<const CharmmPSF> weakPsf = psf;
+
+    const AtomReference reference = [&psf](void) -> AtomReference {
+      const AtomSelector selector(psf);
+      return selector.selectAtom("atom SEG1 1 CA");
+    }();
+
+    psf.reset();
+
+    CHECK(weakPsf.expired() == false);
+    CHECK(reference.getAtomIndex() == 1);
+    CHECK(reference.getPsf().get() == weakPsf.lock().get());
   }
 
   apo_test::RemoveIfExists(fileName);
