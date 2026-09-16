@@ -9,6 +9,7 @@
 // ENDLICENSE
 
 #include "ApoCharmmError.h"
+#include "AtomReference.h"
 #include "CharmmContext.h"
 #include "CharmmPSF.h"
 #include "CharmmParameters.h"
@@ -31,6 +32,7 @@
 #include <memory>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 #include <vector_types.h>
 
@@ -39,6 +41,7 @@ namespace {
 using ResdForce = DistanceRestraintForce<long long int, float>;
 
 constexpr int NUM_ATOMS = 3;
+constexpr int REFERENCE_PSF_NUM_ATOMS = 4;
 constexpr double EXACT_GRADIENT_TOLERANCE = 0.0;
 constexpr double EXACT_ENERGY_TOLERANCE = 0.0;
 constexpr double EXACT_VIRIAL_TOLERANCE = 0.0;
@@ -56,9 +59,35 @@ constexpr double FINITE_DIFFERENCE_REL_TOLERANCE = 2.0e-5;
 constexpr double FINITE_STRAIN_TOLERANCE = 1.0e-7;
 constexpr double INV_FORCE_SCALE_TEST = 1.0 / static_cast<double>(1LL << 40);
 
+std::shared_ptr<CharmmPSF> MakeTestPsf(const int numAtoms) {
+  auto psf = std::make_shared<CharmmPSF>();
+  psf->setNumAtoms(numAtoms);
+  return psf;
+}
+
+const std::shared_ptr<const CharmmPSF> REFERENCE_PSF =
+    MakeTestPsf(REFERENCE_PSF_NUM_ATOMS);
+
+const AtomReference ATOM_ZERO(REFERENCE_PSF, 0);
+const AtomReference ATOM_ONE(REFERENCE_PSF, 1);
+const AtomReference ATOM_TWO(REFERENCE_PSF, 2);
+const AtomReference ATOM_THREE(REFERENCE_PSF, 3);
+
+const std::array<AtomReference, 2> PAIR_ZERO_ONE = {ATOM_ZERO, ATOM_ONE};
+const std::array<AtomReference, 2> PAIR_ZERO_TWO = {ATOM_ZERO, ATOM_TWO};
+const std::array<AtomReference, 2> PAIR_ZERO_THREE = {ATOM_ZERO, ATOM_THREE};
+const std::array<AtomReference, 2> PAIR_ONE_TWO = {ATOM_ONE, ATOM_TWO};
+
+const std::vector<std::array<AtomReference, 2>> SINGLE_PAIR = {PAIR_ZERO_ONE};
+const std::vector<std::array<AtomReference, 2>> SECOND_PAIR = {PAIR_ONE_TWO};
+const std::vector<std::array<AtomReference, 2>> TWO_PAIR_CHAIN = {PAIR_ZERO_ONE,
+                                                                  PAIR_ONE_TWO};
+const std::vector<std::array<AtomReference, 2>> THREE_PAIR_STAR = {
+    PAIR_ZERO_ONE, PAIR_ZERO_TWO, PAIR_ZERO_THREE};
+
 const std::vector<double> BOX_DIMENSIONS = {40.0, 41.0, 42.0};
-const std::vector<std::array<int, 2>> SINGLE_PAIR = {{0, 1}};
 const std::vector<double> UNIT_COEFFICIENT = {1.0};
+
 const std::vector<float4> STANDARD_COORDINATES = {
     make_float4(0.0f, 0.0f, 0.0f, 0.0f), make_float4(2.0f, 0.0f, 0.0f, 0.0f),
     make_float4(5.0f, 0.0f, 0.0f, 0.0f)};
@@ -452,6 +481,96 @@ TEST_CASE("DistanceRestraintForceDefaultScaleIsOne") {
                   MakeExpectedXGradients(-2.0, 2.0));
 }
 
+TEST_CASE("DistanceRestraintForceAcceptsReferencesFromDifferentTopologies") {
+  ResdForce restraint(NUM_ATOMS);
+  restraint.setBoxDimensions(BOX_DIMENSIONS);
+
+  const std::shared_ptr<CharmmPSF> firstPsf = MakeTestPsf(NUM_ATOMS);
+  const std::shared_ptr<CharmmPSF> secondPsf = MakeTestPsf(NUM_ATOMS);
+
+  const std::vector<std::array<AtomReference, 2>> atomReferencePairs = {
+      std::array<AtomReference, 2>{AtomReference(firstPsf, 0),
+                                   AtomReference(secondPsf, 1)}};
+
+  CHECK_NOTHROW(restraint.addRestraint(atomReferencePairs, UNIT_COEFFICIENT,
+                                       2.0, 1.0, 1, 2));
+
+  CudaContainer<float4> xyzq = STANDARD_COORDINATES;
+  ClearAndCalculate(restraint, xyzq);
+
+  CheckResdOutput(restraint, "RESD mixed-topology pair", 1.0,
+                  MakeExpectedXGradients(-2.0, 2.0));
+}
+
+TEST_CASE(
+    "DistanceRestraintForceRejectsEqualExtractedIndicesAcrossTopologies") {
+  ResdForce restraint(NUM_ATOMS);
+
+  const std::shared_ptr<CharmmPSF> firstPsf = MakeTestPsf(NUM_ATOMS);
+  const std::shared_ptr<CharmmPSF> secondPsf = MakeTestPsf(NUM_ATOMS);
+
+  const std::vector<std::array<AtomReference, 2>> atomReferencePairs = {
+      std::array<AtomReference, 2>{AtomReference(firstPsf, 1),
+                                   AtomReference(secondPsf, 1)}};
+
+  apo_test::CheckApoCharmmError(
+      [&restraint, &atomReferencePairs]() -> void {
+        restraint.addRestraint(atomReferencePairs, UNIT_COEFFICIENT, 2.0, 1.0,
+                               1, 2);
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Atom indices at pair index 0 must be distinct; observed (1, 1)");
+}
+
+TEST_CASE("DistanceRestraintForceAcceptsRepeatedAtomReferencePairs") {
+  ResdForce restraint(NUM_ATOMS);
+  restraint.setBoxDimensions(BOX_DIMENSIONS);
+
+  const std::vector<std::array<AtomReference, 2>> repeatedPairs = {
+      PAIR_ZERO_ONE, PAIR_ZERO_ONE};
+
+  CHECK_NOTHROW(
+      restraint.addRestraint(repeatedPairs, {1.0, 0.5}, 2.0, 1.0, 1, 2));
+
+  CudaContainer<float4> xyzq = STANDARD_COORDINATES;
+  ClearAndCalculate(restraint, xyzq);
+
+  CheckResdOutput(restraint, "RESD repeated AtomReference pair", 4.0,
+                  MakeExpectedXGradients(-6.0, 6.0));
+}
+
+TEST_CASE("DistanceRestraintForceRetainsNeitherReferencesNorSourceTopologies") {
+  ResdForce restraint(NUM_ATOMS);
+  restraint.setBoxDimensions(BOX_DIMENSIONS);
+
+  std::weak_ptr<const CharmmPSF> weakFirstPsf;
+  std::weak_ptr<const CharmmPSF> weakSecondPsf;
+
+  {
+    const std::shared_ptr<CharmmPSF> firstPsf = MakeTestPsf(NUM_ATOMS);
+    const std::shared_ptr<CharmmPSF> secondPsf = MakeTestPsf(NUM_ATOMS);
+
+    weakFirstPsf = firstPsf;
+    weakSecondPsf = secondPsf;
+
+    const std::vector<std::array<AtomReference, 2>> atomReferencePairs = {
+        std::array<AtomReference, 2>{AtomReference(firstPsf, 0),
+                                     AtomReference(secondPsf, 1)}};
+
+    restraint.addRestraint(atomReferencePairs, UNIT_COEFFICIENT, 2.0, 1.0, 1,
+                           2);
+  }
+
+  CHECK(weakFirstPsf.expired());
+  CHECK(weakSecondPsf.expired());
+
+  CudaContainer<float4> xyzq = STANDARD_COORDINATES;
+  ClearAndCalculate(restraint, xyzq);
+
+  CheckResdOutput(restraint, "RESD copied AtomReference indices", 1.0,
+                  MakeExpectedXGradients(-2.0, 2.0));
+}
+
 TEST_CASE("DistanceRestraintForceRejectsEmptyPairList") {
   ResdForce restraint(NUM_ATOMS);
 
@@ -475,47 +594,33 @@ TEST_CASE("DistanceRestraintForceRejectsPairCoefficientCountMismatch") {
       "coefficients");
 }
 
-TEST_CASE("DistanceRestraintForceValidatesAtomIndices") {
+TEST_CASE(
+    "DistanceRestraintForceValidatesExtractedIndicesAgainstItsAtomCount") {
   ResdForce restraint(NUM_ATOMS);
 
-  SECTION("NegativeFirstAtomIndex") {
-    const std::vector<std::array<int, 2>> atomPairs = {{-1, 1}};
-    apo_test::CheckApoCharmmError(
-        [&restraint, &atomPairs]() -> void {
-          restraint.addRestraint(atomPairs, UNIT_COEFFICIENT, 2.0, 1.0, 1, 2);
-        },
-        ApoCharmmErrorCode::InvalidArgument,
-        "First atom index at pair index 0 is out of range; expected [0, 3), "
-        "observed -1");
-  }
+  SECTION("FirstExtractedIndexEqualsForceAtomCount") {
+    const std::vector<std::array<AtomReference, 2>> atomReferencePairs = {
+        std::array<AtomReference, 2>{ATOM_THREE, ATOM_ONE}};
 
-  SECTION("NegativeSecondAtomIndex") {
-    const std::vector<std::array<int, 2>> atomPairs = {{0, -1}};
     apo_test::CheckApoCharmmError(
-        [&restraint, &atomPairs]() -> void {
-          restraint.addRestraint(atomPairs, UNIT_COEFFICIENT, 2.0, 1.0, 1, 2);
-        },
-        ApoCharmmErrorCode::InvalidArgument,
-        "Second atom index at pair index 0 is out of range; expected [0, 3), "
-        "observed -1");
-  }
-
-  SECTION("FirstAtomIndexEqualsAtomCount") {
-    const std::vector<std::array<int, 2>> atomPairs = {{NUM_ATOMS, 1}};
-    apo_test::CheckApoCharmmError(
-        [&restraint, &atomPairs]() -> void {
-          restraint.addRestraint(atomPairs, UNIT_COEFFICIENT, 2.0, 1.0, 1, 2);
+        [&restraint, &atomReferencePairs](void) -> void {
+          restraint.addRestraint(atomReferencePairs, UNIT_COEFFICIENT, 2.0, 1.0,
+                                 1, 2);
+          return;
         },
         ApoCharmmErrorCode::InvalidArgument,
         "First atom index at pair index 0 is out of range; expected [0, 3), "
         "observed 3");
   }
 
-  SECTION("SecondAtomIndexEqualsAtomCount") {
-    const std::vector<std::array<int, 2>> atomPairs = {{0, NUM_ATOMS}};
+  SECTION("SecondExtractedIndexEqualsForceAtomCount") {
+    const std::vector<std::array<AtomReference, 2>> atomReferencePairs = {
+        std::array<AtomReference, 2>{ATOM_ZERO, ATOM_THREE}};
+
     apo_test::CheckApoCharmmError(
-        [&restraint, &atomPairs]() -> void {
-          restraint.addRestraint(atomPairs, UNIT_COEFFICIENT, 2.0, 1.0, 1, 2);
+        [&restraint, &atomReferencePairs](void) -> void {
+          restraint.addRestraint(atomReferencePairs, UNIT_COEFFICIENT, 2.0, 1.0,
+                                 1, 2);
         },
         ApoCharmmErrorCode::InvalidArgument,
         "Second atom index at pair index 0 is out of range; expected [0, 3), "
@@ -646,7 +751,8 @@ TEST_CASE("DistanceRestraintForceRejectsInvalidActivationCondition") {
 
 TEST_CASE("DistanceRestraintForceRejectsIdenticalAtomIndices") {
   ResdForce restraint(NUM_ATOMS);
-  const std::vector<std::array<int, 2>> identicalPair = {{1, 1}};
+  const std::vector<std::array<AtomReference, 2>> identicalPair = {
+      std::array<AtomReference, 2>{ATOM_ONE, ATOM_ONE}};
 
   apo_test::CheckApoCharmmError(
       [&restraint, &identicalPair]() -> void {
@@ -869,7 +975,7 @@ TEST_CASE("DistanceRestraintForceFailedAddPreservesPriorDefinitions") {
   CheckResdOutput(restraint, "RESD before failed add", 1.0,
                   MakeExpectedXGradients(-2.0, 2.0));
 
-  const std::vector<std::array<int, 2>> atomPairs = {{0, 1}, {1, 2}};
+  const std::vector<std::array<AtomReference, 2>> atomPairs = TWO_PAIR_CHAIN;
   const std::vector<double> coefficients = {1.0, 0.0};
   apo_test::CheckApoCharmmError(
       [&restraint, &atomPairs, &coefficients]() -> void {
@@ -995,7 +1101,7 @@ TEST_CASE("DistanceRestraintForceAppliesPairCoefficientsAlgebraically") {
 TEST_CASE("DistanceRestraintForceCalculatesSignedTwoPairReactionCoordinate") {
   ResdForce restraint(NUM_ATOMS);
   restraint.setBoxDimensions(BOX_DIMENSIONS);
-  const std::vector<std::array<int, 2>> atomPairs = {{0, 1}, {1, 2}};
+  const std::vector<std::array<AtomReference, 2>> atomPairs = TWO_PAIR_CHAIN;
   const std::vector<double> coefficients = {1.0, -1.0};
   restraint.addRestraint(atomPairs, coefficients, 2.0, -2.0, 1, 2);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1026,7 +1132,7 @@ TEST_CASE("DistanceRestraintForceAccumulatesSeveralPairsSharingOneAtom") {
   constexpr int numAtoms = 5;
   ResdForce restraint(numAtoms);
   restraint.setBoxDimensions(BOX_DIMENSIONS);
-  const std::vector<std::array<int, 2>> atomPairs = {{0, 1}, {0, 2}, {0, 3}};
+  const std::vector<std::array<AtomReference, 2>> atomPairs = THREE_PAIR_STAR;
   restraint.addRestraint(atomPairs, {1.0, 1.0, 1.0}, 2.0, 0.0, 1, 2);
   CudaContainer<float4> xyzq = std::vector<float4>{
       make_float4(0.0f, 0.0f, 0.0f, 0.0f), make_float4(1.0f, 0.0f, 0.0f, 0.0f),
@@ -1080,8 +1186,8 @@ TEST_CASE("DistanceRestraintForceAccumulatesMultipleTermsInOneObject") {
 TEST_CASE("DistanceRestraintForceAccumulatesMultipleTermsSharingAtoms") {
   ResdForce restraint(NUM_ATOMS);
   restraint.setBoxDimensions(BOX_DIMENSIONS);
-  restraint.addRestraint({{0, 1}}, {1.0}, 2.0, 1.0, 1, 2);
-  restraint.addRestraint({{1, 2}}, {1.0}, 4.0, 1.0, 1, 2);
+  restraint.addRestraint(SINGLE_PAIR, {1.0}, 2.0, 1.0, 1, 2);
+  restraint.addRestraint(SECOND_PAIR, {1.0}, 4.0, 1.0, 1, 2);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
 
   const double firstDeviation = 2.0 - 1.0;
@@ -1439,7 +1545,7 @@ TEST_CASE("DistanceRestraintForceInternalTermsConserveTotalGradient") {
   constexpr int numAtoms = 4;
   ResdForce restraint(numAtoms);
   restraint.setBoxDimensions(BOX_DIMENSIONS);
-  restraint.addRestraint({{0, 1}, {1, 2}}, {1.0, -1.0}, 2.0, -2.0, 1, 2);
+  restraint.addRestraint(TWO_PAIR_CHAIN, {1.0, -1.0}, 2.0, -2.0, 1, 2);
   CudaContainer<float4> xyzq = std::vector<float4>{
       make_float4(0.0f, 0.0f, 0.0f, 0.0f), make_float4(2.0f, 0.0f, 0.0f, 0.0f),
       make_float4(5.0f, 0.0f, 0.0f, 0.0f),
@@ -1577,7 +1683,7 @@ TEST_CASE("DistanceRestraintForceGradientsMatchCentralFiniteDifferences") {
   SECTION("MultiPairTerm") {
     ResdForce restraint(NUM_ATOMS);
     restraint.setBoxDimensions(BOX_DIMENSIONS);
-    restraint.addRestraint({{0, 1}, {1, 2}}, {1.0, 0.5}, 1.5, 0.25, 1, 2);
+    restraint.addRestraint(TWO_PAIR_CHAIN, {1.0, 0.5}, 1.5, 0.25, 1, 2);
     const std::vector<float4> coordinates = {
         make_float4(0.0f, 0.0f, 0.0f, 0.0f),
         make_float4(1.0f, 2.0f, 0.0f, 0.0f),
@@ -1852,7 +1958,7 @@ TEST_CASE("DistanceRestraintForceUsesRawCoordinatesAcrossBoxFaces") {
     constexpr int numAtoms = 4;
     ResdForce restraint(numAtoms);
     restraint.setBoxDimensions(BOX_DIMENSIONS);
-    const std::vector<std::array<int, 2>> atomPairs = {{0, 1}, {0, 2}, {0, 3}};
+    const std::vector<std::array<AtomReference, 2>> atomPairs = THREE_PAIR_STAR;
     restraint.addRestraint(atomPairs, {1.0, 1.0, 1.0}, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq =
         std::vector<float4>{make_float4(0.0f, 0.0f, 0.0f, 0.0f),
@@ -2074,7 +2180,7 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
   SECTION("SignedMultiPairTerm") {
     ResdForce restraint(3);
     restraint.setBoxDimensions(BOX_DIMENSIONS);
-    restraint.addRestraint({{0, 1}, {1, 2}}, {1.0, -1.0}, 2.0, -2.0, 1, 2);
+    restraint.addRestraint(TWO_PAIR_CHAIN, {1.0, -1.0}, 2.0, -2.0, 1, 2);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
     const std::vector<double3> expectedGradients = {
         make_double3(-2.0, 0.0, 0.0), make_double3(4.0, 0.0, 0.0),

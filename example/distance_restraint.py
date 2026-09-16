@@ -44,35 +44,24 @@ def main(argc, argv):
 
     # Select atoms
     selector = apo.AtomSelector(psf)
-    n_selection = selector.select("atom A000 1 N")
-    ht1_selection = selector.select("atom A000 1 HT1")
-    ht2_selection = selector.select("atom A000 1 HT2")
-
-    n_indices = n_selection.getAtomIndices()
-    ht1_indices = ht1_selection.getAtomIndices()
-    ht2_indices = ht2_selection.getAtomIndices()
-
-    if len(n_indices) != 1 or len(ht1_indices) != 1 or len(ht2_indices) != 1:
-        raise RuntimeError(
-            "Expected selections 'atom A000 1 N', 'atom A000 1 HT1', and 'atom A000 1 HT2' to each match exactly one atom"
-        )
-
-    n_index = n_indices[0]
-    ht1_index = ht1_indices[0]
-    ht2_index = ht2_indices[0]
+    n = selector.selectAtom("atom A000 1 N")
+    ht1 = selector.selectAtom("atom A000 1 HT1")
+    ht2 = selector.selectAtom("atom A000 1 HT2")
 
     # Calculate reference values from the starting coordinates
     coordinates = crd.getCoordinates()
-    r_n_ht1 = math.dist(coordinates[n_index], coordinates[ht1_index])
-    r_n_ht2 = math.dist(coordinates[n_index], coordinates[ht2_index])
-    r_ht1_ht2 = math.dist(coordinates[ht1_index], coordinates[ht2_index])
+    r_n_ht1 = math.dist(coordinates[n.getAtomIndex()], coordinates[ht1.getAtomIndex()])
+    r_n_ht2 = math.dist(coordinates[n.getAtomIndex()], coordinates[ht2.getAtomIndex()])
+    r_ht1_ht2 = math.dist(
+        coordinates[ht1.getAtomIndex()], coordinates[ht2.gteAtomIndex()]
+    )
 
     # Setup distance restraints
     resd = apo.DistanceRestraintForce(psf.getNumAtoms())
 
     # Conventional harmonic-distance term on r(N, HT1)
     resd.addRestraint(
-        [[n_index, ht1_index]],
+        [[n.getAtomIndex(), ht1.getAtomIndex()]],
         [1.0],
         1.0,
         r_n_ht1 - 0.05,
@@ -83,7 +72,10 @@ def main(argc, argv):
 
     # Reaction-coordinate term on r(N, HT1) - r(HT1, HT2)
     resd.addRestraint(
-        [[n_index, ht1_index], [ht1_index, ht2_index]],
+        [
+            [n.getAtomIndex(), ht1.getAtomIndex()],
+            [ht1.getAtomIndex(), ht2.getAtomIndex()],
+        ],
         [1.0, -1.0],
         0.25,
         r_n_ht1 - r_ht1_ht2 - 0.05,
@@ -94,7 +86,7 @@ def main(argc, argv):
 
     # Positive-only high-power term on r(N, HT2)^6
     resd.addRestraint(
-        [[n_index, ht2_index]],
+        [[n.getAtomIndex(), ht2.getAtomIndex()]],
         [1.0],
         0.001,
         r_n_ht2**6 - 0.5,

@@ -27,6 +27,8 @@ RANDOM_SEED: int = 314159
 TEMPERATURE: float = 300.0
 TIME_STEP: float = 0.001
 
+AtomPair = tuple[apo.AtomReference, apo.AtomReference]
+
 
 def create_system() -> tuple[
     apo.CharmmParameters,
@@ -72,12 +74,31 @@ def close_system(
     return
 
 
+def create_atom_pair(psf: apo.CharmmPsf) -> AtomPair:
+    first = apo.AtomReference(psf, 0)
+
+    try:
+        second = apo.AtomReference(psf, 1)
+    except BaseException:
+        first.close()
+        raise
+
+    return first, second
+
+
+def close_atom_pair(atom_pair: AtomPair) -> None:
+    atom_pair[1].close()
+    atom_pair[0].close()
+    return
+
+
 def add_stable_one_pair_term(
     restraint: apo.DistanceRestraintForce,
+    atom_pair: AtomPair,
     condition: apo.DistanceRestraintCondition,
     reference_value: float = PAIR_DISTANCE - 0.1,
 ) -> None:
-    restraint.addRestraint([[0, 1]], [1.0], 0.1, reference_value, 1, 2, condition)
+    restraint.addRestraint([atom_pair], [1.0], 0.1, reference_value, 1, 2, condition)
     return
 
 
@@ -136,12 +157,20 @@ def check_term_conditions_reset_and_reuse() -> None:
         "reuse configuration..."
     )
 
-    restraint = apo.DistanceRestraintForce(2)
+    psf_path: str = apo_test.require_file(apo_test.get_data_dir() / "nacl_pair.psf")
+    psf = apo.CharmmPsf(psf_path)
+    atom_pair = create_atom_pair(psf)
+    restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+
     try:
-        add_stable_one_pair_term(restraint, apo.DistanceRestraintCondition.NONE)
+        add_stable_one_pair_term(
+            restraint,
+            atom_pair,
+            apo.DistanceRestraintCondition.NONE,
+        )
 
         restraint.addRestraint(
-            [[0, 1], [0, 1]],
+            [atom_pair, atom_pair],
             [1.0, -0.5],
             0.1,
             0.5 * PAIR_DISTANCE,
@@ -152,12 +181,14 @@ def check_term_conditions_reset_and_reuse() -> None:
 
         add_stable_one_pair_term(
             restraint,
+            atom_pair,
             apo.DistanceRestraintCondition.POSITIVE,
             reference_value=PAIR_DISTANCE - 1.0,
         )
 
         add_stable_one_pair_term(
             restraint,
+            atom_pair,
             apo.DistanceRestraintCondition.NEGATIVE,
             reference_value=PAIR_DISTANCE + 1.0,
         )
@@ -165,9 +196,15 @@ def check_term_conditions_reset_and_reuse() -> None:
         restraint.setScale(-3.0)
         restraint.reset()
 
-        add_stable_one_pair_term(restraint, apo.DistanceRestraintCondition.NONE)
+        add_stable_one_pair_term(
+            restraint,
+            atom_pair,
+            apo.DistanceRestraintCondition.NONE,
+        )
     finally:
         restraint.close()
+        close_atom_pair(atom_pair)
+        psf.close()
 
     return
 
@@ -177,6 +214,7 @@ def check_validation() -> None:
 
     prm, psf, crd, fm, ctx = create_system()
     restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+    atom_pair = create_atom_pair(psf)
 
     try:
         apo_test.expect_exception(
@@ -184,12 +222,14 @@ def check_validation() -> None:
             TypeError,
             lambda: apo.DistanceRestraintForce(2.0),  # type: ignore[arg-type]
         )
+
         apo_test.expect_invalid_argument(
             "DistanceRestraintForce rejects zero num_atoms",
             lambda: apo.DistanceRestraintForce(0),
             "Atom count must be positive; observed 0",
             expected_context="DistanceRestraintForce construction",
         )
+
         apo_test.expect_invalid_argument(
             "DistanceRestraintForce rejects negative num_atoms",
             lambda: apo.DistanceRestraintForce(-1),
@@ -198,10 +238,10 @@ def check_validation() -> None:
         )
 
         apo_test.expect_exception(
-            "addRestraint rejects a pair with the wrong number of indices",
-            ValueError,
+            "addRestraint rejects raw integer endpoint pairs",
+            TypeError,
             lambda: restraint.addRestraint(
-                [[0]],
+                [[0, 1]],  # type: ignore[list-item]
                 [1.0],
                 1.0,
                 0.0,
@@ -211,7 +251,20 @@ def check_validation() -> None:
             ),
         )
 
-        # Behavior 10 and policy Behavior 23; case_id="48_empty_pair_list".
+        apo_test.expect_exception(
+            "addRestraint rejects a pair with the wrong number of references",
+            ValueError,
+            lambda: restraint.addRestraint(
+                [[atom_pair[0]]],
+                [1.0],
+                1.0,
+                0.0,
+                1,
+                2,
+                apo.DistanceRestraintCondition.NONE,
+            ),
+        )
+
         apo_test.expect_invalid_argument(
             "addRestraint rejects an empty pair list",
             lambda: restraint.addRestraint(
@@ -230,7 +283,7 @@ def check_validation() -> None:
         apo_test.expect_invalid_argument(
             "addRestraint rejects pair/coefficient count mismatch",
             lambda: restraint.addRestraint(
-                [[0, 1]],
+                [atom_pair],
                 [1.0, -0.5],
                 1.0,
                 0.0,
@@ -242,10 +295,76 @@ def check_validation() -> None:
             expected_context=ADD_RESTRAINT_CONTEXT,
         )
 
-        apo_test.expect_invalid_argument(
-            "addRestraint propagates an invalid atom index as ApoCharmmError",
+        larger_psf_path: str = apo_test.require_file(
+            apo_test.get_data_dir() / "1lvz.psf"
+        )
+        larger_psf = apo.CharmmPsf(larger_psf_path)
+        outside_reference = apo.AtomReference(larger_psf, psf.getNumAtoms())
+
+        try:
+            apo_test.expect_invalid_argument(
+                "addRestraint applies force-local index validation",
+                lambda: restraint.addRestraint(
+                    [[atom_pair[0], outside_reference]],
+                    [1.0],
+                    1.0,
+                    0.0,
+                    1,
+                    2,
+                    apo.DistanceRestraintCondition.NONE,
+                ),
+                "Second atom index at pair index 0 is out of range",
+                expected_context=ADD_RESTRAINT_CONTEXT,
+            )
+        finally:
+            outside_reference.close()
+            larger_psf.close()
+
+        second_psf_path: str = apo_test.require_file(
+            apo_test.get_data_dir() / "nacl_pair.psf"
+        )
+        second_psf = apo.CharmmPsf(second_psf_path)
+        second_pair = create_atom_pair(second_psf)
+
+        try:
+            restraint.addRestraint(
+                [[atom_pair[0], second_pair[1]]],
+                [1.0],
+                1.0,
+                0.0,
+                1,
+                2,
+                apo.DistanceRestraintCondition.NONE,
+            )
+            restraint.reset()
+
+            apo_test.expect_invalid_argument(
+                "addRestraint rejects the same extracted index from "
+                "different topologies",
+                lambda: restraint.addRestraint(
+                    [[atom_pair[0], second_pair[0]]],
+                    [1.0],
+                    1.0,
+                    0.0,
+                    1,
+                    2,
+                    apo.DistanceRestraintCondition.NONE,
+                ),
+                "Atom indices at pair index 0 must be distinct; " "observed (0, 0)",
+                expected_context=ADD_RESTRAINT_CONTEXT,
+            )
+        finally:
+            close_atom_pair(second_pair)
+            second_psf.close()
+
+        closed_reference = apo.AtomReference(psf, 0)
+        closed_reference.close()
+
+        apo_test.expect_exception(
+            "addRestraint rejects a closed AtomReference",
+            RuntimeError,
             lambda: restraint.addRestraint(
-                [[0, psf.getNumAtoms()]],
+                [[closed_reference, atom_pair[1]]],
                 [1.0],
                 1.0,
                 0.0,
@@ -253,15 +372,12 @@ def check_validation() -> None:
                 2,
                 apo.DistanceRestraintCondition.NONE,
             ),
-            "Second atom index at pair index 0 is out of range",
-            expected_context=ADD_RESTRAINT_CONTEXT,
         )
 
-        # Behavior 8 and policy Behavior 23; case_id="46_zero_kval".
         apo_test.expect_invalid_argument(
             "addRestraint propagates zero force constant as ApoCharmmError",
             lambda: restraint.addRestraint(
-                [[0, 1]],
+                [atom_pair],
                 [1.0],
                 0.0,
                 0.0,
@@ -273,13 +389,10 @@ def check_validation() -> None:
             expected_context=ADD_RESTRAINT_CONTEXT,
         )
 
-        # Behavior 11 marks nonfinite RVAL behavior UNRESOLVED. This test
-        # verifies the current apoCHARMM finite-value policy; it does not assert
-        # unrestricted external CHARMM behavior and therefore has no case_id.
         apo_test.expect_invalid_argument(
-            "addRestraint propagates nonfinite reference value as ApoCharmmError",
+            "addRestraint propagates nonfinite reference value as " "ApoCharmmError",
             lambda: restraint.addRestraint(
-                [[0, 1]],
+                [atom_pair],
                 [1.0],
                 1.0,
                 math.inf,
@@ -291,13 +404,10 @@ def check_validation() -> None:
             expected_context=ADD_RESTRAINT_CONTEXT,
         )
 
-        # Behavior 2 marks IVAL=3 as UNRESOLVED. Behavior 23 permits the
-        # narrowed public API to reject unsupported states; there is
-        # intentionally no external case_id asserting CHARMM rejection of 3.
         apo_test.expect_invalid_argument(
             "addRestraint rejects uncharacterized distance exponent",
             lambda: restraint.addRestraint(
-                [[0, 1]],
+                [atom_pair],
                 [1.0],
                 1.0,
                 0.0,
@@ -309,11 +419,10 @@ def check_validation() -> None:
             expected_context=ADD_RESTRAINT_CONTEXT,
         )
 
-        # Behavior 3; case_id="10_eval_neg1".
         apo_test.expect_invalid_argument(
             "addRestraint rejects negative energy exponent",
             lambda: restraint.addRestraint(
-                [[0, 1]],
+                [atom_pair],
                 [1.0],
                 1.0,
                 0.0,
@@ -329,7 +438,7 @@ def check_validation() -> None:
             "addRestraint rejects a non-enum condition",
             TypeError,
             lambda: restraint.addRestraint(
-                [[0, 1]],
+                [atom_pair],
                 [1.0],
                 1.0,
                 0.0,
@@ -354,6 +463,7 @@ def check_validation() -> None:
             expected_context="ForceManager.subscribe(DistanceRestraintForce)",
         )
     finally:
+        close_atom_pair(atom_pair)
         restraint.close()
         close_system(prm, psf, crd, fm, ctx)
 
@@ -368,40 +478,51 @@ def check_subscription_mutation_and_short_integration() -> None:
 
     prm, psf, crd, fm, ctx = create_system()
     restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+    atom_pair = create_atom_pair(psf)
     integrator: apo.CudaLangevinThermostatIntegrator | None = None
 
     try:
-        add_stable_one_pair_term(restraint, apo.DistanceRestraintCondition.NONE)
+        add_stable_one_pair_term(
+            restraint,
+            atom_pair,
+            apo.DistanceRestraintCondition.NONE,
+        )
 
         add_stable_one_pair_term(
             restraint,
+            atom_pair,
             apo.DistanceRestraintCondition.POSITIVE,
             reference_value=PAIR_DISTANCE - 1.0,
         )
 
         add_stable_one_pair_term(
             restraint,
+            atom_pair,
             apo.DistanceRestraintCondition.NEGATIVE,
             reference_value=PAIR_DISTANCE + 1.0,
         )
 
         fm.subscribe(restraint)
+
         try:
             ctx.calculatePotentialEnergy()
+
             apo_test.expect_invalid_argument(
-                "ForceManager rejects duplicate DistanceRestaintForce subscription",
+                "ForceManager rejects duplicate DistanceRestaintForce " "subscription",
                 lambda: fm.subscribe(restraint),
                 "Force is already subscribed to this ForceManager",
-                expected_context="ForceManager.subscribe(DistanceRestraintForce)",
+                expected_context=("ForceManager.subscribe(DistanceRestraintForce)"),
             )
         finally:
             fm.unsubscribe(restraint)
 
         fm.subscribe(restraint, "custom-resd")
+
         try:
             restraint.setScale(3.0)
+
             restraint.addRestraint(
-                [[0, 1], [0, 1]],
+                [atom_pair, atom_pair],
                 [1.0, -0.5],
                 0.1,
                 0.5 * PAIR_DISTANCE,
@@ -409,6 +530,7 @@ def check_subscription_mutation_and_short_integration() -> None:
                 2,
                 apo.DistanceRestraintCondition.NONE,
             )
+
             ctx.calculatePotentialEnergy()
 
             restraint.setScale(-0.25)
@@ -417,7 +539,12 @@ def check_subscription_mutation_and_short_integration() -> None:
             restraint.reset()
             ctx.calculatePotentialEnergy()
 
-            add_stable_one_pair_term(restraint, apo.DistanceRestraintCondition.NONE)
+            add_stable_one_pair_term(
+                restraint,
+                atom_pair,
+                apo.DistanceRestraintCondition.NONE,
+            )
+
             ctx.calculatePotentialEnergy()
 
             integrator = apo.CudaLangevinThermostatIntegrator(TIME_STEP)
@@ -428,21 +555,67 @@ def check_subscription_mutation_and_short_integration() -> None:
             integrator.propagate(10)
 
             apo_test.assert_finite_temperature(
-                "post distance-restraint propagation", ctx.computeTemperature()
+                "post distance-restraint propagation",
+                ctx.computeTemperature(),
             )
 
             coordinate_charge_rows: list[list[float]] = ctx.getCoordinatesCharges()
+
             coordinates: list[list[float]] = [
                 [row[0], row[1], row[2]] for row in coordinate_charge_rows
             ]
+
             apo_test.assert_finite_nested_sequence(
-                "post distance-restraint coordinates", coordinates
+                "post distance-restraint coordinates",
+                coordinates,
             )
         finally:
             fm.unsubscribe(restraint)
     finally:
         if integrator is not None:
             integrator.close()
+
+        close_atom_pair(atom_pair)
+        restraint.close()
+        close_system(prm, psf, crd, fm, ctx)
+
+    return
+
+
+def check_reference_handles_are_not_retained() -> None:
+    print("Checking AtomReference handle lifetime after addRestraint...")
+
+    prm, psf, crd, fm, ctx = create_system()
+
+    source_psf_path: str = apo_test.require_file(
+        apo_test.get_data_dir() / "nacl_pair.psf"
+    )
+    source_psf = apo.CharmmPsf(source_psf_path)
+    atom_pair = create_atom_pair(source_psf)
+
+    restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+    subscribed: bool = False
+
+    try:
+        add_stable_one_pair_term(
+            restraint,
+            atom_pair,
+            apo.DistanceRestraintCondition.NONE,
+        )
+
+        close_atom_pair(atom_pair)
+        source_psf.close()
+
+        fm.subscribe(restraint)
+        subscribed = True
+
+        ctx.calculatePotentialEnergy()
+    finally:
+        if subscribed:
+            fm.unsubscribe(restraint)
+
+        close_atom_pair(atom_pair)
+        source_psf.close()
         restraint.close()
         close_system(prm, psf, crd, fm, ctx)
 
@@ -452,19 +625,36 @@ def check_subscription_mutation_and_short_integration() -> None:
 def check_closed_handle_rejection() -> None:
     print("Checking closed DistanceRestraintForce handle rejection...")
 
-    restraint = apo.DistanceRestraintForce(2)
+    psf_path: str = apo_test.require_file(apo_test.get_data_dir() / "nacl_pair.psf")
+    psf = apo.CharmmPsf(psf_path)
+    atom_pair = create_atom_pair(psf)
+
+    restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
     restraint.close()
 
-    apo_test.expect_exception(
-        "closed DistanceRestraintForce rejects addRestraint",
-        RuntimeError,
-        lambda: restraint.addRestraint(
-            [[0, 1]], [1.0], 1.0, 0.0, 1, 2, apo.DistanceRestraintCondition.NONE
-        ),
-    )
-    apo_test.expect_exception(
-        "closed DistanceRestraintForce rejects reset", RuntimeError, restraint.reset
-    )
+    try:
+        apo_test.expect_exception(
+            "closed DistanceRestraintForce rejects addRestraint",
+            RuntimeError,
+            lambda: restraint.addRestraint(
+                [atom_pair],
+                [1.0],
+                1.0,
+                0.0,
+                1,
+                2,
+                apo.DistanceRestraintCondition.NONE,
+            ),
+        )
+
+        apo_test.expect_exception(
+            "closed DistanceRestraintForce rejects reset",
+            RuntimeError,
+            restraint.reset,
+        )
+    finally:
+        close_atom_pair(atom_pair)
+        psf.close()
 
     return
 
@@ -474,6 +664,7 @@ def main(argc: int, argv: list[str]) -> int:
     check_term_conditions_reset_and_reuse()
     check_validation()
     check_subscription_mutation_and_short_integration()
+    check_reference_handles_are_not_retained()
     check_closed_handle_rejection()
 
     print(

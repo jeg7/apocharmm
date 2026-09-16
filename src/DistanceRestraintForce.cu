@@ -60,10 +60,19 @@ void DistanceRestraintForce<AT, CT>::setScale(const double scale) {
 
 template <typename AT, typename CT>
 void DistanceRestraintForce<AT, CT>::addRestraint(
-    const std::vector<std::array<int, 2>> &atomPairs,
+    const std::vector<std::array<AtomReference, 2>> &atomReferencePairs,
     const std::vector<double> &coefficients, const double forceConstant,
     const double referenceValue, const int distanceExponent,
     const int energyExponent, const DistanceRestraintCondition condition) {
+  std::vector<std::array<int, 2>> atomPairs;
+  atomPairs.reserve(atomReferencePairs.size());
+
+  for (const std::array<AtomReference, 2> &atomReferencePair :
+       atomReferencePairs) {
+    atomPairs.push_back({atomReferencePair[0].getAtomIndex(),
+                         atomReferencePair[1].getAtomIndex()});
+  }
+
   APOCHARMM_REQUIRE(
       !atomPairs.empty(), ApoCharmmErrorCode::InvalidArgument,
       "A distance-restraint term must contain at least one atom pair");

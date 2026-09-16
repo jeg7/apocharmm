@@ -63,8 +63,8 @@ Their meanings and Python exception mapping are documented in the
   [CharmmContext subsystem](@ref charmm_context).
 - [apocharmm.DistanceRestraintForce](@ref python_distance_restraint_force)
   configures CHARMM RESDistance/RESD terms made from one or more weighted
-  atom-pair distances. See the
-  [DistanceRestraintForce subsystem](@ref distance_restraint_force).
+  `AtomReference` endpoint pairs. Raw integer endpoint pairs are not accepted.
+  See the [DistanceRestraintForce subsystem](@ref distance_restraint_force).
 - [apocharmm.ForceManager](@ref python_force_manager) configures and owns native
   force backends. See the [ForceManager subsystem](@ref force_manager).
 - [apocharmm.HarmonicCenterOfMassRestraintForce](@ref python_harmonic_center_of_mass_restraint_force)

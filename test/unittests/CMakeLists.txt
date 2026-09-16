@@ -64,6 +64,7 @@ set(SOURCES_CAPI_TESTS
   # Restraint tests
   unittest-capiHarmonicRestraintForce.cpp
   unittest-capiHarmonicCenterOfMassRestraintForce.cpp
+  unittest-capiDistanceRestraintForce.cpp
 )
 
 ###################################################

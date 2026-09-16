@@ -15,6 +15,7 @@
 #ifndef __APOCHARMM_C_DISTANCE_RESTRAINT_FORCE_H__
 #define __APOCHARMM_C_DISTANCE_RESTRAINT_FORCE_H__
 
+#include "apocharmm_c/AtomReference.h"
 #include "apocharmm_c/Export.h"
 #include "apocharmm_c/ForceManager.h"
 #include "apocharmm_c/Status.h"
@@ -31,7 +32,9 @@ extern "C" {
  * A successful @ref apo_distance_restraint_force_create call returns one newly
  * owned handle. Release it with @ref apo_distance_restraint_force_destroy.
  * Configuration functions borrow a live handle for one call. Functions that
- * accept arrays copy all array elements and retain no caller pointer.
+ * accept atom-reference arrays borrow every handle for that call, copy only the
+ * extracted zero-based indices and coefficients into force-owned storage, and
+ * retain no caller pointer, atom-reference handle, or source PSF.
  *
  * One native object may own multiple restraint terms. For term `t`, pair `j`
  * has coefficient `c_tj`, raw primary-coordinate distance `r_tj`, distance
@@ -175,73 +178,71 @@ APOCHARMM_C_API apo_status apo_distance_restraint_force_set_scale(
     apo_distance_restraint_force *restraint, const double scale);
 
 /**
- * @brief Appends one distance-restraint term from parallel pair arrays.
+ * @brief Appends one distance-restraint term from AtomReference endpoint
+ * arrays.
  *
- * Element `j` of `first_atom_indices`, `second_atom_indices`, and
- * `coefficients` defines one atom pair and its algebraic coefficient. The
- * arrays are borrowed for this call, copied into native storage, and never
- * retained. Atom indices use apoCHARMM's zero-based convention.
+ * Element `j` of `first_atom_references`, `second_atom_references`, and
+ * `coefficients` defines one atom pair and its algebraic coefficient. The three
+ * arrays are parallel and must have matching lengths.
  *
- * For each pair, the two atom indices must be distinct and within the fixed
- * atom count. Every coefficient must be finite and nonzero. Repeated pairs are
- * accepted and accumulate algebraically. The force constant must be finite and
- * nonzero; positive and negative values are accepted. The reference value must
- * be finite.
+ * Every atom-reference handle and native AtomReference is borrowed only for
+ * this call. Native code copies the AtomReference values into temporary pair
+ * storage, and DistanceRestraintForce extracts and stores only their zero-based
+ * atom indices. No public handle, AtomReference object, or source CharmmPSF is
+ * retained after this function returns.
  *
- * The deliberately supported typed distance-exponent set is
- * `{-2, -1, 0, 1, 2, 6, 7}`. The deliberately supported typed energy-exponent
- * set is `{1, 2, 3, 4}`. Complete native compatibility outside these
- * characterized sets is unresolved, so other values are rejected rather than
- * inferred. The activation condition must be one of the three declared
- * enumeration values.
+ * Topology provenance is deliberately ignored. Pair endpoints may originate
+ * from different native PSF objects. Their extracted indices must be valid for
+ * the restraint's fixed atom count and must be distinct. Endpoints from
+ * different topologies with the same extracted index are therefore rejected.
  *
- * @param[in,out] restraint Borrowed live restraint handle. The handle is not
- * retained.
- * @param[in] first_atom_indices Non-NULL pointer to `first_atom_indices_len`
- * contiguous first atom indices.
- * @param[in] first_atom_indices_len Dimensionless number of elements in
- * `first_atom_indices`. It must be nonzero.
- * @param[in] second_atom_indices Non-NULL pointer to `second_atom_indices_len`
- * contiguous second atom indices.
- * @param[in] second_atom_indices_len Dimensionless number of elements in
- * `second_atom_indices`. It must equal `first_atom_indices_len`.
+ * Every coefficient must be finite and nonzero. Repeated pairs are accepted
+ * and accumulate algebraically. The force constant must be finite and nonzero;
+ * positive and negative values are accepted. The reference value must be
+ * finite.
+ *
+ * The supported distance-exponent set is `{-2, -1, 0, 1, 2, 6, 7}`. The
+ * supported energy-exponent set is `{1, 2, 3, 4}`. Other values are rejected.
+ * The activation condition must be one of the declared enumeration values.
+ *
+ * @param[in,out] restraint Borrowed live restraint handle.
+ * @param[in] first_atom_references Non-NULL pointer to
+ * `first_atom_references_len` borrowed live AtomReference handles.
+ * @param[in] first_atom_references_len Number of elements in
+ * `first_atom_references`.
+ * @param[in] second_atom_references Non-NULL pointer to
+ * `second_atom_references_len` borrowed live AtomReference handles.
+ * @param[in] second_atom_references_len Number of elements in
+ * `second_atom_references`. It must equal `first_atom_references_len`.
  * @param[in] coefficients Non-NULL pointer to `coefficients_len` contiguous
- * algebraic pair coefficients.
- * @param[in] coefficients_len Dimensionless number of elements in
- * `coefficients`.
+ * pair coefficients.
+ * @param[in] coefficients_len Number of coefficient elements.
  * @param[in] force_constant Finite nonzero term force constant.
  * @param[in] reference_value Finite term reference value.
- * @param[in] distance_exponent Integer exponent applied to every pair distance.
+ * @param[in] distance_exponent Integer exponent applied to pair distances.
  * @param[in] energy_exponent Integer exponent applied to the term deviation.
  * @param[in] condition One-sided activation mode.
- * @retval APO_STATUS_OK The term and independent copies of all pair data were
- * appended.
- * @retval APO_STATUS_INVALID_ARGUMENT `restraint` or any array pointer is
- * `NULL`; the handle contains no native object; the atom-index array lengths
- * differ; appending would exceed a native `int` count limit; an atom index is
- * out of range; a pair contains the same atom twice; a coefficient is zero,
- * NaN, or infinite; `force_constant` is zero, NaN, or infinite;
- * `reference_value` is NaN or infinite; an exponent is outside its supported
- * set; or `condition` is not a declared enumeration value.
- * @retval APO_STATUS_RUNTIME_ERROR Copying the C arrays, allocating or growing
- * native host storage, diagnostic construction, or another standard or
- * nonstandard C++ operation failed.
+ * @retval APO_STATUS_OK The term was appended.
+ * @retval APO_STATUS_INVALID_ARGUMENT A required pointer, handle, or native
+ * object is NULL; endpoint-array lengths differ; pair and coefficient counts
+ * differ; an extracted index is outside the force-local range; both endpoints
+ * map to the same index; a coefficient or scalar parameter is invalid; an
+ * exponent is unsupported; or `condition` is not declared.
+ * @retval APO_STATUS_RUNTIME_ERROR Temporary or persistent allocation failed,
+ * or another standard or nonstandard C++ operation failed.
  *
- * @post On success, the new term follows all previously stored terms, no caller
- * pointer is retained, and the active global scale is unchanged.
- * @post On validation or allocation failure, previously stored definitions and
- * the global scale remain unchanged.
- * @note Finite-value validation and restriction to the characterized exponent
- * sets are current apoCHARMM API policies. They do not claim unrestricted
- * external CHARMM compatibility for unresolved values.
+ * @post On success, no caller pointer, AtomReference, or source topology is
+ * retained.
+ * @post On failure, previously stored restraint definitions and scale remain
+ * unchanged.
  * @note The function clears the calling thread's previous diagnostic at entry.
- * Success leaves it empty; failure leaves text available through
- * @ref apo_last_error.
  */
 APOCHARMM_C_API apo_status apo_distance_restraint_force_add_restraint(
-    apo_distance_restraint_force *restraint, const int *first_atom_indices,
-    const size_t first_atom_indices_len, const int *second_atom_indices,
-    const size_t second_atom_indices_len, const double *coefficients,
+    apo_distance_restraint_force *restraint,
+    const apo_atom_reference *const *first_atom_references,
+    const size_t first_atom_references_len,
+    const apo_atom_reference *const *second_atom_references,
+    const size_t second_atom_references_len, const double *coefficients,
     const size_t coefficients_len, const double force_constant,
     const double reference_value, const int distance_exponent,
     const int energy_exponent,

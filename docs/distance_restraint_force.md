@@ -208,18 +208,56 @@ The C++ `addRestraint()` condition argument defaults to
 `DistanceRestraintCondition::NONE`. The C ABI and Python API require an explicit
 condition value.
 
-## Atom Pairs and Indexing
+## Atom References, Pairs, and Indexing
 
-Atom indices are zero-based in the C++ and Python APIs and in the arrays passed
-through the C ABI.
+`DistanceRestraintForce` remains atom-count based:
 
-Each term must contain at least one pair. The number of pair definitions must
-match the number of coefficients.
+```cpp
+DistanceRestraintForce(numAtoms)
+```
 
-Both indices in a pair must be in range and must be distinct. Rejecting
-identical indices is an intentional apoCHARMM safety policy. The characterized
-CHARMM identical-index case produced finite energy but nonfinite gradients and
-virials rather than a usable restraint.
+It does not retain or derive its atom count from a `CharmmPSF`.
+
+All public C++, C, and Python term-creation interfaces require topology-aware
+`AtomReference` endpoints. There is no public distance-restraint interface that
+accepts raw integer endpoint pairs.
+
+The native C++ method accepts:
+
+```cpp
+std::vector<std::array<AtomReference, 2>>
+```
+
+The C ABI accepts parallel arrays of borrowed `apo_atom_reference` handles. The
+Python method accepts sequences containing two live `AtomReference` wrappers per
+pair.
+
+For every endpoint, the native force extracts `getAtomIndex()` and stores only
+that zero-based integer in its existing flattened index storage. It retains no
+`AtomReference`, public C handle, Python wrapper, or source `CharmmPSF` after
+`addRestraint()` returns.
+
+Topology provenance is deliberately ignored. The force does not call
+`hasSameTopology()` and does not require the endpoints of a pair to originate
+from the same native PSF object.
+
+Consequently:
+
+* topology A index zero paired with topology B index one is accepted when both
+  indices are valid for the force;
+* topology A index zero paired with topology B index zero is rejected because
+  both endpoints map to force-array element zero;
+* a reference valid for its source topology is rejected when its extracted index
+  is outside the force-local `[0, numAtoms)` range.
+
+Pair definitions and coefficients remain separate parallel collections and must
+have matching lengths. Pair order and coefficient correspondence are preserved.
+Each term must contain at least one pair. Repeated pairs remain supported.
+
+Both extracted indices in one pair must be distinct. Rejecting identical indices
+is an intentional apoCHARMM safety policy. The characterized CHARMM
+identical-index case produced finite energy but nonfinite gradients and virials
+rather than a usable restraint.
 
 ## Periodic Coordinates and Images
 
@@ -354,10 +392,35 @@ Construct the force with the same atom count as its `ForceManager`:
 
 ```python
 restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+````
+
+Create exact-one atom references through `AtomSelector.selectAtom()`:
+
+```python
+selector = apo.AtomSelector(psf)
+first = selector.selectAtom("atom SEG1 1 CA")
+second = selector.selectAtom("atom SEG1 1 CB")
 ```
 
-Add each term with `addRestraint()`, set the global scale with `setScale()`, and
-subscribe through the manager:
+Pass the references, not their integer indices, to `addRestraint()`:
+
+```python
+restraint.addRestraint(
+    [[first, second]],
+    [1.0],
+    2.0,
+    3.0,
+    1,
+    2,
+    apo.DistanceRestraintCondition.NONE,
+)
+```
+
+The method borrows both wrappers only for the call. After successful return, the
+force retains only copied zero-based indices and coefficients. Closing the
+references does not invalidate the stored restraint.
+
+Set the global scale with `setScale()` and subscribe through the manager:
 
 ```python
 force_manager.subscribe(restraint)
@@ -398,10 +461,16 @@ The native C++ interface is declared in:
 include/DistanceRestraintForce.h
 ```
 
-The stable C ABI is declared in:
+The C ABI is declared in:
 
 ```text
 capi/include/apocharmm_c/DistanceRestraintForce.h
+```
+
+The AtomReference-only term-creation entry point is:
+
+```text
+apo_distance_restraint_force_add_restraint
 ```
 
 The Python wrapper and condition enumeration are implemented in:

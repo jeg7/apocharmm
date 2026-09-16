@@ -23,6 +23,8 @@ import ctypes
 
 from ._base import _ApoObject
 from ._lib import lib
+from ._validation import require_c_int
+from .atom_reference import AtomReference
 from .enums import DistanceRestraintCondition
 from .error import configure_status_function
 from .force_manager import ForceManager
@@ -55,9 +57,9 @@ def _initialize_prototypes() -> None:
         lib().apo_distance_restraint_force_add_restraint,
         [
             ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_void_p),
             ctypes.c_size_t,
-            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_void_p),
             ctypes.c_size_t,
             ctypes.POINTER(ctypes.c_double),
             ctypes.c_size_t,
@@ -216,7 +218,7 @@ class DistanceRestraintForce(_ApoObject):
 
     def addRestraint(
         self,
-        atom_pairs: Sequence[Sequence[int]],
+        atom_pairs: Sequence[Sequence[AtomReference]],
         coefficients: Sequence[float],
         force_constant: float,
         reference_value: float,
@@ -227,99 +229,121 @@ class DistanceRestraintForce(_ApoObject):
         """
         @brief Appends one distance-restraint term.
 
-        Every element of `atom_pairs` must contain exactly two Python `int`
-        values representable by C `int`. The outer pair count must equal the
-        coefficient count. The first indices, second indices, and coefficients
-        are copied into three temporary contiguous arrays and passed with
-        independent C `size_t` lengths.
+        Every element of `atom_pairs` must contain exactly two live
+        `AtomReference` objects. Raw integer endpoint pairs are not accepted.
 
-        `distance_exponent` and `energy_exponent` must be Python `int` values
-        representable by C `int`. `condition` must be a
-        `DistanceRestraintCondition`. No exponent or condition default is
-        applied by this method.
+        Pair topology provenance is deliberately ignored by the native force.
+        Endpoints may originate from different native PSF objects. Native code
+        extracts and stores only their zero-based atom indices, validates those
+        indices against the force-local atom count, and retains neither the
+        Python wrappers, C handles, native AtomReference values, nor source
+        PSFs.
 
-        The method intentionally leaves term-semantic validation to native
-        code, including atom-index bounds and distinctness, nonempty terms,
-        coefficient values, force and reference values, and characterized
-        exponent sets.
+        The outer pair count must equal the coefficient count. Endpoint handles
+        and coefficients are placed in temporary contiguous arrays and borrowed
+        only for the C call. Pair ordering and coefficient correspondence are
+        preserved.
 
-        @param[in] atom_pairs Sequence of two-index sequences.
+        @param[in] atom_pairs Sequence of two-AtomReference sequences.
         @param[in] coefficients Sequence containing one coefficient per pair.
         @param[in] force_constant Value accepted by `float()`.
         @param[in] reference_value Value accepted by `float()`.
-        @param[in] distance_exponent Required typed distance exponent.
-        @param[in] energy_exponent Required typed energy exponent.
+        @param[in] distance_exponent Required signed C `int` exponent.
+        @param[in] energy_exponent Required signed C `int` exponent.
         @param[in] condition Required one-sided activation condition.
-        @throws TypeError If an index or exponent is not exactly a Python `int`,
-        `condition` has the wrong type, a supplied sequence is not iterable, or
-        a scalar cannot be converted by `float()`.
-        @throws ValueError If a pair does not contain exactly two values, pair
-        and coefficient counts differ, an integer is not representable by C
-        `int`, or Python scalar conversion rejects a value.
+        @throws TypeError If an endpoint is not an `AtomReference`, an exponent
+        is not an `int`, an exponent is `bool`, `condition` has the wrong type,
+        a supplied sequence is not iterable, or a scalar cannot be converted by
+        `float()`.
+        @throws ValueError If a pair does not contain exactly two values, an
+        exponent does not fit signed C `int`, or Python scalar conversion rejects
+        a value.
         @throws OverflowError If Python floating-point conversion overflows.
-        @throws RuntimeError If this wrapper has been closed.
-        @throws ApoCharmmError If native semantic validation or allocation
-        fails.
+        @throws RuntimeError If this wrapper or an endpoint AtomReference has
+        been closed.
+        @throws ApoCharmmError If native validation or allocation fails.
         """
         _initialize_prototypes()
 
         if not isinstance(condition, DistanceRestraintCondition):
             raise TypeError("condition must be a DistanceRestraintCondition")
 
-        first_atom_indices: list[int] = []
-        second_atom_indices: list[int] = []
+        first_atom_references: list[AtomReference] = []
+        second_atom_references: list[AtomReference] = []
         for pair_index, atom_pair in enumerate(atom_pairs):
-            atom_pair_values: list[int] = list(atom_pair)
+            atom_pair_values: list[AtomReference] = list(atom_pair)
+
             if len(atom_pair_values) != 2:
                 raise ValueError(
                     f"atom_pairs[{pair_index}] must contain exactly 2 values"
                 )
 
-            first_atom_indices.append(atom_pair_values[0])
-            second_atom_indices.append(atom_pair_values[1])
+            for endpoint_index, atom_reference in enumerate(atom_pair_values):
+                if not isinstance(atom_reference, AtomReference):
+                    raise TypeError(
+                        f"atom_pairs[{pair_index}][{endpoint_index}] must be an AtomReference"
+                    )
+
+            first_atom_references.append(atom_pair_values[0])
+            second_atom_references.append(atom_pair_values[1])
 
         coefficient_values: list[float] = [float(value) for value in coefficients]
 
-        c_first_atom_indices_type: type[ctypes.Array[ctypes.c_int]] = (
-            ctypes.c_int * len(first_atom_indices)
+        distance_exponent_value: int = require_c_int(
+            distance_exponent, "distance_exponent"
         )
-        c_first_atom_indices: ctypes.Array[ctypes.c_int] = c_first_atom_indices_type(
-            *first_atom_indices
-        )
-        c_first_atom_indices_len: ctypes.c_size_t = ctypes.c_size_t(
-            len(first_atom_indices)
+        energy_exponent_value: int = require_c_int(energy_exponent, "energy_exponent")
+
+        c_first_atom_references_type: type[ctypes.Array[ctypes.c_void_p]] = (
+            ctypes.c_void_p * len(first_atom_references)
         )
 
-        c_second_atom_indices_type: type[ctypes.Array[ctypes.c_int]] = (
-            ctypes.c_int * len(second_atom_indices)
+        c_first_atom_references: ctypes.Array[ctypes.c_void_p] = (
+            c_first_atom_references_type(
+                *(reference.handle for reference in first_atom_references)
+            )
         )
-        c_second_atom_indices: ctypes.Array[ctypes.c_int] = c_second_atom_indices_type(
-            *second_atom_indices
+
+        c_first_atom_references_len: ctypes.c_size_t = ctypes.c_size_t(
+            len(first_atom_references)
         )
-        c_second_atom_indices_len: ctypes.c_size_t = ctypes.c_size_t(
-            len(second_atom_indices)
+
+        c_second_atom_references_type: type[ctypes.Array[ctypes.c_void_p]] = (
+            ctypes.c_void_p * len(second_atom_references)
+        )
+
+        c_second_atom_references: ctypes.Array[ctypes.c_void_p] = (
+            c_second_atom_references_type(
+                *(reference.handle for reference in second_atom_references)
+            )
+        )
+
+        c_second_atom_references_len: ctypes.c_size_t = ctypes.c_size_t(
+            len(second_atom_references)
         )
 
         c_coefficients_type: type[ctypes.Array[ctypes.c_double]] = (
             ctypes.c_double * len(coefficient_values)
         )
+
         c_coefficients: ctypes.Array[ctypes.c_double] = c_coefficients_type(
-            *coefficients
+            *coefficient_values
         )
+
         c_coefficients_len: ctypes.c_size_t = ctypes.c_size_t(len(coefficient_values))
 
-        c_force_constant: ctypes.c_double = ctypes.c_double(force_constant)
-        c_reference_value: ctypes.c_double = ctypes.c_double(reference_value)
-        c_distance_exponent: ctypes.c_int = ctypes.c_int(distance_exponent)
-        c_energy_exponent: ctypes.c_int = ctypes.c_int(energy_exponent)
+        c_force_constant: ctypes.c_double = ctypes.c_double(float(force_constant))
+        c_reference_value: ctypes.c_double = ctypes.c_double(float(reference_value))
+        c_distance_exponent: ctypes.c_int = ctypes.c_int(distance_exponent_value)
+        c_energy_exponent: ctypes.c_int = ctypes.c_int(energy_exponent_value)
         c_condition: ctypes.c_int = ctypes.c_int(condition.value)
 
         lib().apo_distance_restraint_force_add_restraint(
             self.handle,
-            c_first_atom_indices,
-            c_first_atom_indices_len,
-            c_second_atom_indices,
-            c_second_atom_indices_len,
+            c_first_atom_references,
+            c_first_atom_references_len,
+            c_second_atom_references,
+            c_second_atom_references_len,
             c_coefficients,
             c_coefficients_len,
             c_force_constant,

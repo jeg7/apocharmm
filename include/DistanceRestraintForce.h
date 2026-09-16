@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "AtomReference.h"
 #include "CudaContainer.h"
 #include "CudaEnergyVirial.h"
 #include "Force.h"
@@ -45,9 +46,15 @@ enum class DistanceRestraintCondition : int {
  * U_t = SCALE * (KVAL_t / EVAL_t) * D_t^EVAL_t
  * @endcode
  *
- * One object may own multiple terms. `addRestraint()` appends one term and its
- * pair data to flattened host mirrors. The corresponding device mirrors are
- * synchronized lazily before calculation.
+ * One object may own multiple terms. `addRestraint()` accepts topology-aware
+ * endpoint pairs, extracts each endpoint's zero-based atom index, and appends
+ * one term and its pair data to flattened host mirrors. The corresponding
+ * device mirrors are synchronized lazily before calculation.
+ *
+ * The force remains atom-count based and topology-agnostic. It does not retain
+ * AtomReference objects, retain a CharmmPSF, compare source topologies, or
+ * require the two endpoints of a pair to originate from the same topology. Only
+ * the extracted integer indices are stored.
  *
  * The controlling characterization requires raw primary-coordinate pair
  * distances for the characterized nonperiodic and orthorhombic P1 cases.
@@ -112,17 +119,34 @@ public:
   void setScale(const double scale);
 
   /**
-   * @brief Appends one restraint term and its flattened pair definitions.
+   * @brief Appends one restraint term from topology-aware atom references.
    *
-   * The pair and coefficient vectors are borrowed for this call and are copied
-   * into owned host mirrors. Native atom indices use apoCHARMM's zero-based
-   * indexing convention.
+   * `atomReferencePairs` and `coefficients` are parallel vectors and must have
+   * matching lengths. Both vectors are borrowed only for this call. The
+   * coefficient values and each endpoint's zero-based atom index are copied
+   * into force-owned host storage.
+   *
+   * Topology provenance is deliberately ignored. This method does not call
+   * `AtomReference::hasSameTopology()`, does not require pair endpoints to
+   * originate from the same topology, and retains neither the references nor
+   * their source CharmmPSF objects after returning. The force stores only the
+   * values returned by `AtomReference::getAtomIndex()`.
+   *
+   * Each extracted index must be in the force-local range `[0, numAtoms)`, even
+   * when the reference is valid for a larger source topology. The two extracted
+   * indices in one pair must be distinct. References from different topologies
+   * with distinct valid extracted indices are accepted; references from
+   * different topologies with the same extracted index are rejected.
+   *
+   * Pair order and coefficient correspondence are preserved exactly. Repeated
+   * pairs remain accepted.
    *
    * The distance exponent remains a required argument because the following
    * energy exponent has no confirmed default. The activation condition defaults
    * to `NONE`, corresponding to the confirmed absence of a one-sided selector.
    *
-   * @param[in] atomPairs Atom-index pairs belonging to this term.
+   * @param[in] atomReferencePairs Atom-reference endpoint pairs belonging to
+   * this term.
    * @param[in] coefficients Algebraic coefficient corresponding to each pair.
    * @param[in] forceConstant Nonzero term force constant.
    * @param[in] referenceValue Term reference value.
@@ -130,12 +154,13 @@ public:
    * @param[in] energyExponent Integer exponent applied to the term deviation.
    * @param[in] condition One-sided activation mode.
    */
-  void addRestraint(const std::vector<std::array<int, 2>> &atomPairs,
-                    const std::vector<double> &coefficients,
-                    const double forceConstant, const double referenceValue,
-                    const int distanceExponent, const int energyExponent,
-                    const DistanceRestraintCondition condition =
-                        DistanceRestraintCondition::NONE);
+  void addRestraint(
+      const std::vector<std::array<AtomReference, 2>> &atomReferencePairs,
+      const std::vector<double> &coefficients, const double forceConstant,
+      const double referenceValue, const int distanceExponent,
+      const int energyExponent,
+      const DistanceRestraintCondition condition =
+          DistanceRestraintCondition::NONE);
 
   /**
    * @brief Removes every restraint term and restores the global scale to one.
