@@ -101,7 +101,7 @@ class DistanceRestraintForce(_ApoObject):
 
     One object may own multiple restraint terms. For each term, native code
     forms the coefficient-weighted sum of powered pair distances, subtracts the
-    reference value, applis the selected one-sided condition, and accumulates
+    reference value, applies the selected one-sided condition, and accumulates
     the normalized energy, gradient, and internal virial.
 
     This wrapper owns one C handle for the native
@@ -232,17 +232,22 @@ class DistanceRestraintForce(_ApoObject):
         Every element of `atom_pairs` must contain exactly two live
         `AtomReference` objects. Raw integer endpoint pairs are not accepted.
 
-        Pair topology provenance is deliberately ignored by the native force.
-        Endpoints may originate from different native PSF objects. Native code
-        extracts and stores only their zero-based atom indices, validates those
-        indices against the force-local atom count, and retains neither the
-        Python wrappers, C handles, native AtomReference values, nor source
-        PSFs.
+        Pair topology provenance is deliberately ignored. This wrapper does not
+        compare endpoint topologies, and endpoints may originate from different
+        native PSF objects.
 
-        The outer pair count must equal the coefficient count. Endpoint handles
-        and coefficients are placed in temporary contiguous arrays and borrowed
-        only for the C call. Pair ordering and coefficient correspondence are
-        preserved.
+        The wrapper places the two endpoint-handle sequences and the
+        materialized coefficient values in temporary contiguous arrays. The
+        typed C ABI borrows every AtomReference handle for the call and copies
+        temporary native AtomReference values. The native force then extracts,
+        validates, and stores only their zero-based indices. Neither the Python
+        wrappers, C handles, native AtomReference values, nor source PSFs are
+        retained after successful addition.
+
+        Pair definitions and coefficients remain separate sequences, and their
+        counts must match. Pair ordering and coefficient correspondence are
+        preserved exactly. Repeated references and repeated pairs are
+        supported.
 
         @param[in] atom_pairs Sequence of two-AtomReference sequences.
         @param[in] coefficients Sequence containing one coefficient per pair.

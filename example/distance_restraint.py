@@ -61,7 +61,7 @@ def main(argc, argv):
 
     # Conventional harmonic-distance term on r(N, HT1)
     resd.addRestraint(
-        [[n.getAtomIndex(), ht1.getAtomIndex()]],
+        [[n, ht1]],
         [1.0],
         1.0,
         r_n_ht1 - 0.05,
@@ -72,10 +72,7 @@ def main(argc, argv):
 
     # Reaction-coordinate term on r(N, HT1) - r(HT1, HT2)
     resd.addRestraint(
-        [
-            [n.getAtomIndex(), ht1.getAtomIndex()],
-            [ht1.getAtomIndex(), ht2.getAtomIndex()],
-        ],
+        [[n, ht1], [ht1, ht2]],
         [1.0, -1.0],
         0.25,
         r_n_ht1 - r_ht1_ht2 - 0.05,
@@ -86,7 +83,7 @@ def main(argc, argv):
 
     # Positive-only high-power term on r(N, HT2)^6
     resd.addRestraint(
-        [[n.getAtomIndex(), ht2.getAtomIndex()]],
+        [[n, ht2]],
         [1.0],
         0.001,
         r_n_ht2**6 - 0.5,

@@ -75,15 +75,20 @@ def close_system(
 
 
 def create_atom_pair(psf: apo.CharmmPsf) -> AtomPair:
-    first = apo.AtomReference(psf, 0)
+    selector = apo.AtomSelector(psf)
 
     try:
-        second = apo.AtomReference(psf, 1)
-    except BaseException:
-        first.close()
-        raise
+        first = selector.selectAtom("bynu 1")
 
-    return first, second
+        try:
+            second = selector.selectAtom("bynu 2")
+        except BaseException:
+            first.close()
+            raise
+
+        return first, second
+    finally:
+        selector.close()
 
 
 def close_atom_pair(atom_pair: AtomPair) -> None:
@@ -153,8 +158,8 @@ def check_exports_construction_default_tag_and_scale() -> None:
 
 def check_term_conditions_reset_and_reuse() -> None:
     print(
-        "Checking one-pair, multi-pair, multiple-term, condition, RESET, and "
-        "reuse configuration..."
+        "Checking one-pair, multi-pair, repeated-pair, multiple-term, "
+        "condition, RESET, and reuse configuration..."
     )
 
     psf_path: str = apo_test.require_file(apo_test.get_data_dir() / "nacl_pair.psf")
@@ -237,7 +242,7 @@ def check_validation() -> None:
             expected_context="DistanceRestraintForce construction",
         )
 
-        apo_test.expect_exception(
+        raw_integer_error: TypeError = apo_test.expect_exception(
             "addRestraint rejects raw integer endpoint pairs",
             TypeError,
             lambda: restraint.addRestraint(
@@ -250,8 +255,32 @@ def check_validation() -> None:
                 apo.DistanceRestraintCondition.NONE,
             ),
         )
+        apo_test.assert_equal(
+            "raw integer endpoint diagnostic",
+            str(raw_integer_error),
+            "atom_pairs[0][0] must be an AtomReference",
+        )
 
-        apo_test.expect_exception(
+        arbitrary_object_error: TypeError = apo_test.expect_exception(
+            "addRestraint rejects an arbitrary object endpoint",
+            TypeError,
+            lambda: restraint.addRestraint(
+                [[atom_pair[0], object()]],  # type: ignore[list-item]
+                [1.0],
+                1.0,
+                0.0,
+                1,
+                2,
+                apo.DistanceRestraintCondition.NONE,
+            ),
+        )
+        apo_test.assert_equal(
+            "arbitrary object endpoint diagnostic",
+            str(arbitrary_object_error),
+            "atom_pairs[0][1] must be an AtomReference",
+        )
+
+        wrong_cardinality_error: ValueError = apo_test.expect_exception(
             "addRestraint rejects a pair with the wrong number of references",
             ValueError,
             lambda: restraint.addRestraint(
@@ -263,6 +292,11 @@ def check_validation() -> None:
                 2,
                 apo.DistanceRestraintCondition.NONE,
             ),
+        )
+        apo_test.assert_equal(
+            "wrong pair cardinality diagnostic",
+            str(wrong_cardinality_error),
+            "atom_pairs[0] must contain exactly 2 values",
         )
 
         apo_test.expect_invalid_argument(
@@ -299,50 +333,87 @@ def check_validation() -> None:
             apo_test.get_data_dir() / "1lvz.psf"
         )
         larger_psf = apo.CharmmPsf(larger_psf_path)
-        outside_reference = apo.AtomReference(larger_psf, psf.getNumAtoms())
 
         try:
-            apo_test.expect_invalid_argument(
-                "addRestraint applies force-local index validation",
-                lambda: restraint.addRestraint(
-                    [[atom_pair[0], outside_reference]],
-                    [1.0],
-                    1.0,
-                    0.0,
-                    1,
-                    2,
-                    apo.DistanceRestraintCondition.NONE,
-                ),
-                "Second atom index at pair index 0 is out of range",
-                expected_context=ADD_RESTRAINT_CONTEXT,
-            )
+            larger_selector = apo.AtomSelector(larger_psf)
+
+            try:
+                outside_reference = larger_selector.selectAtom(
+                    f"bynu {psf.getNumAtoms() + 1}"
+                )
+            finally:
+                larger_selector.close()
+
+            try:
+                apo_test.expect_invalid_argument(
+                    "addRestraint applies force-local index validation",
+                    lambda: restraint.addRestraint(
+                        [[atom_pair[0], outside_reference]],
+                        [1.0],
+                        1.0,
+                        0.0,
+                        1,
+                        2,
+                        apo.DistanceRestraintCondition.NONE,
+                    ),
+                    "Second atom index at pair index 0 is out of range",
+                    expected_context=ADD_RESTRAINT_CONTEXT,
+                )
+            finally:
+                outside_reference.close()
         finally:
-            outside_reference.close()
             larger_psf.close()
 
         second_psf_path: str = apo_test.require_file(
             apo_test.get_data_dir() / "nacl_pair.psf"
         )
         second_psf = apo.CharmmPsf(second_psf_path)
-        second_pair = create_atom_pair(second_psf)
 
         try:
-            restraint.addRestraint(
-                [[atom_pair[0], second_pair[1]]],
-                [1.0],
-                1.0,
-                0.0,
-                1,
-                2,
-                apo.DistanceRestraintCondition.NONE,
-            )
-            restraint.reset()
+            second_pair = create_atom_pair(second_psf)
 
-            apo_test.expect_invalid_argument(
-                "addRestraint rejects the same extracted index from "
-                "different topologies",
+            try:
+                restraint.addRestraint(
+                    [[atom_pair[0], second_pair[1]]],
+                    [1.0],
+                    1.0,
+                    0.0,
+                    1,
+                    2,
+                    apo.DistanceRestraintCondition.NONE,
+                )
+                restraint.reset()
+
+                apo_test.expect_invalid_argument(
+                    "addRestraint rejects the same extracted index from "
+                    "different topologies",
+                    lambda: restraint.addRestraint(
+                        [[atom_pair[0], second_pair[0]]],
+                        [1.0],
+                        1.0,
+                        0.0,
+                        1,
+                        2,
+                        apo.DistanceRestraintCondition.NONE,
+                    ),
+                    "Atom indices at pair index 0 must be distinct; " "observed (0, 0)",
+                    expected_context=ADD_RESTRAINT_CONTEXT,
+                )
+            finally:
+                close_atom_pair(second_pair)
+        finally:
+            second_psf.close()
+
+        closed_first_pair = create_atom_pair(psf)
+
+        try:
+            closed_first_pair[0].close()
+
+            apo_test.expect_exception(
+                "addRestraint rejects a closed first AtomReference",
+                RuntimeError,
                 lambda: restraint.addRestraint(
-                    [[atom_pair[0], second_pair[0]]],
+                    [closed_first_pair],
                     [1.0],
                     1.0,
                     0.0,
@@ -350,28 +421,59 @@ def check_validation() -> None:
                     2,
                     apo.DistanceRestraintCondition.NONE,
                 ),
-                "Atom indices at pair index 0 must be distinct; " "observed (0, 0)",
-                expected_context=ADD_RESTRAINT_CONTEXT,
             )
         finally:
-            close_atom_pair(second_pair)
-            second_psf.close()
+            close_atom_pair(closed_first_pair)
 
-        closed_reference = apo.AtomReference(psf, 0)
-        closed_reference.close()
+        closed_second_pair = create_atom_pair(psf)
 
-        apo_test.expect_exception(
-            "addRestraint rejects a closed AtomReference",
-            RuntimeError,
+        try:
+            closed_second_pair[1].close()
+
+            apo_test.expect_exception(
+                "addRestraint rejects a closed second AtomReference",
+                RuntimeError,
+                lambda: restraint.addRestraint(
+                    [closed_second_pair],
+                    [1.0],
+                    1.0,
+                    0.0,
+                    1,
+                    2,
+                    apo.DistanceRestraintCondition.NONE,
+                ),
+            )
+        finally:
+            close_atom_pair(closed_second_pair)
+
+        apo_test.expect_invalid_argument(
+            "addRestraint rejects a zero coefficient",
             lambda: restraint.addRestraint(
-                [[closed_reference, atom_pair[1]]],
-                [1.0],
+                [atom_pair],
+                [0.0],
                 1.0,
                 0.0,
                 1,
                 2,
                 apo.DistanceRestraintCondition.NONE,
             ),
+            "Coefficient at pair index 0 must be nonzero",
+            expected_context=ADD_RESTRAINT_CONTEXT,
+        )
+
+        apo_test.expect_invalid_argument(
+            "addRestraint rejects a nonfinite coefficient",
+            lambda: restraint.addRestraint(
+                [atom_pair],
+                [math.inf],
+                1.0,
+                0.0,
+                1,
+                2,
+                apo.DistanceRestraintCondition.NONE,
+            ),
+            "Coefficient at pair index 0 must be finite",
+            expected_context=ADD_RESTRAINT_CONTEXT,
         )
 
         apo_test.expect_invalid_argument(
@@ -390,7 +492,7 @@ def check_validation() -> None:
         )
 
         apo_test.expect_invalid_argument(
-            "addRestraint propagates nonfinite reference value as " "ApoCharmmError",
+            "addRestraint propagates nonfinite reference value as ApoCharmmError",
             lambda: restraint.addRestraint(
                 [atom_pair],
                 [1.0],
@@ -603,7 +705,8 @@ def check_reference_handles_are_not_retained() -> None:
             apo.DistanceRestraintCondition.NONE,
         )
 
-        close_atom_pair(atom_pair)
+        atom_pair[0].close()
+        atom_pair[1].destroy()
         source_psf.close()
 
         fm.subscribe(restraint)

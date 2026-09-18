@@ -45,6 +45,14 @@ invalid-argument error unless the result contains exactly one atom. Direct
 `AtomReference` construction uses a zero-based Python index; `BYNU` expression
 values remain CHARMM-style one-based atom numbers.
 
+`AtomReference` is the endpoint type used by
+[DistanceRestraintForce](@ref distance_restraint_force) in C++ and Python.
+Python callers normally obtain exact-one endpoints with `selectAtom()` and pass
+the references directly to `DistanceRestraintForce.addRestraint()`. The Python
+wrapper passes borrowed reference handles through the typed C ABI; native code
+extracts and retains only the indices. The force deliberately ignores topology
+provenance.
+
 Direct C++ use follows the same distinction:
 
 ```cpp

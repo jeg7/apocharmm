@@ -230,7 +230,8 @@ std::vector<std::array<AtomReference, 2>>
 
 The C ABI accepts parallel arrays of borrowed `apo_atom_reference` handles. The
 Python method accepts sequences containing two live `AtomReference` wrappers per
-pair.
+pair and passes their borrowed handles through that typed C ABI. Python does not
+pre-extract raw endpoint indices for restraint registration.
 
 For every endpoint, the native force extracts `getAtomIndex()` and stores only
 that zero-based integer in its existing flattened index storage. It retains no
@@ -392,7 +393,7 @@ Construct the force with the same atom count as its `ForceManager`:
 
 ```python
 restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
-````
+```
 
 Create exact-one atom references through `AtomSelector.selectAtom()`:
 
@@ -416,9 +417,12 @@ restraint.addRestraint(
 )
 ```
 
-The method borrows both wrappers only for the call. After successful return, the
-force retains only copied zero-based indices and coefficients. Closing the
-references does not invalidate the stored restraint.
+The Python wrapper places the two endpoint-handle sequences and coefficients in
+temporary arrays. The C ABI borrows the handles and copies temporary native
+`AtomReference` values; the native force then extracts and stores only their
+zero-based indices. After successful return, no Python wrapper, public C handle,
+native `AtomReference`, or source topology is retained. Closing or destroying
+the references does not invalidate the stored restraint.
 
 Set the global scale with `setScale()` and subscribe through the manager:
 
