@@ -149,7 +149,7 @@ A scale of zero produces zero contribution and may return before pair geometry
 is evaluated.
 
 The typed API stores `setScale()` as object state. It does not reproduce the
-separate CHARMM text-parser command form in which a standaline scale command
+separate CHARMM text-parser command form in which a standalone scale command
 issued before a subsequent definition was discarded by that definition.
 
 ### NONE
@@ -492,9 +492,9 @@ python/apocharmm/enums.py
   initialization and calculations.
 - [CUDA Integrators](@ref cuda_integrators) propagate a context after the
   restraint is subscribed.
-- [ApoCharmError](@ref apocharmm_error) describes cross-language validation and
+- [ApoCharmmError](@ref apocharmm_error) describes cross-language validation and
   error propagation.
-- [HarmonicRestraintFroce](@ref harmonic_restraint_force) restrains absolute
+- [HarmonicRestraintForce](@ref harmonic_restraint_force) restrains absolute
   atom positions rather than a RESD distance reaction coordinate.
 - [HarmonicCenterOfMassRestraintForce](@ref harmonic_center_of_mass_restraint_force)
   restrains a selected group center.

@@ -102,6 +102,28 @@ public:
   DistanceRestraintForce(const int numAtoms);
 
   /**
+   * @brief Prevents copying CUDA stream and output ownership state.
+   */
+  DistanceRestraintForce(const DistanceRestraintForce &other) = delete;
+
+  /**
+   * @brief Prevents moving a force whose object identity and CUDA resources may
+   * be retained by a force manager.
+   */
+  DistanceRestraintForce(DistanceRestraintForce &&other) = delete;
+
+  /**
+   * @brief Prevents copy assignment of CUDA stream and output ownership state.
+   */
+  DistanceRestraintForce &
+  operator=(const DistanceRestraintForce &other) = delete;
+
+  /**
+   * @brief Prevents move assignment of CUDA stream and output ownership state.
+   */
+  DistanceRestraintForce &operator=(DistanceRestraintForce &&other) = delete;
+
+  /**
    * @brief Releases owned CUDA and output resources.
    */
   ~DistanceRestraintForce(void) noexcept;

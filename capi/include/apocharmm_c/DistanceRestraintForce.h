@@ -292,7 +292,7 @@ apo_distance_restraint_force_reset(apo_distance_restraint_force *restraint);
  * string. Native code copies the bytes and retains no caller pointer.
  * @retval APO_STATUS_OK The manager retained the restraint and its resources.
  * @retval APO_STATUS_INVALID_ARGUMENT Either handle is `NULL`, either handle
- * contains no native object, `force_tag` is `NULL` or  empty, the restraint is
+ * contains no native object, `force_tag` is `NULL` or empty, the restraint is
  * already subscribed, or immediate initialization detects an atom-count or box
  * mismatch.
  * @retval APO_STATUS_RUNTIME_ERROR Copying the tag, growing manager

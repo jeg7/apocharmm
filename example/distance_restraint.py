@@ -53,7 +53,7 @@ def main(argc, argv):
     r_n_ht1 = math.dist(coordinates[n.getAtomIndex()], coordinates[ht1.getAtomIndex()])
     r_n_ht2 = math.dist(coordinates[n.getAtomIndex()], coordinates[ht2.getAtomIndex()])
     r_ht1_ht2 = math.dist(
-        coordinates[ht1.getAtomIndex()], coordinates[ht2.gteAtomIndex()]
+        coordinates[ht1.getAtomIndex()], coordinates[ht2.getAtomIndex()]
     )
 
     # Setup distance restraints

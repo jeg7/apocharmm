@@ -610,7 +610,7 @@ def check_subscription_mutation_and_short_integration() -> None:
             ctx.calculatePotentialEnergy()
 
             apo_test.expect_invalid_argument(
-                "ForceManager rejects duplicate DistanceRestaintForce " "subscription",
+                "ForceManager rejects duplicate DistanceRestaintForce subscription",
                 lambda: fm.subscribe(restraint),
                 "Force is already subscribed to this ForceManager",
                 expected_context=("ForceManager.subscribe(DistanceRestraintForce)"),
