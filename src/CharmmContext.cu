@@ -616,6 +616,12 @@ void CharmmContext::setTemperature(const double temperature) {
 }
 
 void CharmmContext::setPeriodicBoundaryCondition(const PBC pbc) {
+  APOCHARMM_REQUIRE(
+      (pbc == PBC::P1) || (pbc == PBC::P21),
+      ApoCharmmErrorCode::InvalidArgument,
+      "Periodic boundary condition must be PBC::P1 or PBC::P21; observed " +
+          std::to_string(static_cast<int>(pbc)));
+
   m_Pbc = pbc;
   m_HasPbc = true;
 
@@ -671,6 +677,11 @@ void CharmmContext::useHolonomicConstraints(
     const bool usingHolonomicConstraints) {
   this->requirePsf();
   this->requireForceManager();
+
+  APOCHARMM_REQUIRE((m_Pbc == PBC::P1) || (m_Pbc == PBC::P21),
+                    ApoCharmmErrorCode::NotInitialized,
+                    "Periodic boundary condition must be configured before "
+                    "computing degrees of freedom");
 
   m_UsingHolonomicConstraints = usingHolonomicConstraints;
 

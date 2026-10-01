@@ -161,6 +161,24 @@ TEST_CASE("CharmmContextStagedStateCanLoadCoordinatesAfterBackendInitialize") {
         Approx(1.0 / masses[0]).margin(TOLERANCE));
 }
 
+TEST_CASE("CharmmContextRejectsInvalidPeriodicBoundaryConditions") {
+  CharmmContext context;
+
+  apo_test::CheckApoCharmmError(
+      [&context](void) { context.setPeriodicBoundaryCondition(PBC::UNSET); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 0");
+  CHECK(context.getPeriodicBoundaryCondition() == PBC::P1);
+
+  apo_test::CheckApoCharmmError(
+      [&context](void) {
+        context.setPeriodicBoundaryCondition(static_cast<PBC>(99));
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 99");
+  CHECK(context.getPeriodicBoundaryCondition() == PBC::P1);
+}
+
 TEST_CASE("CharmmContextRejectsInvalidStagedBoxDimensions") {
   CharmmContext ctx;
 

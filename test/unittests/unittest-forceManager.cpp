@@ -255,6 +255,17 @@ TEST_CASE("ForceManagerRejectsInvalidNonbondedParameters") {
   apo_test::CheckApoCharmmError(
       [&fm](void) { fm.setVdwType(7); }, ApoCharmmErrorCode::InvalidArgument,
       "Van der Waals type must be in [1, 6]; observed 7");
+
+  apo_test::CheckApoCharmmError(
+      [&fm](void) { fm.setPeriodicBoundaryCondition(PBC::UNSET); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 0");
+  CHECK(fm.getPeriodicBoundaryCondition() == PBC::P1);
+
+  apo_test::CheckApoCharmmError(
+      [&fm](void) { fm.setPeriodicBoundaryCondition(static_cast<PBC>(99)); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 99");
 }
 
 TEST_CASE("ForceManagerRejectsInvalidBoxDimensions") {

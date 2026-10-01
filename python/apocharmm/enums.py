@@ -51,17 +51,18 @@ class DistanceRestraintCondition(IntEnum):
 class PeriodicBoundaryCondition(IntEnum):
     """
     @anchor python_periodic_boundary_condition
-    @brief Identifies the periodic boundary condition used by apoCHARMM.
+    @brief Identifies a periodic-boundary configuration value.
 
-    `NONE` selects no periodic boundary condition. `P1` selects conventional
-    three-dimensional translational periodicity. `P21` selects the P2_1
-    screw-symmetry condition.
+    `UNSET` is an invalid, non-runnable sentinel. It does not select an
+    aperiodic system and is rejected by the public periodic-boundary setters.
+    `P1` selects conventional three-dimensional translational periodicity. `P21`
+    selects the P2_1 screw-symmetry condition.
 
     Integer values `0`, `1`, and `2` can be converted to this enumeration.
     """
 
-    ## @brief Selects no periodic boundary condition.
-    NONE = 0
+    ## @brief Selects an unconfigured, non-runnable state.
+    UNSET = 0
     ## @brief Selects conventional translational periodicity.
     P1 = 1
     ## @brief Selects P2_1 screw-symmetry periodicity.

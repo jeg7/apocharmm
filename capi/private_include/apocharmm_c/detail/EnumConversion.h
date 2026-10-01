@@ -23,8 +23,8 @@ inline apo_status to_pbc(PBC *out, const apo_pbc pbc,
   APOCHARMM_C_RETURN_IF_ERROR(require_pointer<PBC>(out, function_name, "out"));
 
   switch (pbc) {
-  case APO_PBC_NONE:
-    *out = PBC::NONE;
+  case APO_PBC_UNSET:
+    *out = PBC::UNSET;
     return APO_STATUS_OK;
   case APO_PBC_P1:
     *out = PBC::P1;
@@ -44,8 +44,8 @@ inline apo_status from_pbc(apo_pbc *out, const PBC pbc,
       require_pointer<apo_pbc>(out, function_name, "out"));
 
   switch (pbc) {
-  case PBC::NONE:
-    *out = APO_PBC_NONE;
+  case PBC::UNSET:
+    *out = APO_PBC_UNSET;
     return APO_STATUS_OK;
   case PBC::P1:
     *out = APO_PBC_P1;

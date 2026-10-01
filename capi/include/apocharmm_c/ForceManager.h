@@ -250,15 +250,15 @@ APOCHARMM_C_API apo_status apo_force_manager_set_pme_spline_order(
  * @brief Sets the periodic boundary condition.
  *
  * @param[in] force_manager Borrowed non-null live manager handle.
- * @param[in] pbc One of `APO_PBC_NONE`, `APO_PBC_P1`, or `APO_PBC_P21`.
+ * @param[in] pbc Either `APO_PBC_P1` or `APO_PBC_P21`. `APO_PBC_UNSET` is an
+ * invalid sentinel and does not select an aperiodic system.
  *
  * @return `APO_STATUS_OK` on success.
- * @return `APO_STATUS_INVALID_ARGUMENT` if the handle is invalid or `pbc` is
- * not a declared @ref apo_pbc value.
+ * @return `APO_STATUS_INVALID_ARGUMENT` if the handle is invalid, `pbc` is
+ * `APO_PBC_UNSET`, or `pbc` is not a delcared @ref apo_pbc value.
  * @return `APO_STATUS_RUNTIME_ERROR` if an uncategorized standard operation
  * fails.
  *
- * @post On success, the native manager's initialized flag is cleared.
  * @post Success clears the thread-local diagnostic; failure leaves a nonempty
  * diagnostic available through @ref apo_last_error.
  */

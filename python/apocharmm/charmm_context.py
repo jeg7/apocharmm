@@ -759,14 +759,16 @@ class CharmmContext(_ApoObject):
         `pbc` is normalized through `PeriodicBoundaryCondition` before its
         integer value is passed to the C ABI.
 
-        @param[in] pbc `PeriodicBoundaryCondition` or matching integer value
-        `0`, `1`, or `2`.
+        @param[in] pbc `PeriodicBoundaryCondition` or matching integer value.
+        `P1` and `P21`, with values `1` and `2`, are accepted. `UNSET`, with
+        value `0`, is declared but rejected by the native setter.
 
         @throws TypeError If `pbc` cannot be interpreted by the enumeration.
         @throws ValueError If the integer is not a declared enum value.
         @throws RuntimeError If this context is closed.
-        @throws ApoCharmmError If native propagation, initialization, imaging,
-        or neighbor-list rebuilding fails.
+        @throws ApoCharmmError If `pbc` is `PeriodicBoundaryCondition.UNSET`, or
+        native propagation, initialization, imaging, or neighbor-list rebuilding
+        fails.
         """
         _initialize_prototypes()
 

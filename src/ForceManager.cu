@@ -321,6 +321,8 @@ void ForceManager::setPmeSplineOrder(const int pmeSplineOrder) {
 }
 
 void ForceManager::setPeriodicBoundaryCondition(const PBC pbc) {
+  this->checkPBCCompatibility(pbc);
+
   if (m_Pbc == pbc)
     return;
 
@@ -630,6 +632,8 @@ void ForceManager::initialize(void) {
                     "dimension; cutoff " +
                         std::to_string(m_Cutoff) + ", X box dimension " +
                         std::to_string(m_BoxX));
+
+  this->checkPBCCompatibility(m_Pbc);
 
   // If nfft not given, use values via truncating
   if ((m_NfftX <= 0) || (m_NfftY <= 0) || (m_NfftZ <= 0)) {
@@ -1200,6 +1204,23 @@ void ForceManager::checkBoxDimensions(
         boxDimensions[i] > 0.0, ApoCharmmErrorCode::InvalidArgument,
         "Box dimension at index " + std::to_string(i) +
             " must be positive; observed " + std::to_string(boxDimensions[i]));
+  }
+
+  return;
+}
+
+void ForceManager::checkPBCCompatibility(const PBC pbc) const {
+  APOCHARMM_REQUIRE(
+      (pbc == PBC::P1) || (pbc == PBC::P21),
+      ApoCharmmErrorCode::InvalidArgument,
+      "Periodic boundary condition must be PBC::P1 or PBC::P21; observed " +
+          std::to_string(static_cast<int>(pbc)));
+
+  for (const ForceView &forceView : m_ForceViews) {
+    APOCHARMM_REQUIRE(
+        forceView.supportsPBC(pbc), ApoCharmmErrorCode::InvalidArgument,
+        "Subscribed force does not support periodic boundary condition value " +
+            std::to_string(static_cast<int>(pbc)));
   }
 
   return;

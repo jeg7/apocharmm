@@ -610,14 +610,14 @@ class ForceManager(_ApoObject):
         `pbc` is first converted to `PeriodicBoundaryCondition`, then forwarded
         as its integer C representation.
 
-        @param[in] pbc `PeriodicBoundaryCondition` or integer value `0`, `1`, or
-        `2`, selecting `NONE`, `P1`, or `P21`.
+        @param[in] pbc `PeriodicBoundaryCondition` or corresponding integer.
+        `P1` and `P21`, with values `1` and `2`, are accepted. `UNSET`, with
+        value `0`, is declared but rejected by the native setter.
 
         @throws ValueError If `pbc` is not a declared enum value.
         @throws RuntimeError If this wrapper is closed.
-        @throws ApoCharmmError If native handle or enum validation fails.
-
-        @post On success, the native manager's initialized flag is cleared.
+        @throws ApoCharmmError If `pbc` is `PeriodicBoundaryCondition.UNSET`, or
+        native handle or enum validation otherwise fails.
         """
         _initialize_prototypes()
 

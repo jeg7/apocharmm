@@ -378,7 +378,7 @@ apo_charmm_context_set_periodic_boundary_condition(apo_charmm_context *context,
             apocharmm_c::require_handle_object<apo_charmm_context>(
                 context, function_name, "CharmmContext"));
 
-        PBC cpp_pbc = PBC::NONE;
+        PBC cpp_pbc = PBC::UNSET;
         APOCHARMM_C_RETURN_IF_ERROR(
             apocharmm_c::to_pbc(&cpp_pbc, pbc, function_name));
 

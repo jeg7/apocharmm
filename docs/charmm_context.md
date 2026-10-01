@@ -94,6 +94,11 @@ The force manager is considered complete when all of the following are present:
 The current completeness predicate does not require coordinates or an explicit
 periodic-boundary setter. A normal force manager supplies `PBC::P1` by default.
 
+`PBC::UNSET`, `APO_PBC_UNSET`, and `PeriodicBoundaryCondition.UNSET` represent
+the same invalid, unconfigured sentinel. They do not select an aperiodic system.
+The native, C ABI, and Python periodic-boundary setters reject this value;
+runnable configurations use `P1` or `P21`.
+
 For custom nonbonded configuration, call `setKappa()`, `setCutoff()`,
 `setCtonnb()`, `setCtofnb()`, `setFFTGrid()`, `setPmeSplineOrder()`, and
 `setVdwType()` before the operation that supplies the final initialization

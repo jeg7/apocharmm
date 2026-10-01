@@ -380,11 +380,13 @@ APOCHARMM_C_API apo_status apo_charmm_context_set_temperature(
  * @brief Sets the periodic boundary condition.
  *
  * @param[in,out] context Borrowed non-NULL context handle.
- * @param[in] pbc One of `APO_PBC_NONE`, `APO_PBC_P1`, or `APO_PBC_P21`.
+ * @param[in] pbc Either `APO_PBC_P1` or `APO_PBC_P21`. `APO_PBC_UNSET` is an
+ * invalid sentinel and does not select an aperiodic system.
  *
  * @retval APO_STATUS_OK The boundary condition was stored and propagated.
- * @retval APO_STATUS_INVALID_ARGUMENT The context is invalid, `pbc` is not a
- * declared `apo_pbc` value, or completed force configuration is invalid.
+ * @retval APO_STATUS_INVALID_ARGUMENT A handle or native object is NULL, `pbc`
+ * is `APO_PBC_UNSET`, `pbc` is not a declared value, or completed force
+ * configuration is invalid.
  * @retval APO_STATUS_CUDA_ERROR Triggered initialization, image centering,
  * synchronization, or neighbor-list rebuilding failed.
  */

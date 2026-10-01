@@ -16,6 +16,7 @@
 #include "apocharmm_c/Status.h"
 #include "apocharmm_c/detail/CharmmParametersHandle.h"
 #include "apocharmm_c/detail/CharmmPsfHandle.h"
+#include "apocharmm_c/detail/EnumConversion.h"
 #include "apocharmm_c/detail/ForceManagerHandle.h"
 #include "catch.hpp"
 
@@ -170,7 +171,7 @@ TEST_CASE("CapiForceManagerSettersAndGetters") {
         APO_STATUS_OK);
   CHECK(order == 4);
 
-  apo_pbc pbc = APO_PBC_NONE;
+  apo_pbc pbc = APO_PBC_UNSET;
   CHECK(apo_force_manager_get_periodic_boundary_condition(
             &pbc, forceManager.get()) == APO_STATUS_OK);
   CHECK(pbc == APO_PBC_P1);
@@ -298,7 +299,7 @@ TEST_CASE("CapiForceManagerValidatesEveryFunctionHandle") {
   double scalar = 0.0;
   int outputGrid[3] = {0, 0, 0};
   int integer = 0;
-  apo_pbc pbc = APO_PBC_NONE;
+  apo_pbc pbc = APO_PBC_UNSET;
 
   CheckForceManagerHandleValidation(
       "apo_force_manager_set_box_dimensions",
@@ -604,6 +605,14 @@ TEST_CASE("CapiForceManagerMapsNativeValidationErrors") {
                    "PME spline order must be positive; observed 0",
                    "setPmeSplineOrder");
 
+  CHECK_NOTHROW((status = apo_force_manager_set_periodic_boundary_condition(
+                     forceManager.get(), APO_PBC_UNSET)));
+  CheckNativeError(
+      status, APO_STATUS_INVALID_ARGUMENT,
+      "apo_force_manager_set_periodic_boundary_condition", "InvalidArgument",
+      "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 0",
+      "checkPBCCompatibility");
+
   CHECK_NOTHROW(
       (status = apo_force_manager_set_vdw_type(forceManager.get(), 0)));
   CheckNativeError(status, APO_STATUS_INVALID_ARGUMENT,
@@ -619,7 +628,7 @@ TEST_CASE("CapiForceManagerMapsNativeValidationErrors") {
                    "setVdwType");
 }
 
-TEST_CASE("CapiForceManagerMapsMissingPsfAndUnknownNativePbc") {
+TEST_CASE("CapiForceManagerMapsMissingPsf") {
   ForceManagerHandle forceManager = MakeDefaultForceManager();
   int numAtoms = 17;
   apo_status status = APO_STATUS_OK;
@@ -640,18 +649,20 @@ TEST_CASE("CapiForceManagerMapsMissingPsfAndUnknownNativePbc") {
   CHECK(status == APO_STATUS_OK);
   CHECK(numAtoms == -1);
   CHECK(std::string(apo_last_error()).empty() == true);
+}
 
-  ForceManagerInputs inputs;
-  ForceManagerHandle validForceManager = MakeForceManager(inputs);
-  validForceManager->object->setPeriodicBoundaryCondition(static_cast<PBC>(99));
-  apo_pbc pbc = APO_PBC_NONE;
+TEST_CASE("CapiPbcconversionRejectsUnknownNativeValue") {
+  apo_pbc pbc = APO_PBC_UNSET;
+  apo_status status = APO_STATUS_OK;
 
-  CHECK_NOTHROW((status = apo_force_manager_get_periodic_boundary_condition(
-                     &pbc, validForceManager.get())));
-  CheckStatusAndDiagnostic(
-      status, APO_STATUS_INVALID_ARGUMENT,
-      "apo_force_manager_get_periodic_boundary_condition: unknown C++ PBC "
-      "value");
+  CHECK_NOTHROW((status = apocharmm_c::from_pbc(
+                     &pbc, static_cast<PBC>(99),
+                     "apo_force_manager_get_periodic_boundary_condition")));
+
+  CHECK(pbc == APO_PBC_UNSET);
+  CheckStatusAndDiagnostic(status, APO_STATUS_INVALID_ARGUMENT,
+                           "apo_force_manager_get_periodic_boundary_condition: "
+                           "unknown C++ PBC value");
 }
 
 TEST_CASE("CapiForceManagerClearsStaleErrorsAndDestroyPreservesDiagnostic") {

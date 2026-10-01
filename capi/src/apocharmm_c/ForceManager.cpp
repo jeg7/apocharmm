@@ -219,7 +219,7 @@ extern "C" apo_status apo_force_manager_set_periodic_boundary_condition(
             apocharmm_c::require_handle_object<apo_force_manager>(
                 force_manager, function_name, "ForceManager"));
 
-        PBC cpp_pbc = PBC::NONE;
+        PBC cpp_pbc = PBC::UNSET;
         APOCHARMM_C_RETURN_IF_ERROR(
             apocharmm_c::to_pbc(&cpp_pbc, pbc, function_name));
 

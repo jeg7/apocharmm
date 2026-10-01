@@ -101,6 +101,11 @@ The base defaults are:
 | VDW model | `VDW_VFSW` | native model code `3` |
 | Energy printing | disabled | standard output side effect |
 
+`UNSET` is reserved as an invalud periodic-boundary sentinel. It does not
+represent an aperiodic force calculation. `ForceManager` accepts only `P1` and
+`P21`, and initialization verifies that the stored value is one of those
+runnable modes.
+
 Before initialization, provide:
 
 1. a non-null PSF;

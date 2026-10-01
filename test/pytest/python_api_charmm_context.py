@@ -507,7 +507,6 @@ def check_configuration_and_initialized_state(
         context.setPmeSplineOrder(6)
 
         for pbc in (
-            apo.PeriodicBoundaryCondition.NONE,
             apo.PeriodicBoundaryCondition.P1,
             apo.PeriodicBoundaryCondition.P21,
         ):
@@ -517,6 +516,20 @@ def check_configuration_and_initialized_state(
                 context.getPeriodicBoundaryCondition(),
                 pbc,
             )
+
+        apo_test.expect_invalid_argument(
+            "CharmmContext.setPeriodicBoundaryCondition rejects UNSET",
+            lambda: context.setPeriodicBoundaryCondition(
+                apo.PeriodicBoundaryCondition.UNSET
+            ),
+            "apoCHARMM error [InvalidArgument]: Periodic boundary condition "
+            "must be PBC::P1 or PBC::P21; observed 0",
+        )
+        apo_test.assert_equal(
+            "CharmmContext PBC remains unchanged after rejected UNSET",
+            context.getPeriodicBoundaryCondition(),
+            apo.PeriodicBoundaryCondition.P21,
+        )
 
         context.setPeriodicBoundaryCondition(apo.PeriodicBoundaryCondition.P1)
         context.useHolonomicConstraints(False)
@@ -791,14 +804,6 @@ def check_holonomic_constraints(
             "water CharmmContext re-enabled constraints",
             context.getNumDegreesOfFreedom(),
             3,
-        )
-
-        context.setPeriodicBoundaryCondition(apo.PeriodicBoundaryCondition.NONE)
-        context.useHolonomicConstraints(False)
-        apo_test.assert_equal(
-            "water CharmmContext unconstrained nonperiodic degrees of freedom",
-            context.getNumDegreesOfFreedom(),
-            9,
         )
 
         context.setPeriodicBoundaryCondition(apo.PeriodicBoundaryCondition.P21)

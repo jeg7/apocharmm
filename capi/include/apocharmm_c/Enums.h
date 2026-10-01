@@ -26,8 +26,13 @@ extern "C" {
  * The values map one-to-one to the native `PBC` enumeration.
  */
 typedef enum apo_pbc {
-  /** Selects no periodic boundary condition. */
-  APO_PBC_NONE = 0,
+  /**
+   * Represents an unconfigured, non-runnable periodic-boundary state.
+   *
+   * This value does not select an aperiodic system and is rejected by the
+   * public periodic-boundary setters.
+   */
+  APO_PBC_UNSET = 0,
   /** Selects conventional three-dimensional translational periodicity. */
   APO_PBC_P1 = 1,
   /** Selects the P2_1 screw-symmetry periodic boundary condition. */

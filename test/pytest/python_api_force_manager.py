@@ -265,6 +265,17 @@ def check_validation() -> None:
         "apoCHARMM error [InvalidArgument]: PME spline order must be positive; observed 0",
     )
 
+    apo_test.expect_invalid_argument(
+        "ForceManager.setPeriodicBoundaryCondition rejects UNSET",
+        lambda: fm.setPeriodicBoundaryCondition(apo.PeriodicBoundaryCondition.UNSET),
+        "apoCHARMM error [InvalidArgument]: Periodic boundary condition must "
+        "be PBC::P1 or PBC::P21; observed 0",
+    )
+    apo_test.assert_equal(
+        "ForceManager PBC remains unchanged after rejected UNSET",
+        fm.getPeriodicBoundaryCondition(),
+        apo.PeriodicBoundaryCondition.P1,
+    )
     apo_test.expect_exception(
         "ForceManager.setPeriodicBoundaryCondition rejects invalid enum value",
         ValueError,

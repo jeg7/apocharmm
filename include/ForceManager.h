@@ -50,6 +50,10 @@ class CharmmContext;
  * - `getForce()` returning `std::shared_ptr<Force<long long int>>`; and
  * - `getEnergyVirial()` returning `std::shared_ptr<CudaEnergyVirial>`.
  *
+ * A force may additionally provide `supportsPBC(PBC)` returning a value
+ * convertible to `bool`. When the operation is absent, the view treats the
+ * forces as compatible with every valid `PBC` value.
+ *
  * `ForceManager` preserves the pointee lifetime while a force is subscribed by
  * retaining a shared owner in its parallel subscription state.
  *
@@ -81,6 +85,10 @@ public:
   ForceView(ForceType *inputForce)
       : m_Force(static_cast<void *>(inputForce)),
         m_ContributesVirial(ForceType::contributesVirial),
+        supportsPBC_impl{[](void *force, const PBC pbc) -> bool {
+          ForceType *ptr = static_cast<ForceType *>(force);
+          return ForceView::queryPBCSupport(ptr, pbc, 0);
+        }},
         initialize_impl{[](void *force, const int numAtoms,
                            const std::vector<double> &boxDimensions) -> void {
           ForceType *ptr = static_cast<ForceType *>(force);
@@ -110,6 +118,22 @@ public:
               ForceType *ptr = static_cast<ForceType *>(force);
               return ptr->getEnergyVirial();
             }} {}
+
+  /**
+   * @brief Reports whether the viewed force supports a periodic-boundary mode.
+   *
+   * @param[in] pbc Periodic-boundary mode proposed by `ForceManager`.
+   *
+   * @return The value returned by `ForceType::supportsPBC(pbc)` when that
+   * expression is well-formed and convertible to `bool`; otherwise `true`.
+   *
+   * @pre The borrowed force pointer remains valid.
+   * @note `ForceManager` separately validates that `pbc` is a named @ref PBC
+   * enumerator.
+   */
+  bool supportsPBC(const PBC pbc) const {
+    return this->supportsPBC_impl(m_Force, pbc);
+  }
 
   /**
    * @brief Initializes the viewed force for an atom count and periodic box.
@@ -205,6 +229,26 @@ public:
   bool contributesVirial(void) const { return m_ContributesVirial; }
 
 private:
+  /**
+   * @brief Invokes a concrete force's optional PBC compatibility operation.
+   *
+   * The `int` overload participates only when `force->supportsPBC(pbc)` is
+   * well-formed and convertible to `bool`. The `long int` overload supplies
+   * unrestricted compatibility for existing force types that do not declare the
+   * operation.
+   */
+  template <typename ForceType>
+  static auto queryPBCSupport(ForceType *force, const PBC pbc, int)
+      -> decltype(static_cast<bool>(force->supportsPBC(pbc))) {
+    return static_cast<bool>(force->supportsPBC(pbc));
+  }
+
+  template <typename ForceType>
+  static bool queryPBCSupport(ForceType *, const PBC, long int) {
+    return true;
+  }
+
+private:
   /** Borrowed, type-erased pointer to the concrete subscribed force. */
   void *m_Force;
 
@@ -215,6 +259,7 @@ private:
    * Type-erased dispatch table. Every entry expects `m_Force` to still point
    * to an object of the exact `ForceType` used by the constructor.
    */
+  bool (*supportsPBC_impl)(void *force, const PBC pbc);
   void (*initialize_impl)(void *force, const int numAtoms,
                           const std::vector<double> &boxDimensions);
   void (*clear_impl)(void *force);
@@ -608,16 +653,27 @@ public:
   virtual void setPmeSplineOrder(const int pmeSplineOrder);
 
   /**
-   * @brief Sets the periodic boundary condition.
+   * @brief Sets the periodic boundary condition after compatibility validation.
+   *
+   * Before changing manager state, the setter requires `pbc` to be either
+   * @ref PBC::P1 or @ref PBC::P21 and requires every subscribed force to
+   * support it.
    *
    * @param[in] pbc Declared @ref PBC value to retain.
    *
-   * @post `getPeriodicBoundaryCondition()` returns `pbc`.
-   * @post `isInitialized()` returns `false`.
+   * @post On success, `getPeriodicBoundaryCondition()` returns `pbc`.
+   * @post If the values changes while the manager is initialized, the
+   * reciprocal and direct backends are marked dirty and `isInitialized()`
+   * returns `true`.
+   * @throws ApoCharmmError With code @ref ApoCharmmErrorCode::InvalidArgument
+   * if `pbc` is not a named enumerator or any subscribed force does not support
+   * it.
    *
-   * @warning The native C++ setter does not validate values produced by casting
-   * an arbitrary integer to `PBC`.
-   * @warning Existing CUDA backend state is not deallocated by this call.
+   * @note A validation failure leaves the current PBC, initialized state,
+   * backend dirty flags, and subscription state unchanged.
+   * @warning Existing CUDA backend state is not deallocated by this call. When
+   * the manager is initialized, its reciprocal- and direct-space backends are
+   * marked dirty for rebuilding.
    */
   virtual void setPeriodicBoundaryCondition(const PBC pbc);
 
@@ -1149,6 +1205,8 @@ public:
    * @pre Three finite positive box dimensions have been set.
    * @pre The pair-list cutoff is positive and does not exceed half the X box
    * length.
+   * @pre The current periodic-boundary value is a named @ref PBC enumerator and
+   * every subscribed force supports it.
    *
    * @post On success, `isInitialized()` returns `true`; all four native streams
    * and force arrays are allocated; and already subscribed forces have received
@@ -1157,8 +1215,9 @@ public:
    * @ref ApoCharmmErrorCode::NotInitialized if the PSF, parameter set, or box
    * has not been set.
    * @throws ApoCharmmError With code
-   * @ref ApoCharmmErrorCode::InvalidArgument if the cutoff is invalid for the X
-   * box length or automatic-grid validation fails.
+   * @ref ApoCharmmErrorCode::InvalidArgument if the current PBC value is
+   * invalid, any subscribed force does not support it, the cutoff is invalid
+   * for the X box length or automatic-grid validation fails.
    * @throws ApoCharmmError With code @ref ApoCharmmErrorCode::Runtime if the
    * PSF atom count is not positive or a topology/parameter operation reports a
    * runtime failure.
@@ -1315,9 +1374,13 @@ public:
    * therefore preserves the invariant that all six subscription vectors have
    * equal length and corresponding indices describe one force.
    *
-   * If the manager is already initialized, `force->initialize()` is called
-   * with the current PSF atom count and box before any manager subscription
-   * vector is modified.
+   * Before initializing the candidate force or modifying any subscription
+   * vector, the manager validates its current PBC value, all existing
+   * subscriptions, and the candidate force's compatibility with that PBC.
+   *
+   * If the manager is already initialized, `force->initialize()` is called with
+   * the current PSF atom count and box only after compatibility validation
+   * succeeds and before any manager subscription vector is modified.
    *
    * @tparam ForceType Concrete force type satisfying the `ForceView` interface.
    * @param[in] force Shared owner of the non-null force. The exact object
@@ -1337,11 +1400,15 @@ public:
    * aggregation.
    * @throws ApoCharmmError With code
    * @ref ApoCharmmErrorCode::InvalidArgument if any shared pointer is null,
-   * `forceTag` is empty, or the same force object is already subscribed.
+   * `forceTag` is empty, the same force object is already subscribed, the
+   * manager's current PBC is invalid, or the candidate force does not support
+   * the current PBC.
    * @throws ApoCharmmError Propagates a categorized error from
    * `ForceType::initialize()` when the manager is already initialized.
    * @throws std::bad_alloc If subscription-vector growth fails.
    *
+   * @note A PBC validation or compatibility failure leaves all six parallel
+   * subscription vectors unchanged and does not initialize the candidate force.
    * @warning The supplied stream, force storage, and energy-virial object must
    * belong to `force`; the manager does not verify this relationship.
    * @warning Host allocation failure during the sequence of `push_back()`
@@ -1378,6 +1445,15 @@ public:
                         "Force is already subscribed to this ForceManager");
     }
 
+    ForceView forceView(force.get());
+
+    this->checkPBCCompatibility(m_Pbc);
+
+    APOCHARMM_REQUIRE(
+        forceView.supportsPBC(m_Pbc), ApoCharmmErrorCode::InvalidArgument,
+        "Subscribed force does not support periodic boundary condition value " +
+            std::to_string(static_cast<int>(m_Pbc)));
+
     if (m_IsInitialized == true) {
       force->initialize(m_Psf->getNumAtoms(), {static_cast<double>(m_BoxX),
                                                static_cast<double>(m_BoxY),
@@ -1385,7 +1461,7 @@ public:
     }
 
     m_ForcePtrs.push_back(static_cast<std::shared_ptr<void>>(force));
-    m_ForceViews.push_back(ForceView(force.get()));
+    m_ForceViews.push_back(forceView);
     m_ForceTags.push_back(forceTag);
     m_ForceStreams.push_back(forceStream);
     m_ForceValues.push_back(forceValues);
@@ -1542,6 +1618,19 @@ protected:
 
 private:
   /**
+   * @brief Validates a PBC value against every current subscription.
+   *
+   * @param[in] pbc Proposed or current periodic-boundary value.
+   *
+   * @throws ApoCharmmError With code @ref ApoCharmmErrorCode::InvalidArgument
+   * if `pbc` is not @ref PBC::P1 or @ref PBC::P21, or
+   * if any subscribed force does not support it.
+   *
+   * @note This operation does not modify manager or force state.
+   */
+  void checkPBCCompatibility(const PBC pbc) const;
+
+  /**
    * @brief Constructs or reconstructs the bonded-force backend.
    *
    * The manager-owned CUDA stream, force storage, and energy-virial registry
@@ -1609,8 +1698,8 @@ protected:
 
   /**
    * Successful-initialization flag. It changes to `true` only at the final
-   * statement of `initialize()` and can be cleared by selected collaborator or
-   * PBC setters without deallocating existing resources.
+   * statement of `initialize()` and can be cleared by selected collaborator
+   * setters without deallocating existing resources.
    */
   bool m_IsInitialized;
 

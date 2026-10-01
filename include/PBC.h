@@ -16,19 +16,19 @@
 #pragma once
 
 /**
- * @brief Identifies the periodic boundary condition used by apoCHARMM.
+ * @brief Identifies a periodic-boundary configuration value.
  *
- * The value is stored by @ref CharmmContext and forwarded to its associated
- * @ref ForceManager. `P1` is the default imported from a newly constructed
- * `ForceManager`.
+ * `UNSET` is an invalid, non-runnable sentinel. It does not select an aperiodic
+ * system. The public periodic-boundary setters accept only `P1` and `P21`. `P1`
+ * is the default imported from a newly constructed @ref ForceManager.
  */
 enum class PBC {
-  /** Selects no periodic boundary condition. */
-  NONE,
+  /** Represents an unconfigured, non-runnable periodic-boundary state. */
+  UNSET = 0,
   /** Selects conventional three-dimensional translational periodicity. */
-  P1,
+  P1 = 1,
   /** Selects the P2_1 screw-symmetry periodic boundary condition. */
-  P21
+  P21 = 2
 };
 
 /**

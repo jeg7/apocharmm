@@ -782,7 +782,7 @@ TEST_CASE("CapiCharmmContextValidatesEveryFunctionHandle") {
   double scalar = 0.0;
   int outputGrid[3] = {};
   int integer = 0;
-  apo_pbc pbc = APO_PBC_NONE;
+  apo_pbc pbc = APO_PBC_UNSET;
   apo_force_manager *forceManager = nullptr;
 
   CheckCharmmContextHandleValidation(
@@ -1098,6 +1098,18 @@ TEST_CASE("CapiCharmmContextValidatesPointersAndArrayShapes") {
       apo_charmm_context_set_fft_grid(context.get(), grid, 2),
       APO_STATUS_INVALID_ARGUMENT,
       "apo_charmm_context_set_fft_grid: grid must contain exactly 3 elements");
+
+  const apo_status unsetPbcStatus =
+      apo_charmm_context_set_periodic_boundary_condition(context.get(),
+                                                         APO_PBC_UNSET);
+  CHECK(unsetPbcStatus == APO_STATUS_INVALID_ARGUMENT);
+
+  const std::string unsetPbcDiagnostic(apo_last_error());
+  CHECK(unsetPbcDiagnostic.find(
+            "apoCHARMM error [InvalidArgument]: Periodic boundary condition "
+            "must be PBC::P1 or PBC::P21; observed 0") != std::string::npos);
+  CHECK(unsetPbcDiagnostic.find("function: setPeriodicBoundaryCondition") !=
+        std::string::npos);
 
   apo_test::CheckStatusAndDiagnostic(
       apo_charmm_context_set_periodic_boundary_condition(

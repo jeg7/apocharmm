@@ -630,11 +630,13 @@ public: // Setters
    * present, a successful update image-centers the coordinates and rebuilds the
    * neighbor list.
    *
-   * @param[in] pbc One of `PBC::NONE`, `PBC::P1`, or `PBC::P21`.
+   * @param[in] pbc Runnable periodic boundary condition. The accepted values
+   * are `PBC::P1` and `PBC::P21`. `PBC::UNSET` is an invalid sentinel and does
+   * not select an aperiodic system.
    *
    * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if the completed force configuration
-   * is rejected.
+   * `ApoCharmmErrorCode::InvalidArgument` if `pbc` is `PBC::UNSET`, is not a
+   * recognized enumerator, or the completed force configuration is rejected.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if
    * initialization, image centering, synchronization, or neighbor-list
    * rebuilding fails in CUDA.
