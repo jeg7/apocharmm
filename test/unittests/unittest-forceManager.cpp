@@ -21,6 +21,7 @@
 #include "catch.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -47,11 +48,13 @@ public:
     initializeCalls++;
     initializeNumAtoms = numAtoms;
     lastBoxDimensions = boxDimensions;
+    forceValues->realloc(numAtoms, 1.5f);
     return;
   }
 
   void clear(void) {
     clearCalls++;
+    forceValues->clear();
     return;
   }
 
@@ -92,6 +95,28 @@ private:
   std::shared_ptr<CudaEnergyVirial> energyVirial;
 };
 
+class P1OnlyTestForce : public TestForce {
+public:
+  bool supportsPBC(const PBC pbc) const { return pbc == PBC::P1; }
+};
+
+class PBCCompatibilityTestForceManager : public ForceManager {
+public:
+  using ForceManager::ForceManager;
+
+  void setPeriodicBoundaryConditionUnchecked(const PBC pbc) { m_Pbc = pbc; }
+
+  std::vector<std::size_t> getSubscriptionVectorSizes(void) const {
+    return {m_ForcePtrs.size(),   m_ForceViews.size(),
+            m_ForceTags.size(),   m_ForceStreams.size(),
+            m_ForceValues.size(), m_EnergyVirials.size()};
+  }
+
+  bool isReciprocalForceDirty(void) const { return m_ReciprocalForceDirty; }
+
+  bool isDirectForceDirty(void) const { return m_DirectForceDirty; }
+};
+
 ForceManager CreateForceManager(void) {
   auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
                                                 "toppar_water_ions.str");
@@ -99,6 +124,16 @@ ForceManager CreateForceManager(void) {
       std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
 
   return ForceManager(psf, prm);
+}
+
+PBCCompatibilityTestForceManager CreatePBCCompatibilityForceManager(void) {
+  auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
+                                                "toppar_water_ions.str");
+
+  auto psf =
+      std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
+
+  return PBCCompatibilityTestForceManager(psf, prm);
 }
 
 } // namespace
@@ -466,6 +501,253 @@ TEST_CASE("ForceManagerAddForceManagerRejectsChildren") {
       "ForceManager does not support child ForceManagers");
 }
 
+TEST_CASE("ForceManagerDefaultPBCCompatibilityIsUnrestricted") {
+  const std::vector<std::size_t> emptySubscriptionSizes(6, 0);
+  const std::vector<std::size_t> fullSubscriptionSizes(6, 1);
+
+  auto fm = CreatePBCCompatibilityForceManager();
+  auto force = std::make_shared<TestForce>();
+  auto stream = std::make_shared<cudaStream_t>();
+
+  SECTION("PBC::P1") {
+    fm.subscribe(force, "default_tag", stream, force->getForce(),
+                 force->getEnergyVirial());
+
+    CHECK(fm.getPeriodicBoundaryCondition() == PBC::P1);
+    CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+  }
+
+  SECTION("PBC::P21") {
+    fm.setPeriodicBoundaryCondition(PBC::P21);
+    fm.subscribe(force, "default_p21", stream, force->getForce(),
+                 force->getEnergyVirial());
+
+    CHECK(fm.getPeriodicBoundaryCondition() == PBC::P21);
+    CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+  }
+
+  fm.unsubscribe(force);
+  CHECK(fm.getSubscriptionVectorSizes() == emptySubscriptionSizes);
+}
+
+TEST_CASE("ForceManagerP1OnlySubscriptionValidationIsTransactional") {
+  const std::vector<std::size_t> emptySubscriptionSizes(6, 0);
+  const std::vector<std::size_t> fullSubscriptionSizes(6, 1);
+
+  auto fm = CreatePBCCompatibilityForceManager();
+  auto force = std::make_shared<P1OnlyTestForce>();
+  auto stream = std::make_shared<cudaStream_t>();
+  auto forceValues = force->getForce();
+  auto energyVirial = force->getEnergyVirial();
+
+  SECTION("PBC::P1") {
+    fm.subscribe(force, "p1_only", stream, forceValues, energyVirial);
+
+    CHECK(fm.getPeriodicBoundaryCondition() == PBC::P1);
+    CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+    CHECK(force->initializeCalls == 0);
+
+    fm.unsubscribe(force);
+
+    CHECK(fm.getSubscriptionVectorSizes() == emptySubscriptionSizes);
+  }
+
+  SECTION("PBC::P21") {
+    auto existingForce = std::make_shared<TestForce>();
+    auto existingStream = std::make_shared<cudaStream_t>();
+
+    fm.setPeriodicBoundaryCondition(PBC::P21);
+    fm.subscribe(existingForce, "existing_default", existingStream,
+                 existingForce->getForce(), existingForce->getEnergyVirial());
+
+    REQUIRE(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+
+    apo_test::CheckApoCharmmError(
+        [&fm, &force, &stream, &forceValues, &energyVirial](void) {
+          fm.subscribe(force, "p1_only", stream, forceValues, energyVirial);
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Subscribed force does not support periodic boundary condition value "
+        "2");
+
+    CHECK(fm.getPeriodicBoundaryCondition() == PBC::P21);
+    CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+    CHECK(force->initializeCalls == 0);
+
+    fm.unsubscribe(existingForce);
+
+    CHECK(fm.getSubscriptionVectorSizes() == emptySubscriptionSizes);
+  }
+
+  SECTION("PBC::UNSET") {
+    auto existingForce = std::make_shared<TestForce>();
+    auto existingStream = std::make_shared<cudaStream_t>();
+
+    fm.subscribe(existingForce, "existing_default", existingStream,
+                 existingForce->getForce(), existingForce->getEnergyVirial());
+
+    REQUIRE(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+
+    fm.setPeriodicBoundaryConditionUnchecked(PBC::UNSET);
+
+    apo_test::CheckApoCharmmError(
+        [&fm, &force, &stream, &forceValues, &energyVirial](void) {
+          fm.subscribe(force, "p1_only", stream, forceValues, energyVirial);
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 0");
+
+    CHECK(fm.getPeriodicBoundaryCondition() == PBC::UNSET);
+    CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+    CHECK(force->initializeCalls == 0);
+
+    fm.unsubscribe(existingForce);
+
+    CHECK(fm.getSubscriptionVectorSizes() == emptySubscriptionSizes);
+  }
+
+  SECTION("invalid cast-created PBC") {
+    auto existingForce = std::make_shared<TestForce>();
+    auto existingStream = std::make_shared<cudaStream_t>();
+    const PBC invalidPBC = static_cast<PBC>(99);
+
+    fm.subscribe(existingForce, "existing_default", existingStream,
+                 existingForce->getForce(), existingForce->getEnergyVirial());
+
+    REQUIRE(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+
+    fm.setPeriodicBoundaryConditionUnchecked(invalidPBC);
+
+    apo_test::CheckApoCharmmError(
+        [&fm, &force, &stream, &forceValues, &energyVirial](void) {
+          fm.subscribe(force, "p1_only", stream, forceValues, energyVirial);
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 99");
+
+    CHECK(fm.getPeriodicBoundaryCondition() == invalidPBC);
+    CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+    CHECK(force->initializeCalls == 0);
+
+    fm.unsubscribe(existingForce);
+
+    CHECK(fm.getSubscriptionVectorSizes() == emptySubscriptionSizes);
+  }
+}
+
+TEST_CASE("ForceManagerP1OnlyPBCMutationsIsTransactional") {
+  const std::vector<std::size_t> emptySubscriptionSizes(6, 0);
+  const std::vector<std::size_t> fullSubscriptionSizes(6, 1);
+
+  auto fm = CreatePBCCompatibilityForceManager();
+  fm.setBoxDimensions({50.0, 50.0, 50.0});
+
+  auto force = std::make_shared<P1OnlyTestForce>();
+  auto stream = std::make_shared<cudaStream_t>();
+
+  fm.subscribe(force, "p1_only", stream, force->getForce(),
+               force->getEnergyVirial());
+  fm.initialize();
+
+  REQUIRE(fm.isInitialized() == true);
+  REQUIRE(fm.getPeriodicBoundaryCondition() == PBC::P1);
+  REQUIRE(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+  REQUIRE(fm.isReciprocalForceDirty() == false);
+  REQUIRE(fm.isDirectForceDirty() == false);
+  REQUIRE(force->initializeCalls == 1);
+
+  apo_test::CheckApoCharmmError(
+      [&fm](void) { fm.setPeriodicBoundaryCondition(PBC::P21); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Subscribed force does not support periodic boundary condition value 2");
+
+  CHECK(fm.isInitialized() == true);
+  CHECK(fm.getPeriodicBoundaryCondition() == PBC::P1);
+  CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+  CHECK(fm.isReciprocalForceDirty() == false);
+  CHECK(fm.isDirectForceDirty() == false);
+  CHECK(force->initializeCalls == 1);
+
+  apo_test::CheckApoCharmmError(
+      [&fm](void) { fm.setPeriodicBoundaryCondition(PBC::UNSET); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 0");
+
+  CHECK(fm.isInitialized() == true);
+  CHECK(fm.getPeriodicBoundaryCondition() == PBC::P1);
+  CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+  CHECK(fm.isReciprocalForceDirty() == false);
+  CHECK(fm.isDirectForceDirty() == false);
+  CHECK(force->initializeCalls == 1);
+
+  const PBC invalidPBC = static_cast<PBC>(99);
+
+  apo_test::CheckApoCharmmError(
+      [&fm](void) { fm.setPeriodicBoundaryCondition(invalidPBC); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 99");
+
+  CHECK(fm.isInitialized() == true);
+  CHECK(fm.getPeriodicBoundaryCondition() == PBC::P1);
+  CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+  CHECK(fm.isReciprocalForceDirty() == false);
+  CHECK(fm.isDirectForceDirty() == false);
+  CHECK(force->initializeCalls == 1);
+
+  fm.unsubscribe(force);
+
+  CHECK(fm.getSubscriptionVectorSizes() == emptySubscriptionSizes);
+
+  CHECK_NOTHROW(fm.setPeriodicBoundaryCondition(PBC::P21));
+
+  CHECK(fm.isInitialized() == true);
+  CHECK(fm.getPeriodicBoundaryCondition() == PBC::P21);
+  CHECK(fm.getSubscriptionVectorSizes() == emptySubscriptionSizes);
+  CHECK(fm.isReciprocalForceDirty() == true);
+  CHECK(fm.isDirectForceDirty() == true);
+}
+
+TEST_CASE("ForceManagerInitializationRevalidatesPBCCompatibility") {
+  const std::vector<std::size_t> fullSubscriptionSizes(6, 1);
+
+  auto fm = CreatePBCCompatibilityForceManager();
+  fm.setBoxDimensions({50.0, 50.0, 50.0});
+
+  auto force = std::make_shared<P1OnlyTestForce>();
+  auto stream = std::make_shared<cudaStream_t>();
+
+  fm.subscribe(force, "p1_only", stream, force->getForce(),
+               force->getEnergyVirial());
+
+  REQUIRE(fm.isInitialized() == false);
+  REQUIRE(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+  REQUIRE(force->initializeCalls == 0);
+
+  fm.setPeriodicBoundaryConditionUnchecked(PBC::P21);
+
+  apo_test::CheckApoCharmmError(
+      [&fm](void) { fm.initialize(); }, ApoCharmmErrorCode::InvalidArgument,
+      "Subscribed force does not support periodic boundary condition value 2");
+
+  CHECK(fm.isInitialized() == false);
+  CHECK(fm.getPeriodicBoundaryCondition() == PBC::P21);
+  CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+  CHECK(fm.isReciprocalForceDirty() == false);
+  CHECK(fm.isDirectForceDirty() == false);
+  CHECK(force->initializeCalls == 0);
+
+  fm.setPeriodicBoundaryConditionUnchecked(PBC::P1);
+
+  CHECK_NOTHROW(fm.initialize());
+
+  CHECK(fm.isInitialized() == true);
+  CHECK(fm.getPeriodicBoundaryCondition() == PBC::P1);
+  CHECK(fm.getSubscriptionVectorSizes() == fullSubscriptionSizes);
+  CHECK(fm.isReciprocalForceDirty() == false);
+  CHECK(fm.isDirectForceDirty() == false);
+  CHECK(force->initializeCalls == 1);
+}
+
 TEST_CASE("ForceManagerSubscriptionValidation") {
   auto fm = CreateForceManager();
   auto force = std::make_shared<TestForce>();
@@ -605,7 +887,29 @@ TEST_CASE("ForceManagerCheckedCudaLaunchesAndGraphCleanup") {
   REQUIRE(fm != nullptr);
   REQUIRE(fm->isInitialized() == true);
 
+  auto force = std::make_shared<TestForce>();
+  auto stream = std::make_shared<cudaStream_t>();
+
+  fm->subscribe(force, "default_compatibility_force", stream, force->getForce(),
+                force->getEnergyVirial());
+
+  CHECK(force->initializeCalls == 1);
+  CHECK(force->initializeNumAtoms == psf->getNumAtoms());
+
+  CHECK_NOTHROW(ctx->calculateForces(false, false, false));
+
+  CHECK(force->clearCalls == 1);
+  CHECK(force->calcForceCalls == 1);
+  CHECK(force->lastXYZQ != nullptr);
+  CHECK(force->lastCalcEnergy == false);
+  CHECK(force->lastCalcVirial == false);
+
+  fm->unsubscribe(force);
+
   CHECK_NOTHROW(ctx->calculateForces(false, true, false));
+
+  CHECK(force->clearCalls == 1);
+  CHECK(force->calcForceCalls == 1);
 
   CudaContainer<double> &potentialEnergy = fm->getPotentialEnergy();
   potentialEnergy.transferToHost();
