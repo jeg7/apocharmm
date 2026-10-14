@@ -1202,6 +1202,22 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerIntegration", "[mmfp]", float,
   CheckManagerDelta(baseline, EvaluateManager(ctx), 2.5,
                     {make_double3(2.0, 0.0, 0.0), make_double3(0.0, 3.0, 0.0)});
 
+  force->addCylinder(AtomReference(psf, 0), ORIGIN, {0.0, 0.0, 1.0}, 4.0, 2.0,
+                     A::SYMMETRIC);
+  CheckManagerDelta(baseline, EvaluateManager(ctx), 4.5,
+                    {make_double3(6.0, 0.0, 0.0), make_double3(0.0, 3.0, 0.0)});
+
+  force->addSphere(AtomReference(psf, 0), ORIGIN, 6.0, 2.0, A::SYMMETRIC);
+  CheckManagerDelta(
+      baseline, EvaluateManager(ctx), 7.5,
+      {make_double3(12.0, 0.0, 0.0), make_double3(0.0, 3.0, 0.0)});
+
+  ForceView mixedView(force.get());
+  CHECK(mixedView.supportsPBC(PBC::P1));
+  CHECK(!mixedView.supportsPBC(PBC::P21));
+  CHECK(!mixedView.supportsPBC(PBC::UNSET));
+  CHECK(!mixedView.contributesVirial());
+
   CHECK(force->getForce() == forceOwner);
   CHECK(force->getEnergyVirial() == energyOwner);
   CHECK(force->getStream() == streamOwner);
@@ -1242,4 +1258,949 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerIntegration", "[mmfp]", float,
       },
       ApoCharmmErrorCode::InvalidArgument,
       "Subscribed force does not support periodic boundary condition value 2");
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRadialOracle", "[mmfp]", float,
+                   double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  struct Case {
+    const char *id;
+    bool cylinder;
+    std::array<double, 3> position, origin, direction;
+    double energy;
+    std::array<double, 3> physicalForce;
+    double energyTolerance;
+  };
+
+  // JEG261007: CHARMM energy and physical-force value for SYMMETRIC terms with
+  // forceConstant = 2 and offset = 2. Positions are exactly representable in
+  // float4, so coordinate conversion does not change these inputs.
+  const std::vector<Case> cases = {
+      {"cylinder x axis",
+       true,
+       {4.0, 3.0, 0.0},
+       {0.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       1.0,
+       {0.0, -2.0, 0.0},
+       4.9999999999999998e-07},
+      {"cylinder y axis",
+       true,
+       {3.0, 4.0, 0.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 1.0, 0.0},
+       1.0,
+       {-2.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"cylinder z axis",
+       true,
+       {3.0, 0.0, 4.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       1.0,
+       {-2.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"cylinder general unit",
+       true,
+       {4.0, 1.0, -1.0},
+       {1.0, -2.0, 3.0},
+       {0.2672612419124244, 0.5345224838248488, 0.8017837257372732},
+       14.254885700000001,
+       {-4.2024438653, -4.4826067897, 4.3892191482},
+       4.9999999999999998e-08},
+      {"cylinder general nonunit",
+       true,
+       {4.0, 1.0, -1.0},
+       {1.0, -2.0, 3.0},
+       {2.0, 4.0, 6.0},
+       14.254885700000001,
+       {-4.2024438653, -4.4826067897, 4.3892191482},
+       4.9999999999999998e-08},
+      {"cylinder general reversed",
+       true,
+       {4.0, 1.0, -1.0},
+       {1.0, -2.0, 3.0},
+       {-1.0, -2.0, -3.0},
+       14.254885700000001,
+       {-4.2024438653, -4.4826067897, 4.3892191482},
+       4.9999999999999998e-08},
+      {"cylinder axis point",
+       true,
+       {0.0, 0.0, 5.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       0.0,
+       {0.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"cylinder radial one",
+       true,
+       {1.0, 0.0, 5.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       1.0,
+       {2.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"cylinder radial target",
+       true,
+       {2.0, 0.0, 5.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       0.0,
+       {0.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"cylinder radial three",
+       true,
+       {3.0, 0.0, 5.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       1.0,
+       {-2.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"cylinder parallel translation a",
+       true,
+       {3.0, 0.0, -7.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       1.0,
+       {-2.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"cylinder parallel translation b",
+       true,
+       {3.0, 0.0, 11.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       1.0,
+       {-2.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"cylinder reference inside cell",
+       true,
+       {5.0, 3.0, 7.0},
+       {2.0, 3.0, 4.0},
+       {0.0, 0.0, 1.0},
+       1.0,
+       {-2.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"cylinder reference outside cell",
+       true,
+       {25.0, 3.0, 7.0},
+       {22.0, 3.0, 4.0},
+       {0.0, 0.0, 1.0},
+       1.0,
+       {-2.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"sphere general center center",
+       false,
+       {1.25, -2.5, 3.75},
+       {1.25, -2.5, 3.75},
+       {0.0, 0.0, 0.0},
+       0.0,
+       {0.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"sphere general center inside",
+       false,
+       {2.25, -2.5, 3.75},
+       {1.25, -2.5, 3.75},
+       {0.0, 0.0, 0.0},
+       1.0,
+       {2.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"sphere general center target",
+       false,
+       {3.25, -2.5, 3.75},
+       {1.25, -2.5, 3.75},
+       {0.0, 0.0, 0.0},
+       0.0,
+       {0.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"sphere general center outside",
+       false,
+       {4.25, -2.5, 3.75},
+       {1.25, -2.5, 3.75},
+       {0.0, 0.0, 0.0},
+       1.0,
+       {-2.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"P1 primary atom primary origin",
+       false,
+       {3.0, 2.0, 1.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0},
+       3.0333704500000001,
+       {-2.7928650971, -1.8619100647, -0.9309550324},
+       5.0000000000000001e-09},
+      {"P1 atom shift positive x",
+       false,
+       {23.0, 2.0, 1.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0},
+       445.56623999999999,
+       {-42.0187706338, -3.6538061421, -1.826903071},
+       5.0000000000000004e-06},
+      {"P1 origin shift positive x",
+       false,
+       {3.0, 2.0, 1.0},
+       {20.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0},
+       229.414287,
+       {30.0341594641, -3.5334305252, -1.7667152626},
+       4.9999999999999998e-07},
+      {"P1 both shift positive x",
+       false,
+       {23.0, 2.0, 1.0},
+       {20.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0},
+       3.0333704500000001,
+       {-2.7928650971, -1.8619100647, -0.9309550324},
+       5.0000000000000001e-09},
+      {"P1 atom shift positive xyz",
+       false,
+       {23.0, 32.0, 41.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0},
+       3010.5269199999998,
+       {-44.3822261186, -61.7491841649, -79.1161422113},
+       5.0000000000000004e-06},
+      {"P1 sphere crosses x boundary a",
+       false,
+       {9.5, 0.0, 0.0},
+       {9.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0},
+       2.25,
+       {3.0, 0.0, 0.0},
+       4.9999999999999998e-07},
+      {"P1 sphere crosses x boundary b",
+       false,
+       {-10.5, 0.0, 0.0},
+       {9.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0},
+       306.25,
+       {35.0, 0.0, 0.0},
+       5.0000000000000002e-05},
+      {"P1 cylinder primary",
+       true,
+       {1.0, 2.0, 3.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       0.055728090000000001,
+       {-0.211145618, -0.422291236, 0.0},
+       5.0000000000000001e-09},
+      {"P1 cylinder atom shift x",
+       true,
+       {21.0, 2.0, 3.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       364.61990800000001,
+       {-38.0180181096, -3.6207636295, 0.0},
+       4.9999999999999998e-07},
+      {"P1 cylinder reference shift x",
+       true,
+       {1.0, 2.0, 3.0},
+       {20.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       292.580107,
+       {34.0219781883, -3.5812608619, 0.0},
+       4.9999999999999998e-07},
+      {"P1 cylinder both shift x",
+       true,
+       {21.0, 2.0, 3.0},
+       {20.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       0.055728090000000001,
+       {-0.211145618, -0.422291236, 0.0},
+       5.0000000000000001e-09},
+      {"P1 cylinder cross x boundary",
+       true,
+       {-10.5, 0.0, 0.0},
+       {9.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       306.25,
+       {35.0, 0.0, 0.0},
+       5.0000000000000002e-05},
+      {"P1 cylinder general cross xyz",
+       true,
+       {-10.5, -15.5, -20.5},
+       {9.0, 14.0, 19.0},
+       {1.0, 2.0, 3.0},
+       17.8017319,
+       {7.3656566134, 1.8414141533, -3.6828283067},
+       4.9999999999999998e-08}};
+
+  auto psf = MakePsf();
+  G force(psf);
+  const AtomReference atom(psf, 0);
+  for (const Case &test : cases) {
+    INFO(test.id);
+    force.reset();
+    force.initialize(NUM_ATOMS, BOX_DIMS);
+    if (test.cylinder) {
+      force.addCylinder(atom, test.origin, test.direction, 2.0, 2.0,
+                        A::SYMMETRIC);
+    } else
+      force.addSphere(atom, test.origin, 2.0, 2.0, A::SYMMETRIC);
+
+    std::vector<float4> coordinates(NUM_ATOMS,
+                                    make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+    for (const double x : test.position)
+      REQUIRE(static_cast<double>(static_cast<float>(x)) == x);
+    coordinates[0] = make_float4(static_cast<float>(test.position[0]),
+                                 static_cast<float>(test.position[1]),
+                                 static_cast<float>(test.position[2]), 0.0f);
+
+    std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+    expected[0] = make_double3(test.physicalForce[0], test.physicalForce[1],
+                               test.physicalForce[2]);
+    const double magnitude = std::max({std::abs(test.physicalForce[0]),
+                                       std::abs(test.physicalForce[1]),
+                                       std::abs(test.physicalForce[2])});
+    const double forceTolerance =
+        1.0e-10 + 0.5 * INV_FORCE_SCALE_TEST +
+        32.0 * std::numeric_limits<double>::epsilon() *
+            std::max(1.0, magnitude) +
+        ((std::is_same<TestType, float>::value)
+             ? 0.5 * std::numeric_limits<float>::epsilon() * magnitude
+             : 0.0);
+    const double energyTolerance =
+        test.energyTolerance + 32.0 * std::numeric_limits<double>::epsilon() *
+                                   std::max(1.0, std::abs(test.energy));
+
+    CheckOutput(test.id, Evaluate(force, coordinates), test.energy, expected,
+                energyTolerance, forceTolerance);
+
+    // JEG261007: CHARMM uses raw Cartesian distances for these P1 restraints,
+    // so changing only the box dimensions must leave energy and force
+    // unchanged.
+    force.setBoxDimensions({24.0, 36.0, 48.0});
+    CheckOutput(std::string(test.id) + " changed box",
+                Evaluate(force, coordinates), test.energy, expected,
+                energyTolerance, forceTolerance);
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRadialActivation", "[mmfp]", float,
+                   double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+
+  auto psf = MakePsf();
+  const AtomReference atom(psf, 0);
+  const std::array<A, 3> modes = {A::SYMMETRIC, A::INSIDE, A::OUTSIDE};
+  // JEG261007: Rows are SYMMETRIC, INSIDE, OUTSIDE; columns are q=0,1,2,3
+  const std::array<std::array<double, 4>, 3> energies = {
+      {{0.0, 1.0, 0.0, 1.0}, {0.0, 0.0, 0.0, 1.0}, {0.0, 1.0, 0.0, 0.0}}};
+  const std::array<std::array<double, 4>, 3> forces = {
+      {{0.0, 2.0, 0.0, -2.0}, {0.0, 0.0, 0.0, -2.0}, {0.0, 2.0, 0.0, 0.0}}};
+
+  for (const bool cylinder : {true, false}) {
+    G force(psf);
+
+    for (std::size_t i = 0; i < modes.size(); i++) {
+      force.reset();
+
+      if (cylinder)
+        force.addCylinder(atom, ORIGIN, {0.0, 0.0, 1.0}, 2.0, 2.0, modes[i]);
+      else
+        force.addSphere(atom, ORIGIN, 2.0, 2.0, modes[i]);
+
+      for (int j = 0; j < 4; j++) {
+        INFO("cylinder=" << cylinder << ", mode=" << i << ", q=" << j);
+
+        std::vector<float4> coordinates(NUM_ATOMS,
+                                        make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+        coordinates[0] = make_float4(static_cast<float>(j), 0.0f,
+                                     cylinder ? 7.0f : 0.0f, 0.0f);
+
+        std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+        expected[0].x = forces[i][j];
+
+        CheckOutput("radial activation and boundary controls",
+                    Evaluate(force, coordinates), energies[i][j], expected);
+      }
+    }
+
+    // JEG261007: CHARMM accepts signed force constants and offsets. Preserve
+    // their signs in radial terms, as in the plane API.
+    for (const double k : {-2.0, 0.0, 2.0}) {
+      for (const double offset : {-2.0, 0.0, 2.0}) {
+        for (const A mode : modes) {
+          force.reset();
+
+          if (cylinder)
+            force.addCylinder(atom, ORIGIN, {0.0, 0.0, 1.0}, k, offset, mode);
+          else
+            force.addSphere(atom, ORIGIN, k, offset, mode);
+
+          std::vector<float4> coordinates(NUM_ATOMS,
+                                          make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+          coordinates[0].x = 3.0f;
+
+          const double deviation = 3.0 - offset;
+          const bool active = mode != A::OUTSIDE;
+          const double energy = active ? 0.5 * k * deviation * deviation : 0.0;
+          std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+          expected[0].x = active ? -k * deviation : 0.0;
+
+          CheckOutput("signed radial parameters", Evaluate(force, coordinates),
+                      energy, expected);
+        }
+      }
+    }
+
+    // JEG261007: Defaults are offset=0, INSIDE. D=2 with no activation is
+    // inactive at q=1.
+    for (const bool defaultOffset : {true, false}) {
+      force.reset();
+
+      if (cylinder) {
+        if (defaultOffset)
+          force.addCylinder(atom, ORIGIN, {0.0, 0.0, 1.0}, 2.0);
+        else
+          force.addCylinder(atom, ORIGIN, {0.0, 0.0, 1.0}, 2.0, 2.0);
+      } else {
+        if (defaultOffset)
+          force.addSphere(atom, ORIGIN, 2.0);
+        else
+          force.addSphere(atom, ORIGIN, 2.0, 2.0);
+      }
+
+      std::vector<float4> coordinates(NUM_ATOMS,
+                                      make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+      coordinates[0].x = 1.0f;
+
+      std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+      expected[0].x = defaultOffset ? -2.0 : 0.0;
+
+      CheckOutput("radial API defaults", Evaluate(force, coordinates),
+                  defaultOffset ? 1.0 : 0.0, expected);
+    }
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRadialSingularNeighborhood",
+                   "[mmfp]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  struct Case {
+    const char *id;
+    double x, y;
+    bool suppressed;
+  };
+
+  // JEG261007: Store tiny displacements in the double-precision origin and keep
+  // the atom at zero. This tests CHARMM's radial suppression without float4
+  // coordinate rounding moving the input across the threshold.
+  const std::array<Case, 5> translated = {
+      {{"exact center/axis", 0.0, 0.0, true},
+       {"axis-aligned radius below suppression threshold", 9.9999e-6, 0.0,
+        true},
+       {"axis-aligned radius whose square exceeds threshold", 1.0e-5, 0.0,
+        false},
+       {"squared oblique radius at threshold", 6.0e-6, 8.0e-6, true},
+       {"squared oblique radius above threshold", 6.0e-6, 8.0001e-6, false}}};
+
+  auto psf = MakePsf();
+  const AtomReference atom(psf, 0);
+
+  for (const bool cylinder : {true, false}) {
+    G force(psf);
+
+    for (const A mode : {A::SYMMETRIC, A::OUTSIDE, A::INSIDE}) {
+      const double offset = (mode == A::INSIDE) ? -2.0 : 2.0;
+
+      if (cylinder) {
+        force.reset();
+        force.addCylinder(atom, {1.0, -2.0, 3.0}, {1.0, 2.0, 3.0}, 2.0, offset,
+                          mode);
+
+        std::vector<float4> coordinates(NUM_ATOMS,
+                                        make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+        coordinates[0] = make_float4(3.0f, 2.0f, 9.0f, 0.0f);
+
+        CheckOutput(
+            "general-axis singular suppression", Evaluate(force, coordinates),
+            0.0, std::vector<double3>(NUM_ATOMS, make_double3(0.0, 0.0, 0.0)));
+      }
+
+      for (const Case &test : translated) {
+        INFO(test.id << ", cylinder=" << cylinder
+                     << ", mode=" << static_cast<int>(mode));
+        force.reset();
+
+        const std::array<double, 3> origin = {-test.x, -test.y,
+                                              cylinder ? -5.0 : 0.0};
+
+        if (cylinder)
+          force.addCylinder(atom, origin, {0.0, 0.0, 1.0}, 2.0, offset, mode);
+        else
+          force.addSphere(atom, origin, 2.0, offset, mode);
+
+        std::vector<float4> coordinates(NUM_ATOMS,
+                                        make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+        std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+        double energy = 0.0;
+
+        if (!test.suppressed) {
+          const long double x = test.x, y = test.y;
+          const long double q = std::sqrt(x * x + y * y);
+          const long double deviation = q - static_cast<long double>(offset);
+          energy = static_cast<double>(deviation * deviation);
+          expected[0] =
+              make_double3(static_cast<double>(-2.0L * deviation * x / q),
+                           static_cast<double>(-2.0L * deviation * y / q), 0.0);
+        }
+
+        const double tolerance =
+            test.suppressed
+                ? 0.0
+                : 1.0e-12 + 0.5 * INV_FORCE_SCALE_TEST +
+                      (std::is_same<TestType, float>::value ? 2.5e-7 : 0.0);
+
+        CheckOutput("translated axis and center suppression controls",
+                    Evaluate(force, coordinates), energy, expected,
+                    test.suppressed ? 0.0 : 1e-12, tolerance);
+      }
+
+      // JEG261007: Rounding 1e-5 to float moves it below the suppression
+      // threshold. The next larger float lies above it and must contribute
+      // normally. Expected values must therefore use the actual stored
+      // coordinates.
+      const float rounded = 1.0e-5f;
+      const float above =
+          std::nextafter(rounded, std::numeric_limits<float>::infinity());
+      REQUIRE(static_cast<double>(rounded) < 1.0e-5);
+      REQUIRE(static_cast<double>(above) > 1.0e-5);
+
+      for (const float radial : {rounded, above}) {
+        force.reset();
+
+        if (cylinder)
+          force.addCylinder(atom, ORIGIN, {0.0, 0.0, 1.0}, 2.0, offset, mode);
+        else
+          force.addSphere(atom, ORIGIN, 2.0, offset, mode);
+
+        std::vector<float4> coordinates(NUM_ATOMS,
+                                        make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+        coordinates[0] =
+            make_float4(radial, 0.0f, cylinder ? 5.0f : 0.0f, 0.0f);
+
+        std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+        const bool suppressed = radial == rounded;
+        const double deviation = static_cast<double>(radial) - offset;
+        expected[0].x = suppressed ? 0.0 : -2.0 * deviation;
+        const double tolerance =
+            suppressed
+                ? 0.0
+                : 1.0e-12 + 0.5 * INV_FORCE_SCALE_TEST +
+                      (std::is_same<TestType, float>::value ? 2.5e-7 : 0.0);
+
+        CheckOutput("native float4 threshold breacket",
+                    Evaluate(force, coordinates),
+                    suppressed ? 0.0 : deviation * deviation, expected,
+                    suppressed ? 0.0 : 1.0e-12, tolerance);
+      }
+    }
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRadialTypedInputsAndValidation",
+                   "[mmfp]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+
+  auto psf = MakePsf();
+
+  for (const bool cylinder : {true, false}) {
+    INFO("cylinder=" << cylinder);
+
+    G force(psf);
+    const auto add = [&](const auto &input,
+                         const std::array<double, 3> &origin = ORIGIN,
+                         const double k = 2.0, const double offset = 2.0,
+                         const A mode = A::SYMMETRIC) -> void {
+      if (cylinder)
+        force.addCylinder(input, origin, {0.0, 0.0, 1.0}, k, offset, mode);
+      else
+        force.addSphere(input, origin, k, offset, mode);
+      return;
+    };
+
+    {
+      AtomSelection selection(NUM_ATOMS);
+      selection.set(0);
+
+      auto origin = ORIGIN;
+      std::array<double, 3> direction = {0.0, 0.0, 1.0};
+
+      if (cylinder) {
+        force.addCylinder(selection, origin, direction, 2.0, 2.0, A::SYMMETRIC);
+      } else
+        force.addSphere(selection, origin, 2.0, 2.0, A::SYMMETRIC);
+      direction = X_DIRECTION;
+      selection.clear();
+      selection.set(1);
+      origin[0] = 99.0;
+    }
+
+    std::weak_ptr<CharmmPSF> weak;
+    {
+      auto foreign = MakePsf(NUM_ATOMS + 1);
+      weak = foreign;
+      add(AtomReference(foreign, 0));
+    }
+    CHECK(weak.expired());
+    REQUIRE(force.getNumTerms() == 2);
+
+    std::vector<float4> coordinates(NUM_ATOMS,
+                                    make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+    coordinates[0].x = 3.0f;
+
+    std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+    expected[0].x = -4.0;
+
+    const Output previous = Evaluate(force, coordinates);
+    CheckOutput("copied typed inputs", previous, 2.0, expected);
+
+    AtomSelection empty(NUM_ATOMS);
+    AtomSelection mismatch(NUM_ATOMS + 1, AtomSelection::InitialValue::ALL);
+    const AtomReference outOfRange(MakePsf(NUM_ATOMS + 1), NUM_ATOMS);
+    const AtomReference atom(psf, 0);
+    const double bad = std::numeric_limits<double>::quiet_NaN();
+
+    apo_test::CheckApoCharmmError(
+        [&](void) -> void {
+          add(empty);
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Selection must contain at least one atom; observed 0");
+
+    apo_test::CheckApoCharmmError(
+        [&](void) -> void {
+          add(mismatch);
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Selection atom count mismatch; expected 12, observed 13");
+
+    apo_test::CheckApoCharmmError(
+        [&](void) -> void {
+          add(outOfRange);
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Atom index is out of range; expected [0, 12), observed 12");
+
+    apo_test::CheckApoCharmmError(
+        [&](void) -> void {
+          add(atom, {bad, 0.0, 0.0});
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Origin component must be finite; index 0");
+
+    apo_test::CheckApoCharmmError(
+        [&](void) -> void {
+          add(atom, ORIGIN, bad);
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Force constant must be finite; observed " + std::to_string(bad));
+
+    apo_test::CheckApoCharmmError(
+        [&](void) -> void {
+          add(atom, ORIGIN, 2.0, bad);
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Offset must be finite; observed " + std::to_string(bad));
+
+    apo_test::CheckApoCharmmError(
+        [&](void) -> void {
+          add(atom, ORIGIN, 2.0, 2.0, static_cast<A>(99));
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Invalid MMFP activation value; observed 99");
+
+    if (cylinder) {
+      apo_test::CheckApoCharmmError(
+          [&](void) -> void {
+            force.addCylinder(atom, ORIGIN, ORIGIN, 2.0);
+            return;
+          },
+          ApoCharmmErrorCode::InvalidArgument,
+          "Direction must have a positive finite norm");
+
+      apo_test::CheckApoCharmmError(
+          [&](void) -> void {
+            force.addCylinder(atom, ORIGIN, {bad, 0.0, 1.0}, 2.0);
+            return;
+          },
+          ApoCharmmErrorCode::InvalidArgument,
+          "Direction component must be finite; index 0");
+    }
+
+    CHECK(force.getNumTerms() == 2);
+    CheckOutput("failed additions preserve output", ReadOutput(force),
+                previous.energy, previous.physicalForces);
+    CheckOutput("failed additions preserve terms", Evaluate(force, coordinates),
+                2.0, expected);
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceMixedOracle", "[mmfp]", float,
+                   double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+
+  auto psf = MakePsf();
+  G force(psf);
+  const AtomReference atom(psf, 0);
+
+  force.addPlane(atom, ORIGIN, X_DIRECTION, 1.0, 1.0, A::SYMMETRIC);
+  force.addCylinder(atom, ORIGIN, {0.0, 0.0, 1.0}, 1.0, 1.0, A::SYMMETRIC);
+  force.addSphere(atom, ORIGIN, 1.0, 1.0, A::SYMMETRIC);
+
+  std::vector<float4> coordinates(NUM_ATOMS,
+                                  make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+  coordinates[0] = make_float4(3.0f, 2.0f, 1.0f, 0.0f);
+
+  std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+  expected[0] = make_double3(-6.3661659799, -2.9107773199, -0.7327387581);
+
+  const double tolerance =
+      1.0e-10 + 0.5 * INV_FORCE_SCALE_TEST + 5.0e-14 +
+      (std::is_same<TestType, float>::value
+           ? 0.5 * std::numeric_limits<float>::epsilon() * 6.3661659799
+           : 0.0);
+
+  CheckOutput("same atom in plane, cylinder, and sphere",
+              Evaluate(force, coordinates), 9.15279134, expected,
+              5.0e-9 + 1.0e-13, tolerance);
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceMixedAtomwiseLifecycle", "[mmfp]",
+                   float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+
+  auto psf = MakePsf();
+  G force(psf);
+
+  const auto masses = force.getMasses();
+  const auto forceOwner = force.getForce();
+  const auto energyOwner = force.getEnergyVirial();
+  const auto streamOwner = force.getStream();
+
+  AtomSelection first(NUM_ATOMS), second(NUM_ATOMS), allThree(NUM_ATOMS);
+  first.set(0);
+  first.set(1);
+  second.set(1);
+  second.set(2);
+  allThree.set(0);
+  allThree.set(1);
+  allThree.set(2);
+
+  const std::vector<double3> zero(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+  const std::array<std::array<int, 6>, 3> orders = {
+      {{0, 1, 2, 0, 1, 2}, {2, 1, 0, 2, 1, 0}, {0, 0, 1, 1, 2, 2}}};
+  std::vector<float4> coordinates(NUM_ATOMS,
+                                  make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+  for (int i = 0; i < 3; i++)
+    coordinates[i].x = 3.0f;
+
+  for (const auto &order : orders) {
+    force.reset();
+    force.initialize(NUM_ATOMS, BOX_DIMS);
+    CheckOutput("reset removed all geometries", Evaluate(force, coordinates),
+                0.0, zero);
+
+    auto expected = zero;
+    double energy = 0.0;
+    std::size_t count = 0;
+    for (const int geometry : order) {
+      // JEG261014: Exact analytic contributions: E=1,2,3 and Fx=-2,-4,-6 per
+      // selected atom for the plane, cylinder, and sphere, respectively.
+      if (geometry == 0) {
+        force.addPlane(first, ORIGIN, X_DIRECTION, 2.0, 2.0, A::SYMMETRIC);
+        energy += 2.0;
+        expected[0].x -= 2.0;
+        expected[1].x -= 2.0;
+      } else if (geometry == 1) {
+        force.addCylinder(second, ORIGIN, {0.0, 0.0, 1.0}, 4.0, 2.0,
+                          A::SYMMETRIC);
+        energy += 4.0;
+        expected[1].x -= 4.0;
+        expected[2].x -= 4.0;
+      } else {
+        force.addSphere(allThree, ORIGIN, 6.0, 2.0, A::SYMMETRIC);
+        energy += 9.0;
+        for (int i = 0; i < 3; i++)
+          expected[i].x -= 6.0;
+      }
+      count++;
+      CHECK(force.getNumTerms() == count);
+      CheckOutput("mixed addition after device synchronization",
+                  Evaluate(force, coordinates), energy, expected);
+    }
+
+    CHECK(energy == 30.0);
+    CHECK(expected[0].x == -16.0);
+    CHECK(expected[1].x == -24.0);
+    CHECK(expected[2].x == -20.0);
+    force.clear();
+    CHECK(force.getNumTerms() == 6);
+    CheckOutput("clear preserves mixed terms", ReadOutput(force), 0.0, zero);
+    CheckOutput("mixed force-only evaluation",
+                Evaluate(force, coordinates, false), 0.0, expected);
+
+    const Output withVirial = Evaluate(force, coordinates, true, true);
+    CheckOutput("mixed derred virial", withVirial, energy, expected);
+    for (const double component : withVirial.virial)
+      CHECK(component == 0.0);
+    CHECK(force.getMasses() == masses);
+    CHECK(force.getForce() == forceOwner);
+    CHECK(force.getEnergyVirial() == energyOwner);
+    CHECK(force.getStream() == streamOwner);
+  }
+
+  // JEG261014: Moving the cylinder origin along the axis preserves its radial
+  // geometry
+  force.reset();
+  force.addCylinder(AtomReference(psf, 0), {0.0, 0.0, 11.0}, {0.0, 0.0, -3.0},
+                    2.0, 2.0, A::SYMMETRIC);
+  auto expected = zero;
+  expected[0].x = -2.0;
+  CheckOutput("origin translation along infinite cylinder axis",
+              Evaluate(force, coordinates), 1.0, expected);
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceMixedInsertionOrder", "[mmfp]",
+                   float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+
+  auto psf = MakePsf();
+  G force(psf);
+  const AtomReference atom(psf, 0);
+  const std::array<std::array<int, 3>, 6> orders = {
+      {{0, 1, 2}, {1, 0, 2}, {0, 2, 1}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}};
+  std::vector<float4> coordinates(NUM_ATOMS,
+                                  make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+  coordinates[0].x = 3.0f;
+
+  for (std::size_t i = 0; i < orders.size(); i++) {
+    force.reset();
+    for (const int geometry : orders[i]) {
+      if (geometry == 0)
+        force.addPlane(atom, ORIGIN, X_DIRECTION, 1.0e16, 2.0, A::SYMMETRIC);
+      else if (geometry == 1) {
+        force.addCylinder(atom, ORIGIN, {0.0, 0.0, 1.0}, -1.0e16, 2.0,
+                          A::SYMMETRIC);
+      } else
+        force.addSphere(atom, ORIGIN, 1.0, 2.0, A::SYMMETRIC);
+    }
+
+    std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+    expected[0].x = (i < 2) ? -1.0 : 0.0;
+    // JEG261014: CHARMM sums terms in insertion order; cancellation can discard
+    // a small contribution. Preserve that order before conversion to CT.
+    CheckOutput("mixed cancellation order", Evaluate(force, coordinates),
+                (i < 2) ? 0.5 : 0.0, expected);
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceMixedDynamicsStress", "[mmfp]",
+                   float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+
+  constexpr int count = 777;
+  G force(MakePsf(count));
+  AtomSelection all(count, AtomSelection::InitialValue::ALL);
+  force.initialize(count, BOX_DIMS);
+  const std::vector<float4> coordinates(count,
+                                        make_float4(3.0f, 0.0f, 0.0f, 0.0f));
+
+  // JEG261014: 303 terms and 777 atoms exercise multiple commit blocks and a
+  // partial final block. Each atom contributes energy 1 and force (-2, 0, 0)
+  // per term, so the expected totals are exact analytical sums.
+  for (int i = 1; i <= 101; i++) {
+    force.addPlane(all, ORIGIN, X_DIRECTION, 2.0, 2.0, A::SYMMETRIC);
+    force.addCylinder(all, ORIGIN, {0.0, 0.0, 1.0}, 2.0, 2.0, A::SYMMETRIC);
+    force.addSphere(all, ORIGIN, 2.0, 2.0, A::SYMMETRIC);
+    if ((i == 1) || (i == 51) || (i == 101)) {
+      const double terms = 3.0 * static_cast<double>(i);
+      CHECK(force.getNumTerms() == static_cast<std::size_t>(3 * i));
+      CheckOutput(
+          "all atoms in every mixed term", Evaluate(force, coordinates),
+          terms * static_cast<double>(count),
+          std::vector<double3>(count, make_double3(-2.0 * terms, 0.0, 0.0)));
+    }
+  }
+
+  force.reset();
+  CHECK(force.getNumTerms() == 0);
+  CheckOutput("reset large mixed tables", Evaluate(force, coordinates), 0.0,
+              std::vector<double3>(count, make_double3(0.0, 0.0, 0.0)));
+  force.addSphere(all, ORIGIN, 2.0, 2.0, A::SYMMETRIC);
+  CheckOutput("reuse large mixed allocation", Evaluate(force, coordinates),
+              static_cast<double>(count),
+              std::vector<double3>(count, make_double3(-2.0, 0.0, 0.0)));
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRadialTransactionalEvaluation",
+                   "[mmfp]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+
+  auto psf = MakePsf();
+  const AtomReference atom(psf, 0);
+  for (const bool cylinder : {true, false}) {
+    for (const bool calcEnergy : {true, false}) {
+      INFO("cylinder=" << cylinder << ", calcEnergy=" << calcEnergy);
+      G force(psf);
+      force.addPlane(atom, ORIGIN, X_DIRECTION, 2.0, 2.0, A::SYMMETRIC);
+      std::vector<float4> coordinates(NUM_ATOMS,
+                                      make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+      coordinates[0].x = 3.0f;
+
+      const Output previous = Evaluate(force, coordinates);
+      if (cylinder) {
+        force.addCylinder(atom, {1.0e308, 0.0, 0.0}, {0.0, 0.0, 1.0}, 2.0, 2.0,
+                          A::SYMMETRIC);
+      } else
+        force.addSphere(atom, {1.0e308, 0.0, 0.0}, 2.0, 2.0, A::SYMMETRIC);
+
+      CudaContainer<float4> xyzq(coordinates);
+
+      apo_test::CheckApoCharmmError(
+          [&](void) -> void {
+            force.calcForce(xyzq.getDeviceArray().data(), calcEnergy, false);
+            return;
+          },
+          ApoCharmmErrorCode::Runtime,
+          "MMFP evaluation produced a non-finite value");
+      CheckOutput("radial arithmetic failure preserves outputs",
+                  ReadOutput(force), previous.energy, previous.physicalForces);
+
+      force.reset();
+
+      if (cylinder) {
+        force.addCylinder(atom, ORIGIN, {0.0, 0.0, 1.0}, 1.0e7, 2.0,
+                          A::SYMMETRIC);
+      } else
+        force.addSphere(atom, ORIGIN, 1.0e7, 2.0, A::SYMMETRIC);
+
+      apo_test::CheckApoCharmmError(
+          [&](void) -> void {
+            force.calcForce(xyzq.getDeviceArray().data(), calcEnergy, false);
+            return;
+          },
+          ApoCharmmErrorCode::Runtime,
+          "MMFP gradient exceeds the fixed-point force range");
+      CheckOutput("radial conversion failure preserves outputs",
+                  ReadOutput(force), previous.energy, previous.physicalForces);
+    }
+  }
 }

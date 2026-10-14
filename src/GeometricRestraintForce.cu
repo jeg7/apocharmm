@@ -91,15 +91,8 @@ void GeometricRestraintForce<AT, CT>::addPlane(
     const AtomSelection &selection, const std::array<double, 3> &origin,
     const std::array<double, 3> &direction, const double forceConstant,
     const double offset, const Activation activation) {
-  APOCHARMM_REQUIRE(selection.getNumAtoms() == m_NumAtoms,
-                    ApoCharmmErrorCode::InvalidArgument,
-                    "Selection atom count mismatch; expected " +
-                        std::to_string(m_NumAtoms) + ", observed " +
-                        std::to_string(selection.getNumAtoms()));
-
-  this->appendPlane(selection.getAtomIndices(), origin, direction,
-                    forceConstant, offset, activation);
-
+  this->appendTerm(this->getSelectionIndices(selection), Geometry::PLANE,
+                   origin, direction, forceConstant, offset, activation);
   return;
 }
 
@@ -108,8 +101,48 @@ void GeometricRestraintForce<AT, CT>::addPlane(
     const AtomReference &atom, const std::array<double, 3> &origin,
     const std::array<double, 3> &direction, const double forceConstant,
     const double offset, const Activation activation) {
-  this->appendPlane({atom.getAtomIndex()}, origin, direction, forceConstant,
-                    offset, activation);
+  this->appendTerm({atom.getAtomIndex()}, Geometry::PLANE, origin, direction,
+                   forceConstant, offset, activation);
+  return;
+}
+
+template <typename AT, typename CT>
+void GeometricRestraintForce<AT, CT>::addCylinder(
+    const AtomSelection &selection, const std::array<double, 3> &origin,
+    const std::array<double, 3> &direction, const double forceConstant,
+    const double offset, const Activation activation) {
+  this->appendTerm(this->getSelectionIndices(selection), Geometry::CYLINDER,
+                   origin, direction, forceConstant, offset, activation);
+  return;
+}
+
+template <typename AT, typename CT>
+void GeometricRestraintForce<AT, CT>::addCylinder(
+    const AtomReference &atom, const std::array<double, 3> &origin,
+    const std::array<double, 3> &direction, const double forceConstant,
+    const double offset, const Activation activation) {
+  this->appendTerm({atom.getAtomIndex()}, Geometry::CYLINDER, origin, direction,
+                   forceConstant, offset, activation);
+  return;
+}
+
+template <typename AT, typename CT>
+void GeometricRestraintForce<AT, CT>::addSphere(
+    const AtomSelection &selection, const std::array<double, 3> &origin,
+    const double forceConstant, const double offset,
+    const Activation activation) {
+  this->appendTerm(this->getSelectionIndices(selection), Geometry::SPHERE,
+                   origin, {0.0, 0.0, 0.0}, forceConstant, offset, activation);
+  return;
+}
+
+template <typename AT, typename CT>
+void GeometricRestraintForce<AT, CT>::addSphere(
+    const AtomReference &atom, const std::array<double, 3> &origin,
+    const double forceConstant, const double offset,
+    const Activation activation) {
+  this->appendTerm({atom.getAtomIndex()}, Geometry::SPHERE, origin,
+                   {0.0, 0.0, 0.0}, forceConstant, offset, activation);
   return;
 }
 
@@ -221,8 +254,12 @@ __global__ static void EvaluateGeometricTermsKernel(
 
   for (std::size_t i = blockIdx.x; i < numTerms; i += gridDim.x) {
     const int4 types = termTypes[i];
+    const bool supportedGeometry =
+        (types.x == static_cast<int>(GeoForce::Geometry::PLANE)) ||
+        (types.x == static_cast<int>(GeoForce::Geometry::CYLINDER)) ||
+        (types.x == static_cast<int>(GeoForce::Geometry::SPHERE));
     const bool supported =
-        (types.x == static_cast<int>(GeoForce::Geometry::PLANE)) &&
+        supportedGeometry &&
         (types.z == static_cast<int>(GeoForce::SelectionMode::ATOMWISE)) &&
         (types.w == static_cast<int>(GeoForce::PotentialType::HARMONIC));
     if (!supported && (threadIdx.x == 0))
@@ -239,43 +276,84 @@ __global__ static void EvaluateGeometricTermsKernel(
       double3 gradient = make_double3(0.0, 0.0, 0.0);
       double energy = 0.0;
 
-      if (supported && forceConstant != 0.0) {
+      if (supported && (forceConstant != 0.0)) {
         const float4 position = xyzq[atomIndices[j]];
 
-        // JEG261006: Plane geometry uses the raw Cartesian displacement
+        // JEG26107: All geometries use raw Cartesian displacement, without P1
+        // imaging.
         const double dx = static_cast<double>(position.x) - origin.x;
         const double dy = static_cast<double>(position.y) - origin.y;
         const double dz = static_cast<double>(position.z) - origin.z;
-        const double signedDistance =
-            normal.x * dx + normal.y * dy + normal.z * dz;
-
-        // JEG261006: Activation maps the oriented coordinate to a slab distance
-        // only for one-sided modes. The exact-zero tie uses +normal
         const bool symmetric =
             types.y == static_cast<int>(GeoForce::Activation::SYMMETRIC);
-        const double coordinate =
-            symmetric ? signedDistance : fabs(signedDistance);
-        const double derivativeSign =
-            (!symmetric && signedDistance < 0.0) ? -1.0 : 1.0;
-        const double deviation = coordinate - offset;
-        const bool active =
-            symmetric ||
-            ((types.y == static_cast<int>(GeoForce::Activation::INSIDE)) &&
-             (deviation > 0.0)) ||
-            ((types.y == static_cast<int>(GeoForce::Activation::OUTSIDE)) &&
-             (deviation < 0.0));
+        double coordinate = 0.0;
+        double derivativeSign = 1.0;
+        double3 coordinateGradient = normal;
+        bool evaluate = true;
 
-        if (!isfinite(signedDistance) || !isfinite(deviation))
-          atomicOr(error, NONFINITE_EVALUATION);
-        else if (active && (deviation != 0.0)) {
-          // JEG261006: Harmonic potential and energetic gradient
-          const double derivative = forceConstant * deviation;
-          const double orientedDerivative = derivative * derivativeSign;
-          gradient = make_double3(orientedDerivative * normal.x,
-                                  orientedDerivative * normal.y,
-                                  orientedDerivative * normal.z);
-          if constexpr (calcEnergy)
-            energy = 0.5 * derivative * deviation;
+        if (types.x == static_cast<int>(GeoForce::Geometry::PLANE)) {
+          // JEG261007: Preserve the plane arithmetic and exact-zero +normal
+          // tie.
+          const double signedDistance =
+              normal.x * dx + normal.y * dy + normal.z * dz;
+          coordinate = (symmetric) ? signedDistance : fabs(signedDistance);
+          derivativeSign = (!symmetric && (signedDistance < 0.0)) ? -1.0 : 1.0;
+          if (!isfinite(signedDistance)) {
+            atomicOr(error, NONFINITE_EVALUATION);
+            evaluate = false;
+          }
+        } else {
+          double3 radial = make_double3(dx, dy, dz);
+          if (types.x == static_cast<int>(GeoForce::Geometry::CYLINDER)) {
+            const double axialDistance =
+                normal.x * dx + normal.y * dy + normal.z * dz;
+            radial = make_double3(dx - axialDistance * normal.x,
+                                  dy - axialDistance * normal.y,
+                                  dz - axialDistance * normal.z);
+          }
+
+          // JEG261007: Square the perpendicular components to preserve
+          // precision near the axis. Subtracting squared lengths can lose the
+          // radial distance to cancellation and incorrectly suppress a nonzero
+          // contribution.
+          const double radiusSquared =
+              radial.x * radial.x + radial.y * radial.y + radial.z * radial.z;
+          if (!isfinite(radiusSquared)) {
+            atomicOr(error, NONFINITE_EVALUATION);
+            evaluate = false;
+          } else if (radiusSquared <= 1.0e-10) {
+            // JEG261007: CHARMM suppresses both energy and force near the axis
+            // or center before applying activation. Preserve that order.
+            evaluate = false;
+          } else {
+            coordinate = sqrt(radiusSquared);
+            coordinateGradient =
+                make_double3(radial.x / coordinate, radial.y / coordinate,
+                             radial.z / coordinate);
+          }
+        }
+
+        if (evaluate) {
+          const double deviation = coordinate - offset;
+          const bool active =
+              symmetric ||
+              ((types.y == static_cast<int>(GeoForce::Activation::INSIDE)) &&
+               (deviation > 0.0)) ||
+              ((types.y == static_cast<int>(GeoForce::Activation::OUTSIDE)) &&
+               (deviation < 0.0));
+
+          if (!isfinite(deviation))
+            atomicOr(error, NONFINITE_EVALUATION);
+          else if (active && (deviation != 0.0)) {
+            // JEG261006: Harmonic potential and energetic gradient
+            const double derivative = forceConstant * deviation;
+            const double orientedDerivative = derivative * derivativeSign;
+            gradient = make_double3(orientedDerivative * coordinateGradient.x,
+                                    orientedDerivative * coordinateGradient.y,
+                                    orientedDerivative * coordinateGradient.z);
+            if constexpr (calcEnergy)
+              energy = 0.5 * derivative * deviation;
+          }
         }
       }
 
@@ -386,7 +464,7 @@ __global__ static void CommitGeometricOutputKernel(
       *energy = *pendingEnergy;
   }
 
-  const int idx = blockIdx.x * gridDim.x + threadIdx.x;
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
   const int stride = gridDim.x * blockDim.x;
 
   for (int i = idx; i < numAtoms; i += stride) {
@@ -513,10 +591,22 @@ bool GeometricRestraintForce<AT, CT>::supportsPBC(
 }
 
 template <typename AT, typename CT>
-void GeometricRestraintForce<AT, CT>::appendPlane(
-    const std::vector<int> &atomIndices, const std::array<double, 3> &origin,
-    const std::array<double, 3> &direction, const double forceConstant,
-    const double offset, const Activation activation) {
+std::vector<int> GeometricRestraintForce<AT, CT>::getSelectionIndices(
+    const AtomSelection &selection) const {
+  APOCHARMM_REQUIRE(selection.getNumAtoms() == m_NumAtoms,
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "Selection atom count mismatch; expected " +
+                        std::to_string(m_NumAtoms) + ", observed " +
+                        std::to_string(selection.getNumAtoms()));
+  return selection.getAtomIndices();
+}
+
+template <typename AT, typename CT>
+void GeometricRestraintForce<AT, CT>::appendTerm(
+    const std::vector<int> &atomIndices, const Geometry geometry,
+    const std::array<double, 3> &origin, const std::array<double, 3> &direction,
+    const double forceConstant, const double offset,
+    const Activation activation) {
   APOCHARMM_REQUIRE(!atomIndices.empty(), ApoCharmmErrorCode::InvalidArgument,
                     "Selection must contain at least one atom; observed 0");
   APOCHARMM_REQUIRE(
@@ -556,13 +646,16 @@ void GeometricRestraintForce<AT, CT>::appendPlane(
                     "Invalid MMFP activation value; observed " +
                         std::to_string(static_cast<int>(activation)));
 
-  const double norm = std::hypot(direction[0], direction[1], direction[2]);
-  APOCHARMM_REQUIRE(std::isfinite(norm) && (norm > 0.0),
-                    ApoCharmmErrorCode::InvalidArgument,
-                    "Direction must have a positive finite norm");
+  double3 normal = make_double3(0.0, 0.0, 0.0);
+  if (geometry != Geometry::SPHERE) {
+    const double norm = std::hypot(direction[0], direction[1], direction[2]);
+    APOCHARMM_REQUIRE(std::isfinite(norm) && (norm > 0.0),
+                      ApoCharmmErrorCode::InvalidArgument,
+                      "Direction must have a positive finite norm");
 
-  const double3 normal = make_double3(direction[0] / norm, direction[1] / norm,
-                                      direction[2] / norm);
+    normal = make_double3(direction[0] / norm, direction[1] / norm,
+                          direction[2] / norm);
+  }
 
   // JEG261002: Build replacements first so partial host allocation cannot
   // install a term
@@ -576,7 +669,7 @@ void GeometricRestraintForce<AT, CT>::appendPlane(
 
   indices.insert(indices.end(), atomIndices.begin(), atomIndices.end());
   termOffsets.push_back(indices.size());
-  types.push_back(make_int4(static_cast<int>(Geometry::PLANE),
+  types.push_back(make_int4(static_cast<int>(geometry),
                             static_cast<int>(activation),
                             static_cast<int>(SelectionMode::ATOMWISE),
                             static_cast<int>(PotentialType::HARMONIC)));

@@ -26,18 +26,25 @@
 #include <vector>
 
 /**
- * @brief Owns atomwise harmonic MMFP plane terms for a fixed atom count.
+ * @brief Owns atomwise harmonic MMFP geometry terms for a fixed atom count.
  *
  * Construction snapshots the complete PSF mass vector and atom count; no PSF
  * owner or pointer is retained. Term addition copies selected zero-based atom
  * indices. Separate terms may overlap or be identical.
  *
- * For normalized direction n and raw Cartesian displacement r - origin, let
- * s = dot(n, r - origin). SYMMETRIC uses q = s. INSIDE and OUTSIDE use q = |s|,
- * with derivative +n at s == 0. INSIDE contributes when q > offset; OUTSIDE
- * contributes when q < offset. Equality contributes zero. An active atom has
- * E = K * (q - offset)^2 / 2 and physical force -K * (q - offset) * grad(q).
- * Box dimensions do not cause minimum-image replacement of the displacement.
+ * For normalized direction n and raw Cartesian displacement u = r - origin,
+ * a plane uses s = dot(n, u). SYMMETRIC uses q = s. INSIDE and OUTSIDE use
+ * q = |s|, with derivative +n at s == 0. A cylinder uses p = u - dot(n, u) * n,
+ * q = |p|, and grad(q) = p / q. A sphere uses q = |u| and grad(q) = u / q.
+ * Cylinder and sphere terms contribute zero energy and gradient when the
+ * computed squared radial distance is <= 1e-10 angstrom^2, before activation
+ * or deviation is evaluated. This includes the exact axis or center.
+ *
+ * Otherwise, INSIDE contributes when q > offset; OUTSIDE contributes when
+ * q < offset; SYMMETRIC has no one-sided gate. Equality contributes zero.
+ * An active atom has E = K * (q - offset)^2 / 2 and physical force
+ * -K * (q - offset) * grad(q). Box dimensions do not cause minimum-image
+ * replacement of any displacement.
  *
  * Geometry, potential evaluation, and ordered accumulation use double
  * precision. CT selects the final Cartesian-gradient conversion precision,
@@ -45,8 +52,9 @@
  * float4 for both specializations. getForce() stores energetic gradients, not
  * physical forces, in the repository's signed fixed-point representation.
  *
- * Only addPlane() is exposed: neither other geometries nor RCM can be added.
- * The flattened term/membership storage is independent of plane geometry.
+ * Plane, cylinder, and sphere terms coexist in one flattened collection and
+ * contribute additively, including overlapping selections and duplicate terms.
+ * Only atomwise harmonic terms can be added; RCM is not exposed.
  *
  * @tparam AT Must be long long int, as required by ForceView.
  * @tparam CT Must be float or double.
@@ -61,9 +69,9 @@ template <typename AT, typename CT> class GeometricRestraintForce {
                 "GeometricRestraintForce supports float or double arithmetic");
 
 public:
-  /** Geometry identifiers; only plane addition is currently exposed. */
+  /** Identifies the geometry of an atomwise harmonic term. */
   enum class Geometry : int { PLANE = 0, CYLINDER = 1, SPHERE = 2 };
-  /** Selects the signed symmetric law or a one-sided slab-distance gate. */
+  /** Selects the symmetric law or a one-sided slab-distance gate. */
   enum class Activation : int { SYMMETRIC = 0, INSIDE = 1, OUTSIDE = -1 };
   /** Selection identifiers; only atomwise addition is currently exposed. */
   enum class SelectionMode : int { ATOMWISE = 0, RCM = 1 };
@@ -142,6 +150,67 @@ public:
                 const double forceConstant, const double offset = 0.0,
                 const Activation activation = Activation::INSIDE);
 
+  /**
+   * @brief Adds one atomwise harmonic infinite-cylinder term.
+   *
+   * The Cartesian axis passes through origin with the supplied direction.
+   * Direction is normalized using the same finite std::hypot envelope as
+   * addPlane(); positive scaling or reversal leaves the cylinder unchanged.
+   * Translation of origin along the axis leaves the geometry unchanged. The
+   * radial coordinate is the distance to the axis. A computed squared distance
+   * <= 1e-10 A^2 suppresses both energy and gradient before activation,
+   * including on-axis and near-axis positions.
+   *
+   * Selection validation, units, signed parameter acceptance, ownership,
+   * failure guarantees, and synchronization are identical to addPlane(). Raw
+   * Cartesian displacement is used; P1 box lengths do not image the axis.
+   */
+  void addCylinder(const AtomSelection &selection,
+                   const std::array<double, 3> &origin,
+                   const std::array<double, 3> &direction,
+                   const double forceConstant, const double offset = 0.0,
+                   const Activation activation = Activation::INSIDE);
+
+  /**
+   * @brief Adds the same cylinder term for one force-local atom index.
+   *
+   * AtomReference validation and ownership are identical to addPlane(). Other
+   * semantics are identical to the AtomSelection overload of addCylinder().
+   */
+  void addCylinder(const AtomReference &atom,
+                   const std::array<double, 3> &origin,
+                   const std::array<double, 3> &direction,
+                   const double forceConstant, const double offset = 0.0,
+                   const Activation activation = Activation::INSIDE);
+
+  /**
+   * @brief Adds one atomwise harmonic sphere term with a Cartesian center.
+   *
+   * The radial coordinate is the distance to center. A computed squared
+   * distance <= 1e-10 angstrom^2 suppresses both energy and gradient before
+   * activation, including the exact center and nearby positions.
+   *
+   * Center components must be finite and are in angstroms. Selection
+   * validation, force-constant and offset units, signed parameter acceptance,
+   * ownership, failure guarantees, and synchronization are identical to
+   * addPlane(). Raw Cartesian displacement is used; P1 box lengths do not
+   * image the center. There is no direction parameter.
+   */
+  void addSphere(const AtomSelection &selection,
+                 const std::array<double, 3> &center,
+                 const double forceConstant, const double offset = 0.0,
+                 const Activation activation = Activation::INSIDE);
+
+  /**
+   * @brief Adds the same sphere term for one force-local atom index.
+   *
+   * AtomReference validation and ownership are identical to addPlane(). Other
+   * semantics are identical to the AtomSelection overload of addSphere().
+   */
+  void addSphere(const AtomReference &atom, const std::array<double, 3> &center,
+                 const double forceConstant, const double offset = 0.0,
+                 const Activation activation = Activation::INSIDE);
+
 public:
   /** Returns the fixed, positive atom count copied during construction. */
   int getNumAtoms(void) const noexcept;
@@ -196,13 +265,17 @@ public:
   bool supportsPBC(const PBC pbc) const noexcept;
 
 private:
-  // JEG261007: Shared by the two types public overloads. Raw indices are not a
+  // JEG261007: Shared selection-count validation and flattening for all three
+  // geometries
+  std::vector<int> getSelectionIndices(const AtomSelection &selection) const;
+
+  // JEG261007: Shared by all six typed public overloads. Raw indices are not a
   // public API.
-  void appendPlane(const std::vector<int> &atomIndices,
-                   const std::array<double, 3> &origin,
-                   const std::array<double, 3> &direction,
-                   const double forceConstant, const double offset,
-                   const Activation activation);
+  void appendTerm(const std::vector<int> &atomIndices, const Geometry geometry,
+                  const std::array<double, 3> &origin,
+                  const std::array<double, 3> &direction,
+                  const double forceConstant, const double offset,
+                  const Activation activation);
 
   void syncDeviceData(void);
 
