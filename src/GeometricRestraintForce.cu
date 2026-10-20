@@ -422,16 +422,29 @@ EvaluateGeometricPoint(double3 &gradient, double &energy, int *error,
     if (!isfinite(deviation))
       atomicOr(error, NONFINITE_EVALUATION);
     else if (active && (deviation != 0.0)) {
-      const double derivative = forceConstant * deviation;
-      const double orientedDerivative = derivative * derivativeSign;
-      gradient = make_double3(orientedDerivative * coordinateGradient.x,
-                              orientedDerivative * coordinateGradient.y,
-                              orientedDerivative * coordinateGradient.z);
+      // JEG261020: CHARMM squares the devition before scaling the harmonic
+      // energy, then accumulates gradients only when that energy is nonzero.
+      // This gate applies even when energy output is disabled.
+      const double squaredDeviation = deviation * deviation;
+      const double evaluatedEnergy = (0.5 * forceConstant) * squaredDeviation;
 
-      // JEG261019: CHARMM's harmonic energy is 0.5 * K * deviation^2.
-      // derivative already contains one factor of K.
-      if constexpr (calcEnergy)
-        energy = 0.5 * derivative * deviation;
+      if (!isfinite(evaluatedEnergy)) {
+        atomicOr(error, NONFINITE_EVALUATION);
+        return;
+      }
+
+      if (evaluatedEnergy != 0.0) {
+        const double derivative = forceConstant * deviation;
+        const double orientedDerivative = derivative * derivativeSign;
+        gradient = make_double3(orientedDerivative * coordinateGradient.x,
+                                orientedDerivative * coordinateGradient.y,
+                                orientedDerivative * coordinateGradient.z);
+
+        // JEG261019: CHARMM's harmonic energy is 0.5 * K * deviation^2.
+        // derivative already contains one factor of K.
+        if constexpr (calcEnergy)
+          energy = evaluatedEnergy;
+      }
     }
   }
 
