@@ -54,6 +54,15 @@ class CharmmContext;
  * convertible to `bool`. When the operation is absent, the view treats the
  * forces as compatible with every valid `PBC` value.
  *
+ * Optional `static constexpr bool computesVirial = true` declares that
+ * `calcForce()` supplies the complete virial tensor. Such a force participates
+ * in aggregation but skips manager-side force conversion and reconstruction.
+ * The absent trait defaults to false, preserving existing force behavior.
+ *
+ * Optional `clear(const bool calcEnergy, const bool calcVirial)` clears the
+ * forces and only requested energy/virial outputs. Without it, the original
+ * `clear()` is used.
+ *
  * `ForceManager` preserves the pointee lifetime while a force is subscribed by
  * retaining a shared owner in its parallel subscription state.
  *
@@ -85,6 +94,7 @@ public:
   ForceView(ForceType *inputForce)
       : m_Force(static_cast<void *>(inputForce)),
         m_ContributesVirial(ForceType::contributesVirial),
+        m_ComputesVirial(ForceView::queryVirialCalculation(inputForce, 0)),
         supportsPBC_impl{[](void *force, const PBC pbc) -> bool {
           ForceType *ptr = static_cast<ForceType *>(force);
           return ForceView::queryPBCSupport(ptr, pbc, 0);
@@ -94,9 +104,10 @@ public:
           ForceType *ptr = static_cast<ForceType *>(force);
           return ptr->initialize(numAtoms, boxDimensions);
         }},
-        clear_impl{[](void *force) -> void {
+        clear_impl{[](void *force, const bool calcEnergy,
+                      const bool calcVirial) -> void {
           ForceType *ptr = static_cast<ForceType *>(force);
-          return ptr->clear();
+          return ForceView::clearOutput(ptr, calcEnergy, calcVirial, 0);
         }},
         calcForce_impl{[](void *force, const float4 *xyzq,
                           const bool calcEnergy,
@@ -153,13 +164,18 @@ public:
   }
 
   /**
-   * @brief Clears the viewed force's accumulated output.
+   * @brief Clears forces and requested output through the concrete interface.
+   *
+   * If selective clearing is supported, false flags preserve stale output.
+   * Otherwise this calls the original unconditional `ForceType::clear()`.
+   * Default arguments retain unconditional standalone clearing.
    *
    * @pre The borrowed force pointer remains valid.
-   * @note CUDA stream and synchronization behavior is defined by
-   * `ForceType::clear()`.
+   * @note CUDA stream and synchronization behavior is defined by the force.
    */
-  void clear(void) { return this->clear_impl(m_Force); }
+  void clear(const bool calcEnergy = true, const bool calcVirial = true) {
+    return this->clear_impl(m_Force, calcEnergy, calcVirial);
+  }
 
   /**
    * @brief Computes the viewed force for a device coordinate-charge array.
@@ -228,7 +244,39 @@ public:
    */
   bool contributesVirial(void) const { return m_ContributesVirial; }
 
+  /** Reports whether the manager must construct this force's virial. */
+  bool requiresVirialCalculation(void) const {
+    return m_ContributesVirial && !m_ComputesVirial;
+  }
+
 private:
+  /**
+   * Detects complete native virial calculation, retaining the legacy default.
+   */
+  template <typename ForceType>
+  static auto queryVirialCalculation(ForceType *, int)
+      -> decltype(static_cast<bool>(ForceType::computesVirial)) {
+    return static_cast<bool>(ForceType::computesVirial);
+  }
+
+  template <typename ForceType>
+  static bool queryVirialCalculation(ForceType *, long int) {
+    return false;
+  }
+
+  /** Dispatches selective clearing when available for a concrete force type. */
+  template <typename ForceType>
+  static auto clearOutput(ForceType *force, const bool calcEnergy,
+                          const bool calcVirial, int)
+      -> decltype(force->clear(calcEnergy, calcVirial), void()) {
+    return force->clear(calcEnergy, calcVirial);
+  }
+
+  template <typename ForceType>
+  static void clearOutput(ForceType *force, const bool, const bool, long int) {
+    return force->clear();
+  }
+
   /**
    * @brief Invokes a concrete force's optional PBC compatibility operation.
    *
@@ -255,6 +303,9 @@ private:
   /** Compile-time virial capability captured from the concrete force type. */
   bool m_ContributesVirial;
 
+  /** True when calcForce supplies a complete virial without reconstruction. */
+  bool m_ComputesVirial;
+
   /**
    * Type-erased dispatch table. Every entry expects `m_Force` to still point
    * to an object of the exact `ForceType` used by the constructor.
@@ -262,7 +313,7 @@ private:
   bool (*supportsPBC_impl)(void *force, const PBC pbc);
   void (*initialize_impl)(void *force, const int numAtoms,
                           const std::vector<double> &boxDimensions);
-  void (*clear_impl)(void *force);
+  void (*clear_impl)(void *force, const bool calcEnergy, const bool calcVirial);
   void (*calcForce_impl)(void *force, const float4 *xyzq, bool calcEnergy,
                          bool calcVirial);
   void (*setBoxDimensions_impl)(void *force,
@@ -1257,8 +1308,9 @@ public:
    * On first use, the method captures and instantiates a CUDA graph that clears
    * the three built-in fixed-point force arrays. Later calls launch the cached
    * graph. Requested energy and virial state is cleared on the component
-   * streams, subscribed forces are cleared, and the aggregate stream is
-   * synchronized before return.
+   * streams. Subscribed forces receive the calculation flags when they support
+   * selective clearing; legacy forces retain unconditional clearing. The
+   * aggregate stream is synchronized before return.
    *
    * @param[in] reset Must be `false`; neighbor-list reset through this argument
    * is not implemented.
@@ -1307,7 +1359,8 @@ public:
    * The method clears aggregate force storage, waits for each component and
    * subscribed stream, and adds every fixed-point force into the aggregate
    * double-precision force array. When requested, it converts force storage for
-   * virial calculation, computes eligible virials, copies energies to host
+   * virial reconstruction, except for subscribed forces declaring complete
+   * native virials. It reconstructs eligible virials, copies energies to host
    * storage, sums standard and subscribed energy terms on the aggregate stream,
    * and optionally prints the decomposition.
    *
@@ -1329,7 +1382,9 @@ public:
    * @throws ApoCharmmError Propagates categorized subscribed-force failures.
    *
    * @note If `calcEnergy` or `calcVirial` is false, the corresponding previous
-   * output remains observable and must be treated as stale.
+   * built-in output remains observable and must be treated as stale. This also
+   * applies to subscribed forces supporting selective clearing. Legacy forces
+   * retain their concrete `clear()` behavior; all disabled outputs are stale.
    */
   void calcForcePart3(const float4 *xyzq, const bool calcEnergy,
                       const bool calcVirial);

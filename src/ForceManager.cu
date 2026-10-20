@@ -751,7 +751,7 @@ void ForceManager::calcForcePart1(const bool reset, const bool calcEnergy,
   }
 
   for (ForceView &forceView : m_ForceViews)
-    forceView.clear();
+    forceView.clear(calcEnergy, calcVirial);
 
   cudaCheck(cudaStreamSynchronize(*m_ForceManagerStream));
 
@@ -893,7 +893,7 @@ void ForceManager::calcForcePart3(const float4 *xyzq, const bool calcEnergy,
     m_ReciprocalForceValues->convert<double>(*m_ReciprocalStream);
     m_DirectForceValues->convert<double>(*m_DirectStream);
     for (std::size_t i = 0; i < m_ForceViews.size(); i++) {
-      if (m_ForceViews[i].contributesVirial())
+      if (m_ForceViews[i].requiresVirialCalculation())
         m_ForceValues[i]->convert<double>(*m_ForceStreams[i]);
     }
 
@@ -901,7 +901,7 @@ void ForceManager::calcForcePart3(const float4 *xyzq, const bool calcEnergy,
     cudaCheck(cudaStreamSynchronize(*m_ReciprocalStream));
     cudaCheck(cudaStreamSynchronize(*m_DirectStream));
     for (std::size_t i = 0; i < m_ForceViews.size(); i++) {
-      if (m_ForceViews[i].contributesVirial())
+      if (m_ForceViews[i].requiresVirialCalculation())
         cudaCheck(cudaStreamSynchronize(*m_ForceStreams[i]));
     }
 
@@ -925,7 +925,7 @@ void ForceManager::calcForcePart3(const float4 *xyzq, const bool calcEnergy,
         reinterpret_cast<double *>(m_DirectForceValues->xyz()),
         *m_DirectStream);
     for (std::size_t i = 0; i < m_ForceViews.size(); i++) {
-      if (m_ForceViews[i].contributesVirial()) {
+      if (m_ForceViews[i].requiresVirialCalculation()) {
         m_EnergyVirials[i]->calcVirial(
             numAtoms, xyzq, m_BoxDimensions[0], m_BoxDimensions[1],
             m_BoxDimensions[2], forceStride,
@@ -938,7 +938,7 @@ void ForceManager::calcForcePart3(const float4 *xyzq, const bool calcEnergy,
     cudaCheck(cudaStreamSynchronize(*m_ReciprocalStream));
     cudaCheck(cudaStreamSynchronize(*m_DirectStream));
     for (std::size_t i = 0; i < m_ForceViews.size(); i++) {
-      if (m_ForceViews[i].contributesVirial())
+      if (m_ForceViews[i].requiresVirialCalculation())
         cudaCheck(cudaStreamSynchronize(*m_ForceStreams[i]));
     }
   }

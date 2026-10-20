@@ -63,6 +63,13 @@ GeometricRestraintForce<AT, CT>::GeometricRestraintForce(
   m_TermOffsets.getHostArray().push_back(0);
   m_PendingForces.resize(static_cast<std::size_t>(numAtoms));
   m_PendingEnergy.resize(1);
+
+  const std::size_t virialBlocks = std::min<std::size_t>(
+      (static_cast<std::size_t>(numAtoms) + RCM_CHUNK_SIZE - 1) /
+          RCM_CHUNK_SIZE,
+      65535);
+  m_VirialPartials.resize(9 * virialBlocks);
+  m_PendingVirial.resize(9);
   m_EvaluationError.resize(1);
   m_EnergyVirial = std::make_shared<CudaEnergyVirial>();
   m_EnergyVirial->insert("mmfp");
@@ -281,7 +288,19 @@ void GeometricRestraintForce<AT, CT>::initialize(
 
 template <typename AT, typename CT>
 void GeometricRestraintForce<AT, CT>::clear(void) {
-  m_EnergyVirial->clear(*m_Stream);
+  this->clear(true, true);
+  return;
+}
+
+template <typename AT, typename CT>
+void GeometricRestraintForce<AT, CT>::clear(const bool calcEnergy,
+                                            const bool calcVirial) {
+  if (calcEnergy && calcVirial)
+    m_EnergyVirial->clear(*m_Stream);
+  else if (calcEnergy && !calcVirial)
+    m_EnergyVirial->clearEnergy(*m_Stream);
+  else if (!calcEnergy && calcVirial)
+    m_EnergyVirial->clearVirial(*m_Stream);
   m_Forces->clear(*m_Stream);
   return;
 }
@@ -469,8 +488,9 @@ __global__ static void EvaluateGeometricTermsKernel(
 
         // JEG261019: CHARMM divides the signed mass-weighted coordinate sum by
         // the signed total mass. Divide directly because forming a reciprocal
-        // first can overflow for tiny totals. Retain the raw center for virial
-        // construction; no periodic image shift if applied.
+        // first can overflow for tiny totals. Retain the raw center; no
+        // periodic image shift if applied. The tensor uses distributed atom
+        // gradients.
         const double total = selectedMassTotals[i];
         const double3 center = make_double3(
             weighted.x / total, weighted.y / total, weighted.z / total);
@@ -543,15 +563,21 @@ __global__ static void EvaluateGeometricTermsKernel(
   return;
 }
 
-template <typename AT, typename CT, bool calcEnergy>
+template <typename AT, typename CT, int blockSize, bool calcEnergy,
+          bool calcVirial>
 __global__ static void StageGeometricOutputKernel(
     longlong3 *__restrict__ pendingForces, double *__restrict__ pendingEnergy,
-    int *__restrict__ error, const std::size_t *__restrict__ atomMemberships,
+    double *__restrict__ virialPartials, int *__restrict__ error,
+    const float4 *__restrict__ xyzq,
+    const std::size_t *__restrict__ atomMemberships,
     const double3 *__restrict__ membershipGradients,
     const std::size_t *__restrict__ atomOffsets, const int numAtoms,
     const AT *__restrict__ forces, const int forceStride,
     const double *__restrict__ energy, const double *__restrict__ termEnergies,
     const std::size_t numTerms) {
+  __shared__ BlockReduceSumStorage<double, blockSize, 9> virialCache;
+  double moment[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
   if constexpr (calcEnergy) {
     if (blockIdx.x == 0 && threadIdx.x == 0) {
       double total = *energy;
@@ -574,6 +600,27 @@ __global__ static void StageGeometricOutputKernel(
       gradient[0] += contribution.x;
       gradient[1] += contribution.y;
       gradient[2] += contribution.z;
+    }
+
+    if constexpr (calcVirial) {
+      if (atomOffsets[i] != atomOffsets[i + 1]) {
+        // JEG261020: CHARMM adds overlapping term gradients in insertion order,
+        // so form the external moment from that sum and the raw atom
+        // coordinate. Use only this evaluation's double gradient, before
+        // fixed-point conversion.
+        const float4 position = xyzq[i];
+        const double coordinate[3] = {static_cast<double>(position.x),
+                                      static_cast<double>(position.y),
+                                      static_cast<double>(position.z)};
+        for (int r = 0; r < 3; r++) {
+          for (int c = 0; c < 3; c++) {
+            const int comp = r * 3 + c;
+            moment[comp] += coordinate[r] * gradient[c];
+            if (!isfinite(moment[comp]))
+              atomicOr(error, NONFINITE_EVALUATION);
+          }
+        }
+      }
     }
 
     AT result[3] = {static_cast<AT>(0), static_cast<AT>(0), static_cast<AT>(0)};
@@ -617,17 +664,53 @@ __global__ static void StageGeometricOutputKernel(
       pendingForces[i] = make_longlong3(result[0], result[1], result[2]);
   }
 
+  if constexpr (calcVirial) {
+    BlockReduceSum<double, blockSize, 9>(moment, virialCache);
+    if (threadIdx.x == 0) {
+      for (int comp = 0; comp < 9; comp++) {
+        if (!isfinite(moment[comp]))
+          atomicOr(error, NONFINITE_EVALUATION);
+        virialPartials[blockIdx.x * 9 + comp] = moment[comp];
+      }
+    }
+  }
+
   return;
 }
 
-template <typename AT, bool calcEnergy>
+__global__ static void StageGeometricVirialKernel(
+    double *__restrict__ pendingVirial, int *__restrict__ error,
+    const double *__restrict__ virial, const double *__restrict__ partials,
+    const unsigned int numBlocks) {
+  if (threadIdx.x < 9) {
+    double total = virial[threadIdx.x];
+    for (unsigned int block = 0; block < numBlocks; block++)
+      total += partials[block * 9 + threadIdx.x];
+
+    if (!isfinite(total))
+      atomicOr(error, NONFINITE_EVALUATION);
+
+    pendingVirial[threadIdx.x] = total;
+  }
+
+  return;
+}
+
+template <typename AT, bool calcEnergy, bool calcVirial>
 __global__ static void CommitGeometricOutputKernel(
-    double *__restrict__ energy, AT *__restrict__ forces, const int forceStride,
+    AT *__restrict__ forces, double *__restrict__ energy,
+    double *__restrict__ virial, const int forceStride,
     const longlong3 *__restrict__ pendingForces, const int numAtoms,
-    const double *__restrict__ pendingEnergy) {
+    const double *__restrict__ pendingEnergy,
+    const double *__restrict__ pendingVirial) {
   if constexpr (calcEnergy) {
-    if (blockIdx.x == 0 && threadIdx.x == 0)
+    if ((blockIdx.x == 0) && (threadIdx.x == 0))
       *energy = *pendingEnergy;
+  }
+
+  if constexpr (calcVirial) {
+    if ((blockIdx.x == 0) && (threadIdx.x < 9))
+      virial[threadIdx.x] = pendingVirial[threadIdx.x];
   }
 
   const int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -647,8 +730,6 @@ template <typename AT, typename CT>
 void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
                                                 const bool calcEnergy,
                                                 const bool calcVirial) {
-  static_cast<void>(calcVirial);
-
   if (this->getNumTerms() == 0)
     return;
 
@@ -665,6 +746,8 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
           65535));
   int *error = m_EvaluationError.getDeviceArray().data();
   double *energy = m_EnergyVirial->getEnergyPointer("mmfp");
+  double *virial = m_EnergyVirial->getVirialPointer()->virmat;
+
   cudaCheck(cudaMemsetAsync(error, 0, sizeof(int), *m_Stream));
 
   if (m_RcmChunkBegins.size() != 0) {
@@ -680,7 +763,7 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
                         m_RcmChunkBegins.size()););
   }
 
-  if (calcEnergy) {
+  if (calcEnergy && calcVirial) {
     cudaCheckLaunch(
         EvaluateGeometricTermsKernel<AT, CT, numThreads, true>
         <<<termBlocks, numThreads, 0, *m_Stream>>>(
@@ -700,10 +783,71 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
             m_RcmChunkOffsets.getDeviceArray().data(),
             m_RcmPartials.getDeviceArray().data(), this->getNumTerms()));
     cudaCheckLaunch(
-        StageGeometricOutputKernel<AT, CT, true>
+        StageGeometricOutputKernel<AT, CT, numThreads, true, true>
         <<<atomBlocks, numThreads, 0, *m_Stream>>>(
             m_PendingForces.getDeviceArray().data(),
-            m_PendingEnergy.getDeviceArray().data(), error,
+            m_PendingEnergy.getDeviceArray().data(),
+            m_VirialPartials.getDeviceArray().data(), error, xyzq,
+            m_AtomMemberships.getDeviceArray().data(),
+            m_MembershipGradients.getDeviceArray().data(),
+            m_AtomOffsets.getDeviceArray().data(), m_NumAtoms, m_Forces->xyz(),
+            m_Forces->stride(), energy, m_TermEnergies.getDeviceArray().data(),
+            this->getNumTerms()));
+  } else if (calcEnergy && !calcVirial) {
+    cudaCheckLaunch(
+        EvaluateGeometricTermsKernel<AT, CT, numThreads, true>
+        <<<termBlocks, numThreads, 0, *m_Stream>>>(
+            m_MembershipGradients.getDeviceArray().data(),
+            m_TermEnergies.getDeviceArray().data(),
+            m_RcmCenters.getDeviceArray().data(),
+            m_RcmCenterGradients.getDeviceArray().data(), error, xyzq,
+            m_AtomIndices.getDeviceArray().data(),
+            m_Masses.getDeviceArray().data(),
+            m_TermOffsets.getDeviceArray().data(),
+            m_TermTypes.getDeviceArray().data(),
+            m_Origins.getDeviceArray().data(),
+            m_Directions.getDeviceArray().data(),
+            m_Offsets.getDeviceArray().data(),
+            m_ForceConstants.getDeviceArray().data(),
+            m_SelectedMassTotals.getDeviceArray().data(),
+            m_RcmChunkOffsets.getDeviceArray().data(),
+            m_RcmPartials.getDeviceArray().data(), this->getNumTerms()));
+    cudaCheckLaunch(
+        StageGeometricOutputKernel<AT, CT, numThreads, true, false>
+        <<<atomBlocks, numThreads, 0, *m_Stream>>>(
+            m_PendingForces.getDeviceArray().data(),
+            m_PendingEnergy.getDeviceArray().data(),
+            m_VirialPartials.getDeviceArray().data(), error, xyzq,
+            m_AtomMemberships.getDeviceArray().data(),
+            m_MembershipGradients.getDeviceArray().data(),
+            m_AtomOffsets.getDeviceArray().data(), m_NumAtoms, m_Forces->xyz(),
+            m_Forces->stride(), energy, m_TermEnergies.getDeviceArray().data(),
+            this->getNumTerms()));
+  } else if (!calcEnergy && calcVirial) {
+    cudaCheckLaunch(
+        EvaluateGeometricTermsKernel<AT, CT, numThreads, false>
+        <<<termBlocks, numThreads, 0, *m_Stream>>>(
+            m_MembershipGradients.getDeviceArray().data(),
+            m_TermEnergies.getDeviceArray().data(),
+            m_RcmCenters.getDeviceArray().data(),
+            m_RcmCenterGradients.getDeviceArray().data(), error, xyzq,
+            m_AtomIndices.getDeviceArray().data(),
+            m_Masses.getDeviceArray().data(),
+            m_TermOffsets.getDeviceArray().data(),
+            m_TermTypes.getDeviceArray().data(),
+            m_Origins.getDeviceArray().data(),
+            m_Directions.getDeviceArray().data(),
+            m_Offsets.getDeviceArray().data(),
+            m_ForceConstants.getDeviceArray().data(),
+            m_SelectedMassTotals.getDeviceArray().data(),
+            m_RcmChunkOffsets.getDeviceArray().data(),
+            m_RcmPartials.getDeviceArray().data(), this->getNumTerms()));
+    cudaCheckLaunch(
+        StageGeometricOutputKernel<AT, CT, numThreads, false, true>
+        <<<atomBlocks, numThreads, 0, *m_Stream>>>(
+            m_PendingForces.getDeviceArray().data(),
+            m_PendingEnergy.getDeviceArray().data(),
+            m_VirialPartials.getDeviceArray().data(), error, xyzq,
             m_AtomMemberships.getDeviceArray().data(),
             m_MembershipGradients.getDeviceArray().data(),
             m_AtomOffsets.getDeviceArray().data(), m_NumAtoms, m_Forces->xyz(),
@@ -729,15 +873,22 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
             m_RcmChunkOffsets.getDeviceArray().data(),
             m_RcmPartials.getDeviceArray().data(), this->getNumTerms()));
     cudaCheckLaunch(
-        StageGeometricOutputKernel<AT, CT, false>
+        StageGeometricOutputKernel<AT, CT, numThreads, false, false>
         <<<atomBlocks, numThreads, 0, *m_Stream>>>(
             m_PendingForces.getDeviceArray().data(),
-            m_PendingEnergy.getDeviceArray().data(), error,
+            m_PendingEnergy.getDeviceArray().data(),
+            m_VirialPartials.getDeviceArray().data(), error, xyzq,
             m_AtomMemberships.getDeviceArray().data(),
             m_MembershipGradients.getDeviceArray().data(),
             m_AtomOffsets.getDeviceArray().data(), m_NumAtoms, m_Forces->xyz(),
             m_Forces->stride(), energy, m_TermEnergies.getDeviceArray().data(),
             this->getNumTerms()));
+  }
+
+  if (calcVirial) {
+    cudaCheckLaunch(StageGeometricVirialKernel<<<1, 32, 0, *m_Stream>>>(
+        m_PendingVirial.getDeviceArray().data(), error, virial,
+        m_VirialPartials.getDeviceArray().data(), atomBlocks));
   }
 
   int observedError = 0;
@@ -758,18 +909,34 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
       (observedError & ACCUMULATION_OVERFLOW) == 0, ApoCharmmErrorCode::Runtime,
       "MMFP accumulated gradient exceeds the fixed-point force range");
 
-  if (calcEnergy) {
-    cudaCheckLaunch(CommitGeometricOutputKernel<AT, true>
+  if (calcEnergy && calcVirial) {
+    cudaCheckLaunch(CommitGeometricOutputKernel<AT, true, true>
                     <<<atomBlocks, numThreads, 0, *m_Stream>>>(
-                        energy, m_Forces->xyz(), m_Forces->stride(),
+                        m_Forces->xyz(), energy, virial, m_Forces->stride(),
                         m_PendingForces.getDeviceArray().data(), m_NumAtoms,
-                        m_PendingEnergy.getDeviceArray().data()));
+                        m_PendingEnergy.getDeviceArray().data(),
+                        m_PendingVirial.getDeviceArray().data()));
+  } else if (calcEnergy && !calcVirial) {
+    cudaCheckLaunch(CommitGeometricOutputKernel<AT, true, false>
+                    <<<atomBlocks, numThreads, 0, *m_Stream>>>(
+                        m_Forces->xyz(), energy, virial, m_Forces->stride(),
+                        m_PendingForces.getDeviceArray().data(), m_NumAtoms,
+                        m_PendingEnergy.getDeviceArray().data(),
+                        m_PendingVirial.getDeviceArray().data()));
+  } else if (!calcEnergy && calcVirial) {
+    cudaCheckLaunch(CommitGeometricOutputKernel<AT, false, true>
+                    <<<atomBlocks, numThreads, 0, *m_Stream>>>(
+                        m_Forces->xyz(), energy, virial, m_Forces->stride(),
+                        m_PendingForces.getDeviceArray().data(), m_NumAtoms,
+                        m_PendingEnergy.getDeviceArray().data(),
+                        m_PendingVirial.getDeviceArray().data()));
   } else {
-    cudaCheckLaunch(CommitGeometricOutputKernel<AT, false>
+    cudaCheckLaunch(CommitGeometricOutputKernel<AT, false, false>
                     <<<atomBlocks, numThreads, 0, *m_Stream>>>(
-                        energy, m_Forces->xyz(), m_Forces->stride(),
+                        m_Forces->xyz(), energy, virial, m_Forces->stride(),
                         m_PendingForces.getDeviceArray().data(), m_NumAtoms,
-                        m_PendingEnergy.getDeviceArray().data()));
+                        m_PendingEnergy.getDeviceArray().data(),
+                        m_PendingVirial.getDeviceArray().data()));
   }
 
   return;

@@ -74,9 +74,18 @@
  * remain float4. Near cancellation, their coordinate quantization can change
  * the center substantially; CT=double does not recover decimal coordinates lost
  * at input. The existing fixed-point output range still applies. Raw RCM
- * centers and center gradients remain available for virial construction. CHARMM
- * uses raw selected coordinate and raw center-reference displacements, so these
- * terms require no image-shift corrections.
+ * centers and center gradients are retained as evaluation workspace.
+ *
+ * CHARMM adds overlapping term gradients at each atom. We therefore sum those
+ * gradients before forming the external tensor W_ab = sum_i r_i,a * g_i,b in
+ * kcal/mol. Components are stored as XX, XY, XZ, YX, YY, YZ, ZX, ZY, ZZ in
+ * Virial_t::virmat. Raw absolute input coordinates and uncoverted double
+ * gradients are used. The tensor need not be symmetric or invariant under
+ * common translation of atoms and restraint origins. CHARMM distributes RCM
+ * gradients to the selected atoms, so their individual moments enter this sum.
+ * CHARMM uses raw Cartesian coordinates here, so no image correction is added.
+ * This tensor is defined from coordinates and gradients; it does not specify
+ * CHARMM's internal pressure accumulator.
  *
  * @tparam AT Must be long long int, as required by ForceView.
  * @tparam CT Must be float or double.
@@ -100,10 +109,14 @@ public:
   /** Identifies the implemented harmonic potential. */
   enum class PotentialType : int { HARMONIC = 0 };
 
-  // JEG261007: The CHARMM-compatible virial path is deferred. Do not include
-  // these gradients in ForceManager's virial construction at this intermediate
-  // stage.
-  static constexpr bool contributesVirial = false;
+  /** Includes the complete external tensor in manager aggregation. */
+  static constexpr bool contributesVirial = true;
+
+  /**
+   * calcForce supplies the complete tensor; no manager reconstruction is
+   * needed .
+   */
+  static constexpr bool computesVirial = true;
 
 public:
   /** Prevents construction without a PSF mass and atom-count snapshot. */
@@ -281,7 +294,7 @@ public:
   /** Returns shared ownership of the fixed-point energetic-gradient storage. */
   std::shared_ptr<Force<AT>> getForce(void);
 
-  /** Returns shared ownership of the energy and cleared virial storage. */
+  /** Returns shared ownership of the energy and complete external tensor. */
   std::shared_ptr<CudaEnergyVirial> getEnergyVirial(void);
 
 public:
@@ -294,11 +307,21 @@ public:
   /** Validates the fixed atom count, stores the box, and synchronizes terms. */
   void initialize(const int numAtoms, const std::vector<double> &boxDimensions);
 
-  /** Clears output only; terms and the masses are preserved. */
+  /** Clears all force, energy, and virial output; terms and masses persist. */
   void clear(void);
 
   /**
-   * @brief Accumulates gradients and optionally energy for all installed terms.
+   * @brief Clears forces and only the requested energy and virial outputs.
+   *
+   * ForceManager uses this overload before evaluation. A false flag preserves
+   * the corresponding previous value, which must be treated as stale. Both
+   * overloads enqueue clearing on the owned stream and preserve all terms.
+   */
+  void clear(const bool calcEnergy, const bool calcVirial);
+
+  /**
+   * @brief Accumulates gradients, optional energy, and optional external
+   * tensor.
    *
    * Term gradients are summed per atom in insertion order before conversion to
    * fixed point. Nonfinite arithmetic, unrepresentable converted gradients,
@@ -306,11 +329,14 @@ public:
    * Numeric validation occurs on the owned stream and synchronizes that stream
    * before committing output. Numeric rejection leaves previous output intact;
    * CUDA failures do not provide that guarantee. Successful output commitment
-   * is enqueued on the same stream. calcEnergy == false preserves energy.
-   *
-   * calcVirial is accepted for ForceView compatibility but adds no virial.
-   * An empty term collection returns without reading xyzq; otherwise xyzq
-   * must be non-null and address at least getNumAtoms() device float4 records.
+   * is enqueued on the same stream. calcEnergy controls only energy
+   * accumulation; calcVirial controls only tensor accumulation. Gradients are
+   * evaluated in all four flag combinations. A false flag preserves the
+   * corresponding previous output, which is stale for the current coordinates.
+   * clear() zeros all output; reset() only removes terms. Repeated calls
+   * without clearing add only the newly evaluated gradients, energy, and
+   * requested tensor contribution. Nonfinite tensor products or accumulation
+   * reject the whole calculation.
    */
   void calcForce(const float4 *xyzq, const bool calcEnergy,
                  const bool calcVirial);
@@ -391,6 +417,8 @@ private:
   CudaContainer<double> m_TermEnergies;
   CudaContainer<longlong3> m_PendingForces;
   CudaContainer<double> m_PendingEnergy;
+  CudaContainer<double> m_VirialPartials;
+  CudaContainer<double> m_PendingVirial;
   CudaContainer<int> m_EvaluationError;
 
   std::shared_ptr<CudaEnergyVirial> m_EnergyVirial;

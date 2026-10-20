@@ -910,23 +910,28 @@ __global__ void scalar_sum_ortho_kernel(
     }
 
     if (threadIdx.x == 0) {
+      // JEG261020: Energy and virial share a reduction. A null output pointer
+      // preserves the stored value when its calculation flag is false.
+      if (energy_recip != nullptr)
+        atomicAdd(energy_recip, energy * half_ccelec);
 
-      atomicAdd(energy_recip, energy * half_ccelec);
-      virial0 *= -half_ccelec;
-      virial1 *= -half_ccelec;
-      virial2 *= -half_ccelec;
-      virial3 *= -half_ccelec;
-      virial4 *= -half_ccelec;
-      virial5 *= -half_ccelec;
-      atomicAdd(&virial->virmat[0], virial0);
-      atomicAdd(&virial->virmat[1], virial1);
-      atomicAdd(&virial->virmat[2], virial2);
-      atomicAdd(&virial->virmat[3], virial1);
-      atomicAdd(&virial->virmat[4], virial3);
-      atomicAdd(&virial->virmat[5], virial4);
-      atomicAdd(&virial->virmat[6], virial2);
-      atomicAdd(&virial->virmat[7], virial4);
-      atomicAdd(&virial->virmat[8], virial5);
+      if (virial != nullptr) {
+        virial0 *= -half_ccelec;
+        virial1 *= -half_ccelec;
+        virial2 *= -half_ccelec;
+        virial3 *= -half_ccelec;
+        virial4 *= -half_ccelec;
+        virial5 *= -half_ccelec;
+        atomicAdd(&virial->virmat[0], virial0);
+        atomicAdd(&virial->virmat[1], virial1);
+        atomicAdd(&virial->virmat[2], virial2);
+        atomicAdd(&virial->virmat[3], virial1);
+        atomicAdd(&virial->virmat[4], virial3);
+        atomicAdd(&virial->virmat[5], virial4);
+        atomicAdd(&virial->virmat[6], virial2);
+        atomicAdd(&virial->virmat[7], virial4);
+        atomicAdd(&virial->virmat[8], virial5);
+      }
     }
   }
 }
@@ -2325,8 +2330,9 @@ void CudaPMERecip<AT, CT, CT2>::scalar_sum(const double *recip,
           <<<nblock, nthread, shmem_size, stream>>>(
               nfft1, nfft2, nfft3, size1, size2, size3, nf1, nf2, nf3, recip1,
               recip2, recip3, prefac1, prefac2, prefac3, fac, piv_inv,
-              global_base, datap, energyVirial.getEnergyPointer(strRecip),
-              energyVirial.getVirialPointer());
+              global_base, datap,
+              calc_energy ? energyVirial.getEnergyPointer(strRecip) : nullptr,
+              calc_virial ? energyVirial.getVirialPointer() : nullptr);
       cudaCheck(cudaGetLastError());
     } else {
       scalar_sum_ortho_kernel<CT, CT2, false>
