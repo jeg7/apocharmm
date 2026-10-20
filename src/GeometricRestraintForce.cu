@@ -19,6 +19,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -28,6 +29,7 @@ constexpr int NONFINITE_EVALUATION = 1;
 constexpr int UNREPRESENTABLE_GRADIENT = 2;
 constexpr int ACCUMULATION_OVERFLOW = 4;
 constexpr int UNSUPPORTED_TERM = 8;
+constexpr unsigned int RCM_CHUNK_SIZE = 256;
 
 } // namespace
 
@@ -52,14 +54,11 @@ GeometricRestraintForce<AT, CT>::GeometricRestraintForce(
                     "PSF mass count mismatch; expected " +
                         std::to_string(numAtoms) + ", observed " +
                         std::to_string(masses.size()));
-  for (std::size_t i = 0; i < masses.size(); i++) {
-    APOCHARMM_REQUIRE(
-        std::isfinite(masses[i]), ApoCharmmErrorCode::InvalidArgument,
-        "Mass at atom index " + std::to_string(i) +
-            " must be finite; observed " + std::to_string(masses[i]));
-  }
 
   m_NumAtoms = numAtoms;
+
+  this->validateMasses(masses);
+
   m_Masses = masses;
   m_TermOffsets.getHostArray().push_back(0);
   m_PendingForces.resize(static_cast<std::size_t>(numAtoms));
@@ -90,9 +89,11 @@ template <typename AT, typename CT>
 void GeometricRestraintForce<AT, CT>::addPlane(
     const AtomSelection &selection, const std::array<double, 3> &origin,
     const std::array<double, 3> &direction, const double forceConstant,
-    const double offset, const Activation activation) {
+    const double offset, const Activation activation,
+    const SelectionMode selectionMode) {
   this->appendTerm(this->getSelectionIndices(selection), Geometry::PLANE,
-                   origin, direction, forceConstant, offset, activation);
+                   origin, direction, forceConstant, offset, activation,
+                   selectionMode);
   return;
 }
 
@@ -100,9 +101,10 @@ template <typename AT, typename CT>
 void GeometricRestraintForce<AT, CT>::addPlane(
     const AtomReference &atom, const std::array<double, 3> &origin,
     const std::array<double, 3> &direction, const double forceConstant,
-    const double offset, const Activation activation) {
+    const double offset, const Activation activation,
+    const SelectionMode selectionMode) {
   this->appendTerm({atom.getAtomIndex()}, Geometry::PLANE, origin, direction,
-                   forceConstant, offset, activation);
+                   forceConstant, offset, activation, selectionMode);
   return;
 }
 
@@ -110,9 +112,11 @@ template <typename AT, typename CT>
 void GeometricRestraintForce<AT, CT>::addCylinder(
     const AtomSelection &selection, const std::array<double, 3> &origin,
     const std::array<double, 3> &direction, const double forceConstant,
-    const double offset, const Activation activation) {
+    const double offset, const Activation activation,
+    const SelectionMode selectionMode) {
   this->appendTerm(this->getSelectionIndices(selection), Geometry::CYLINDER,
-                   origin, direction, forceConstant, offset, activation);
+                   origin, direction, forceConstant, offset, activation,
+                   selectionMode);
   return;
 }
 
@@ -120,9 +124,10 @@ template <typename AT, typename CT>
 void GeometricRestraintForce<AT, CT>::addCylinder(
     const AtomReference &atom, const std::array<double, 3> &origin,
     const std::array<double, 3> &direction, const double forceConstant,
-    const double offset, const Activation activation) {
+    const double offset, const Activation activation,
+    const SelectionMode selectionMode) {
   this->appendTerm({atom.getAtomIndex()}, Geometry::CYLINDER, origin, direction,
-                   forceConstant, offset, activation);
+                   forceConstant, offset, activation, selectionMode);
   return;
 }
 
@@ -130,9 +135,10 @@ template <typename AT, typename CT>
 void GeometricRestraintForce<AT, CT>::addSphere(
     const AtomSelection &selection, const std::array<double, 3> &origin,
     const double forceConstant, const double offset,
-    const Activation activation) {
+    const Activation activation, const SelectionMode selectionMode) {
   this->appendTerm(this->getSelectionIndices(selection), Geometry::SPHERE,
-                   origin, {0.0, 0.0, 0.0}, forceConstant, offset, activation);
+                   origin, {0.0, 0.0, 0.0}, forceConstant, offset, activation,
+                   selectionMode);
   return;
 }
 
@@ -140,9 +146,48 @@ template <typename AT, typename CT>
 void GeometricRestraintForce<AT, CT>::addSphere(
     const AtomReference &atom, const std::array<double, 3> &origin,
     const double forceConstant, const double offset,
-    const Activation activation) {
+    const Activation activation, const SelectionMode selectionMode) {
   this->appendTerm({atom.getAtomIndex()}, Geometry::SPHERE, origin,
-                   {0.0, 0.0, 0.0}, forceConstant, offset, activation);
+                   {0.0, 0.0, 0.0}, forceConstant, offset, activation,
+                   selectionMode);
+  return;
+}
+
+template <typename AT, typename CT>
+void GeometricRestraintForce<AT, CT>::setMasses(
+    const std::vector<double> &masses) {
+  this->validateMasses(masses);
+
+  const std::vector<int4> &types = m_TermTypes.getHostArray();
+  const std::vector<std::size_t> &offsets = m_TermOffsets.getHostArray();
+  const std::vector<int> &indices = m_AtomIndices.getHostArray();
+  for (std::size_t i = 0; i < types.size(); i++) {
+    if (types[i].z == static_cast<int>(SelectionMode::RCM))
+      this->validateRcmMasses(masses, indices, offsets[i], offsets[i + 1]);
+  }
+
+  // JEG261019: Allocate replacement storage only after every RCM selection
+  // validated. Recompute derived totals into that storage; no caller data is
+  // retained.
+  std::vector<double> totals(this->getNumTerms(), 0.0);
+  for (std::size_t i = 0; i < types.size(); i++) {
+    if (types[i].z == static_cast<int>(SelectionMode::RCM)) {
+      totals[i] =
+          this->validateRcmMasses(masses, indices, offsets[i], offsets[i + 1]);
+    }
+  }
+
+  // JEG261019: Finish old readers before releasing either old device
+  // allocation.
+  cudaCheck(cudaStreamSynchronize(*m_Stream));
+  CudaContainer<double> replacementMasses(masses);
+  CudaContainer<double> replacementTotals(std::move(totals));
+
+  // JEG261019: CudaContainer move assignment is noexcept and transfers both
+  // mirrors. No throwing operation may be inserted between these two commits.
+  m_Masses = std::move(replacementMasses);
+  m_SelectedMassTotals = std::move(replacementTotals);
+
   return;
 }
 
@@ -189,6 +234,7 @@ void GeometricRestraintForce<AT, CT>::reset(void) {
   m_Directions.getHostArray().clear();
   m_Offsets.getHostArray().clear();
   m_ForceConstants.getHostArray().clear();
+  m_SelectedMassTotals.getHostArray().clear();
   m_DeviceDataDirty = true;
 
   return;
@@ -240,136 +286,256 @@ void GeometricRestraintForce<AT, CT>::clear(void) {
   return;
 }
 
+template <int blockSize>
+__global__ static void BuildRcmPartialsKernel(
+    double3 *__restrict__ partials, int *__restrict__ error,
+    const float4 *__restrict__ xyzq, const int *__restrict__ atomIndices,
+    const double *__restrict__ masses,
+    const std::size_t *__restrict__ chunkBegins,
+    const std::size_t *__restrict__ chunkEnds, const std::size_t numChunks) {
+  static_assert(blockSize == RCM_CHUNK_SIZE,
+                "RCM partial block size must equal the membership chunk size");
+
+  __shared__ BlockReduceSumStorage<double, blockSize, 3> cache;
+
+  for (std::size_t chunk = blockIdx.x; chunk < numChunks; chunk += gridDim.x) {
+    double weighted[3] = {0.0, 0.0, 0.0};
+    const std::size_t member = chunkBegins[chunk] + threadIdx.x;
+    if (member < chunkEnds[chunk]) {
+      const int atom = atomIndices[member];
+      const float4 position = xyzq[atom];
+      const double mass = masses[atom];
+      weighted[0] = mass * static_cast<double>(position.x);
+      weighted[1] = mass * static_cast<double>(position.y);
+      weighted[2] = mass * static_cast<double>(position.z);
+      if (!isfinite(weighted[0]) || !isfinite(weighted[1]) ||
+          !isfinite(weighted[2])) {
+        atomicOr(error, NONFINITE_EVALUATION);
+      }
+    }
+
+    BlockReduceSum<double, blockSize, 3>(weighted, cache);
+    if (threadIdx.x == 0) {
+      partials[chunk] = make_double3(weighted[0], weighted[1], weighted[2]);
+      if (!isfinite(weighted[0]) || !isfinite(weighted[1]) ||
+          !isfinite(weighted[2])) {
+        atomicOr(error, NONFINITE_EVALUATION);
+      }
+    }
+    __syncthreads();
+  }
+
+  return;
+}
+
+template <typename AT, typename CT, bool calcEnergy>
+__device__ static void
+EvaluateGeometricPoint(double3 &gradient, double &energy, int *error,
+                       const double3 position, const int4 types,
+                       const double3 origin, const double3 normal,
+                       const double offset, const double forceConstant) {
+  using GeoForce = GeometricRestraintForce<AT, CT>;
+  gradient = make_double3(0.0, 0.0, 0.0);
+  energy = 0.0;
+  if (forceConstant == 0.0)
+    return;
+
+  // JEG261019: CHARMM uses raw Cartesian displacements for atomwise and RCM
+  // restraints. Selected atoms are not unwrapped, and the center-reference
+  // displacement is not replaced by a periodic image.
+  const double dx = position.x - origin.x;
+  const double dy = position.y - origin.y;
+  const double dz = position.z - origin.z;
+  const bool symmetric =
+      types.y == static_cast<int>(GeoForce::Activation::SYMMETRIC);
+
+  double coordinate = 0.0;
+  double derivativeSign = 1.0;
+  double3 coordinateGradient = normal;
+  bool evaluate = true;
+
+  if (types.x == static_cast<int>(GeoForce::Geometry::PLANE)) {
+    // JEG261019: A symmetric plane uses signed distance. One-sided planes use
+    // its magnitude; CHARMM chooses +normal at exactly zero distance.
+    const double signedDistance = normal.x * dx + normal.y * dy + normal.z * dz;
+    coordinate = (symmetric) ? signedDistance : fabs(signedDistance);
+    derivativeSign = (!symmetric && (signedDistance < 0.0)) ? -1.0 : 1.0;
+    if (!isfinite(signedDistance)) {
+      atomicOr(error, NONFINITE_EVALUATION);
+      evaluate = false;
+    }
+  } else {
+    double3 radial = make_double3(dx, dy, dz);
+    if (types.x == static_cast<int>(GeoForce::Geometry::CYLINDER)) {
+      const double axialDistance =
+          normal.x * dx + normal.y * dy + normal.z * dz;
+      radial = make_double3(dx - axialDistance * normal.x,
+                            dy - axialDistance * normal.y,
+                            dz - axialDistance * normal.z);
+    }
+
+    // JEG261019: Squaring perpendicular components avoids cancellation near the
+    // cylinder axis. CHARMM suppresses both energy and gradient near the axis
+    // or sphere center, so apply the cutoff before activation or deviation.
+    const double radiusSquared =
+        radial.x * radial.x + radial.y * radial.y + radial.z * radial.z;
+    if (!isfinite(radiusSquared)) {
+      atomicOr(error, NONFINITE_EVALUATION);
+      evaluate = false;
+    } else if (radiusSquared <= 1.0e-10)
+      evaluate = false;
+    else {
+      coordinate = sqrt(radiusSquared);
+      coordinateGradient = make_double3(
+          radial.x / coordinate, radial.y / coordinate, radial.z / coordinate);
+    }
+  }
+
+  if (evaluate) {
+    const double deviation = coordinate - offset;
+    const bool active =
+        symmetric ||
+        ((types.y == static_cast<int>(GeoForce::Activation::INSIDE)) &&
+         (deviation > 0.0)) ||
+        ((types.y == static_cast<int>(GeoForce::Activation::OUTSIDE)) &&
+         (deviation < 0.0));
+
+    if (!isfinite(deviation))
+      atomicOr(error, NONFINITE_EVALUATION);
+    else if (active && (deviation != 0.0)) {
+      const double derivative = forceConstant * deviation;
+      const double orientedDerivative = derivative * derivativeSign;
+      gradient = make_double3(orientedDerivative * coordinateGradient.x,
+                              orientedDerivative * coordinateGradient.y,
+                              orientedDerivative * coordinateGradient.z);
+
+      // JEG261019: CHARMM's harmonic energy is 0.5 * K * deviation^2.
+      // derivative already contains one factor of K.
+      if constexpr (calcEnergy)
+        energy = 0.5 * derivative * deviation;
+    }
+  }
+
+  if (!isfinite(gradient.x) || !isfinite(gradient.y) || !isfinite(gradient.z) ||
+      !isfinite(energy)) {
+    atomicOr(error, NONFINITE_EVALUATION);
+  }
+
+  return;
+}
+
 template <typename AT, typename CT, int blockSize, bool calcEnergy>
 __global__ static void EvaluateGeometricTermsKernel(
     double3 *__restrict__ membershipGradients,
-    double *__restrict__ termEnergies, int *__restrict__ error,
+    double *__restrict__ termEnergies, double3 *__restrict__ rcmCenters,
+    double3 *__restrict__ rcmCenterGradients, int *__restrict__ error,
     const float4 *__restrict__ xyzq, const int *__restrict__ atomIndices,
+    const double *__restrict__ masses,
     const std::size_t *__restrict__ termOffsets,
     const int4 *__restrict__ termTypes, const double3 *__restrict__ origins,
     const double3 *__restrict__ directions, const double *__restrict__ offsets,
-    const double *__restrict__ forceConstants, const std::size_t numTerms) {
+    const double *__restrict__ forceConstants,
+    const double *__restrict__ selectedMassTotals,
+    const std::size_t *__restrict__ rcmChunkOffsets,
+    const double3 *__restrict__ rcmPartials, const std::size_t numTerms) {
   using GeoForce = GeometricRestraintForce<AT, CT>;
   __shared__ BlockReduceSumStorage<double, blockSize, 1> cache;
 
   for (std::size_t i = blockIdx.x; i < numTerms; i += gridDim.x) {
     const int4 types = termTypes[i];
+    const bool rcm = types.z == static_cast<int>(GeoForce::SelectionMode::RCM);
     const bool supportedGeometry =
         (types.x == static_cast<int>(GeoForce::Geometry::PLANE)) ||
         (types.x == static_cast<int>(GeoForce::Geometry::CYLINDER)) ||
         (types.x == static_cast<int>(GeoForce::Geometry::SPHERE));
     const bool supported =
         supportedGeometry &&
-        (types.z == static_cast<int>(GeoForce::SelectionMode::ATOMWISE)) &&
+        (rcm ||
+         (types.z == static_cast<int>(GeoForce::SelectionMode::ATOMWISE))) &&
         (types.w == static_cast<int>(GeoForce::PotentialType::HARMONIC));
     if (!supported && (threadIdx.x == 0))
       atomicOr(error, UNSUPPORTED_TERM);
 
-    const double3 origin = origins[i];
-    const double3 normal = directions[i];
-    const double forceConstant = forceConstants[i];
-    const double offset = offsets[i];
-    double partialEnergy[1] = {0.0};
-
-    for (std::size_t j = termOffsets[i] + threadIdx.x; j < termOffsets[i + 1];
-         j += blockDim.x) {
-      double3 gradient = make_double3(0.0, 0.0, 0.0);
-      double energy = 0.0;
-
-      if (supported && (forceConstant != 0.0)) {
-        const float4 position = xyzq[atomIndices[j]];
-
-        // JEG26107: All geometries use raw Cartesian displacement, without P1
-        // imaging.
-        const double dx = static_cast<double>(position.x) - origin.x;
-        const double dy = static_cast<double>(position.y) - origin.y;
-        const double dz = static_cast<double>(position.z) - origin.z;
-        const bool symmetric =
-            types.y == static_cast<int>(GeoForce::Activation::SYMMETRIC);
-        double coordinate = 0.0;
-        double derivativeSign = 1.0;
-        double3 coordinateGradient = normal;
-        bool evaluate = true;
-
-        if (types.x == static_cast<int>(GeoForce::Geometry::PLANE)) {
-          // JEG261007: Preserve the plane arithmetic and exact-zero +normal
-          // tie.
-          const double signedDistance =
-              normal.x * dx + normal.y * dy + normal.z * dz;
-          coordinate = (symmetric) ? signedDistance : fabs(signedDistance);
-          derivativeSign = (!symmetric && (signedDistance < 0.0)) ? -1.0 : 1.0;
-          if (!isfinite(signedDistance)) {
-            atomicOr(error, NONFINITE_EVALUATION);
-            evaluate = false;
-          }
-        } else {
-          double3 radial = make_double3(dx, dy, dz);
-          if (types.x == static_cast<int>(GeoForce::Geometry::CYLINDER)) {
-            const double axialDistance =
-                normal.x * dx + normal.y * dy + normal.z * dz;
-            radial = make_double3(dx - axialDistance * normal.x,
-                                  dy - axialDistance * normal.y,
-                                  dz - axialDistance * normal.z);
-          }
-
-          // JEG261007: Square the perpendicular components to preserve
-          // precision near the axis. Subtracting squared lengths can lose the
-          // radial distance to cancellation and incorrectly suppress a nonzero
-          // contribution.
-          const double radiusSquared =
-              radial.x * radial.x + radial.y * radial.y + radial.z * radial.z;
-          if (!isfinite(radiusSquared)) {
-            atomicOr(error, NONFINITE_EVALUATION);
-            evaluate = false;
-          } else if (radiusSquared <= 1.0e-10) {
-            // JEG261007: CHARMM suppresses both energy and force near the axis
-            // or center before applying activation. Preserve that order.
-            evaluate = false;
-          } else {
-            coordinate = sqrt(radiusSquared);
-            coordinateGradient =
-                make_double3(radial.x / coordinate, radial.y / coordinate,
-                             radial.z / coordinate);
-          }
+    if (rcm) {
+      if (threadIdx.x == 0) {
+        double3 weighted = make_double3(0.0, 0.0, 0.0);
+        for (std::size_t chunk = rcmChunkOffsets[i];
+             chunk < rcmChunkOffsets[i + 1]; chunk++) {
+          const double3 partial = rcmPartials[chunk];
+          weighted.x += partial.x;
+          weighted.y += partial.y;
+          weighted.z += partial.z;
         }
 
-        if (evaluate) {
-          const double deviation = coordinate - offset;
-          const bool active =
-              symmetric ||
-              ((types.y == static_cast<int>(GeoForce::Activation::INSIDE)) &&
-               (deviation > 0.0)) ||
-              ((types.y == static_cast<int>(GeoForce::Activation::OUTSIDE)) &&
-               (deviation < 0.0));
+        // JEG261019: CHARMM divides the signed mass-weighted coordinate sum by
+        // the signed total mass. Divide directly because forming a reciprocal
+        // first can overflow for tiny totals. Retain the raw center for virial
+        // construction; no periodic image shift if applied.
+        const double total = selectedMassTotals[i];
+        const double3 center = make_double3(
+            weighted.x / total, weighted.y / total, weighted.z / total);
 
-          if (!isfinite(deviation))
-            atomicOr(error, NONFINITE_EVALUATION);
-          else if (active && (deviation != 0.0)) {
-            // JEG261006: Harmonic potential and energetic gradient
-            const double derivative = forceConstant * deviation;
-            const double orientedDerivative = derivative * derivativeSign;
-            gradient = make_double3(orientedDerivative * coordinateGradient.x,
-                                    orientedDerivative * coordinateGradient.y,
-                                    orientedDerivative * coordinateGradient.z);
-            if constexpr (calcEnergy)
-              energy = 0.5 * derivative * deviation;
-          }
+        double3 gradient = make_double3(0.0, 0.0, 0.0);
+        double energy = 0.0;
+
+        if (!isfinite(center.x) || !isfinite(center.y) || !isfinite(center.z))
+          atomicOr(error, NONFINITE_EVALUATION);
+        else if (supported) {
+          EvaluateGeometricPoint<AT, CT, calcEnergy>(
+              gradient, energy, error, center, types, origins[i], directions[i],
+              offsets[i], forceConstants[i]);
         }
+
+        rcmCenters[i] = center;
+        rcmCenterGradients[i] = gradient;
+        termEnergies[i] = energy;
+      }
+      __syncthreads();
+
+      const double3 centerGradient = rcmCenterGradients[i];
+      const double total = selectedMassTotals[i];
+      for (std::size_t j = termOffsets[i] + threadIdx.x; j < termOffsets[i + 1];
+           j += blockDim.x) {
+        const double fraction = masses[atomIndices[j]] / total;
+        const double3 gradient = make_double3(fraction * centerGradient.x,
+                                              fraction * centerGradient.y,
+                                              fraction * centerGradient.z);
+        if (!isfinite(gradient.x) || !isfinite(gradient.y) ||
+            !isfinite(gradient.z)) {
+          atomicOr(error, NONFINITE_EVALUATION);
+        }
+
+        membershipGradients[j] = gradient;
+      }
+    } else {
+      double partialEnergy[1] = {0.0};
+
+      for (std::size_t j = termOffsets[i] + threadIdx.x; j < termOffsets[i + 1];
+           j += blockDim.x) {
+        double3 gradient = make_double3(0.0, 0.0, 0.0);
+        double energy = 0.0;
+
+        if (supported) {
+          const float4 position = xyzq[atomIndices[j]];
+
+          EvaluateGeometricPoint<AT, CT, calcEnergy>(
+              gradient, energy, error,
+              make_double3(position.x, position.y, position.z), types,
+              origins[i], directions[i], offsets[i], forceConstants[i]);
+        }
+
+        membershipGradients[j] = gradient;
+        partialEnergy[0] += energy;
       }
 
-      if (!isfinite(gradient.x) || !isfinite(gradient.y) ||
-          !isfinite(gradient.z) || !isfinite(energy))
-        atomicOr(error, NONFINITE_EVALUATION);
-
-      membershipGradients[j] = gradient;
-      partialEnergy[0] += energy;
-    }
-
-    BlockReduceSum<double, blockSize, 1>(partialEnergy, cache);
-    if (threadIdx.x == 0) {
-      termEnergies[i] = partialEnergy[0];
-      if (!isfinite(partialEnergy[0]))
-        atomicOr(error, NONFINITE_EVALUATION);
+      BlockReduceSum<double, blockSize, 1>(partialEnergy, cache);
+      if (threadIdx.x == 0) {
+        rcmCenters[i] = make_double3(0.0, 0.0, 0.0);
+        rcmCenterGradients[i] = make_double3(0.0, 0.0, 0.0);
+        termEnergies[i] = partialEnergy[0];
+        if (!isfinite(partialEnergy[0]))
+          atomicOr(error, NONFINITE_EVALUATION);
+      }
     }
     __syncthreads();
   }
@@ -420,8 +586,8 @@ __global__ static void StageGeometricOutputKernel(
         continue;
       }
       // JEG261006: Check before narrowing as well as after rounding to CT. In
-      // particular, CT=float can round an otherwise representable value to the
-      // upper bound
+      // particular, CT=float can round an otherwise representable value to
+      // the upper bound
       if ((gradient[k] < -upperBound) || (gradient[k] >= upperBound)) {
         atomicOr(error, UNREPRESENTABLE_GRADIENT);
         valid = false;
@@ -490,7 +656,7 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
                     "Coordinate-charge array must not be null");
   this->syncDeviceData();
 
-  constexpr unsigned int numThreads = 256;
+  constexpr unsigned int numThreads = RCM_CHUNK_SIZE;
   const unsigned int termBlocks = static_cast<unsigned int>(
       std::min<std::size_t>(this->getNumTerms(), 65535));
   const unsigned int atomBlocks =
@@ -501,19 +667,38 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
   double *energy = m_EnergyVirial->getEnergyPointer("mmfp");
   cudaCheck(cudaMemsetAsync(error, 0, sizeof(int), *m_Stream));
 
+  if (m_RcmChunkBegins.size() != 0) {
+    const unsigned int chunkBlocks = static_cast<unsigned int>(
+        std::min<std::size_t>(m_RcmChunkBegins.size(), 65535));
+    cudaCheckLaunch(BuildRcmPartialsKernel<numThreads>
+                    <<<chunkBlocks, numThreads, 0, *m_Stream>>>(
+                        m_RcmPartials.getDeviceArray().data(), error, xyzq,
+                        m_AtomIndices.getDeviceArray().data(),
+                        m_Masses.getDeviceArray().data(),
+                        m_RcmChunkBegins.getDeviceArray().data(),
+                        m_RcmChunkEnds.getDeviceArray().data(),
+                        m_RcmChunkBegins.size()););
+  }
+
   if (calcEnergy) {
     cudaCheckLaunch(
         EvaluateGeometricTermsKernel<AT, CT, numThreads, true>
         <<<termBlocks, numThreads, 0, *m_Stream>>>(
             m_MembershipGradients.getDeviceArray().data(),
-            m_TermEnergies.getDeviceArray().data(), error, xyzq,
+            m_TermEnergies.getDeviceArray().data(),
+            m_RcmCenters.getDeviceArray().data(),
+            m_RcmCenterGradients.getDeviceArray().data(), error, xyzq,
             m_AtomIndices.getDeviceArray().data(),
+            m_Masses.getDeviceArray().data(),
             m_TermOffsets.getDeviceArray().data(),
             m_TermTypes.getDeviceArray().data(),
             m_Origins.getDeviceArray().data(),
             m_Directions.getDeviceArray().data(),
             m_Offsets.getDeviceArray().data(),
-            m_ForceConstants.getDeviceArray().data(), this->getNumTerms()));
+            m_ForceConstants.getDeviceArray().data(),
+            m_SelectedMassTotals.getDeviceArray().data(),
+            m_RcmChunkOffsets.getDeviceArray().data(),
+            m_RcmPartials.getDeviceArray().data(), this->getNumTerms()));
     cudaCheckLaunch(
         StageGeometricOutputKernel<AT, CT, true>
         <<<atomBlocks, numThreads, 0, *m_Stream>>>(
@@ -529,14 +714,20 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
         EvaluateGeometricTermsKernel<AT, CT, numThreads, false>
         <<<termBlocks, numThreads, 0, *m_Stream>>>(
             m_MembershipGradients.getDeviceArray().data(),
-            m_TermEnergies.getDeviceArray().data(), error, xyzq,
+            m_TermEnergies.getDeviceArray().data(),
+            m_RcmCenters.getDeviceArray().data(),
+            m_RcmCenterGradients.getDeviceArray().data(), error, xyzq,
             m_AtomIndices.getDeviceArray().data(),
+            m_Masses.getDeviceArray().data(),
             m_TermOffsets.getDeviceArray().data(),
             m_TermTypes.getDeviceArray().data(),
             m_Origins.getDeviceArray().data(),
             m_Directions.getDeviceArray().data(),
             m_Offsets.getDeviceArray().data(),
-            m_ForceConstants.getDeviceArray().data(), this->getNumTerms()));
+            m_ForceConstants.getDeviceArray().data(),
+            m_SelectedMassTotals.getDeviceArray().data(),
+            m_RcmChunkOffsets.getDeviceArray().data(),
+            m_RcmPartials.getDeviceArray().data(), this->getNumTerms()));
     cudaCheckLaunch(
         StageGeometricOutputKernel<AT, CT, false>
         <<<atomBlocks, numThreads, 0, *m_Stream>>>(
@@ -606,14 +797,15 @@ void GeometricRestraintForce<AT, CT>::appendTerm(
     const std::vector<int> &atomIndices, const Geometry geometry,
     const std::array<double, 3> &origin, const std::array<double, 3> &direction,
     const double forceConstant, const double offset,
-    const Activation activation) {
+    const Activation activation, const SelectionMode selectionMode) {
   APOCHARMM_REQUIRE(!atomIndices.empty(), ApoCharmmErrorCode::InvalidArgument,
                     "Selection must contain at least one atom; observed 0");
-  APOCHARMM_REQUIRE(
-      atomIndices.size() <=
-          std::numeric_limits<std::size_t>::max() - m_AtomIndices.size(),
-      ApoCharmmErrorCode::InvalidArgument,
-      "Adding the selection would exceed the membership representation limit");
+  APOCHARMM_REQUIRE(atomIndices.size() <=
+                        std::numeric_limits<std::size_t>::max() -
+                            m_AtomIndices.size(),
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "Adding the selection would exceed the membership "
+                    "representation limit");
   for (const int i : atomIndices) {
     APOCHARMM_REQUIRE(
         (i >= 0) && (i < m_NumAtoms), ApoCharmmErrorCode::InvalidArgument,
@@ -657,6 +849,17 @@ void GeometricRestraintForce<AT, CT>::appendTerm(
                           direction[2] / norm);
   }
 
+  APOCHARMM_REQUIRE((selectionMode == SelectionMode::ATOMWISE) ||
+                        (selectionMode == SelectionMode::RCM),
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "Selection mode must be ATOMWISE or RCM; observed " +
+                        std::to_string(static_cast<int>(selectionMode)));
+  const double selectedMassTotal =
+      (selectionMode == SelectionMode::RCM)
+          ? this->validateRcmMasses(m_Masses.getHostArray(), atomIndices, 0,
+                                    atomIndices.size())
+          : 0.0;
+
   // JEG261002: Build replacements first so partial host allocation cannot
   // install a term
   std::vector<int> indices = m_AtomIndices.getHostArray();
@@ -666,17 +869,19 @@ void GeometricRestraintForce<AT, CT>::appendTerm(
   std::vector<double3> directions = m_Directions.getHostArray();
   std::vector<double> offsets = m_Offsets.getHostArray();
   std::vector<double> forceConstants = m_ForceConstants.getHostArray();
+  std::vector<double> selectedMassTotals = m_SelectedMassTotals.getHostArray();
 
   indices.insert(indices.end(), atomIndices.begin(), atomIndices.end());
   termOffsets.push_back(indices.size());
   types.push_back(make_int4(static_cast<int>(geometry),
                             static_cast<int>(activation),
-                            static_cast<int>(SelectionMode::ATOMWISE),
+                            static_cast<int>(selectionMode),
                             static_cast<int>(PotentialType::HARMONIC)));
   origins.push_back(make_double3(origin[0], origin[1], origin[2]));
   directions.push_back(normal);
   offsets.push_back(offset);
   forceConstants.push_back(forceConstant);
+  selectedMassTotals.push_back(selectedMassTotal);
 
   m_AtomIndices.getHostArray().swap(indices);
   m_TermOffsets.getHostArray().swap(termOffsets);
@@ -685,9 +890,53 @@ void GeometricRestraintForce<AT, CT>::appendTerm(
   m_Directions.getHostArray().swap(directions);
   m_Offsets.getHostArray().swap(offsets);
   m_ForceConstants.getHostArray().swap(forceConstants);
+  m_SelectedMassTotals.getHostArray().swap(selectedMassTotals);
   m_DeviceDataDirty = true;
 
   return;
+}
+
+template <typename AT, typename CT>
+void GeometricRestraintForce<AT, CT>::validateMasses(
+    const std::vector<double> &masses) const {
+  APOCHARMM_REQUIRE(masses.size() == static_cast<std::size_t>(m_NumAtoms),
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "Mass count mismatch; expected " +
+                        std::to_string(m_NumAtoms) + ", observed " +
+                        std::to_string(masses.size()));
+
+  for (std::size_t i = 0; i < masses.size(); i++) {
+    APOCHARMM_REQUIRE(
+        std::isfinite(masses[i]), ApoCharmmErrorCode::InvalidArgument,
+        "Mass at atom index " + std::to_string(i) +
+            " must be finite; observed " + std::to_string(masses[i]));
+  }
+
+  return;
+}
+
+template <typename AT, typename CT>
+double GeometricRestraintForce<AT, CT>::validateRcmMasses(
+    const std::vector<double> &masses, const std::vector<int> &indices,
+    const std::size_t begin, const std::size_t end) const {
+  double total = 0.0;
+
+  for (std::size_t i = begin; i < end; i++)
+    total += masses[indices[i]];
+
+  APOCHARMM_REQUIRE(std::isfinite(total) && (total != 0.0),
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "RCM total mass must be finite and nonzero; observed " +
+                        std::to_string(total));
+
+  for (std::size_t i = begin; i < end; i++) {
+    APOCHARMM_REQUIRE(std::isfinite(masses[indices[i]] / total),
+                      ApoCharmmErrorCode::InvalidArgument,
+                      "RCM mass fraction must be finite at atom index " +
+                          std::to_string(indices[i]));
+  }
+
+  return total;
 }
 
 template <typename AT, typename CT>
@@ -708,11 +957,33 @@ void GeometricRestraintForce<AT, CT>::syncDeviceData(void) {
   for (std::size_t member = 0; member < m_AtomIndices.size(); member++)
     memberships[positions[m_AtomIndices[member]]++] = member;
 
+  // JEG261019: Chunk sizes bound individual reduction work, never term size.
+  // Atomwise terms occupy empty chunk ranges and never access masses.
+  std::vector<std::size_t> chunkOffsets(m_TermTypes.size() + 1, 0);
+  std::vector<std::size_t> chunkBegins, chunkEnds;
+  for (std::size_t term = 0; term < m_TermTypes.size(); term++) {
+    if (m_TermTypes[term].z == static_cast<int>(SelectionMode::RCM)) {
+      const std::size_t end = m_TermOffsets[term + 1];
+      std::size_t begin = m_TermOffsets[term];
+      while (begin < end) {
+        const std::size_t count =
+            std::min<std::size_t>(end - begin, RCM_CHUNK_SIZE);
+        chunkBegins.push_back(begin);
+        chunkEnds.push_back(begin + count);
+        begin += count;
+      }
+    }
+    chunkOffsets[term + 1] = chunkBegins.size();
+  }
+
   m_AtomOffsets.getHostArray().swap(atomOffsets);
   m_AtomMemberships.getHostArray().swap(memberships);
+  m_RcmChunkOffsets.getHostArray().swap(chunkOffsets);
+  m_RcmChunkBegins.getHostArray().swap(chunkBegins);
+  m_RcmChunkEnds.getHostArray().swap(chunkEnds);
 
-  // JEG261002: CudaContainer modifiers above deliberately changed only the host
-  // mirrors
+  // JEG261002: CudaContainer modifiers above deliberately changed only the
+  // host mirrors
   const auto upload = [](auto &container) -> void {
     container.resize(container.size());
     container.transferToDevice();
@@ -726,11 +997,18 @@ void GeometricRestraintForce<AT, CT>::syncDeviceData(void) {
   upload(m_Directions);
   upload(m_Offsets);
   upload(m_ForceConstants);
+  upload(m_SelectedMassTotals);
+  upload(m_RcmChunkOffsets);
+  upload(m_RcmChunkBegins);
+  upload(m_RcmChunkEnds);
   upload(m_AtomOffsets);
   upload(m_AtomMemberships);
 
   m_MembershipGradients.resize(m_AtomIndices.size());
   m_TermEnergies.resize(m_TermTypes.size());
+  m_RcmPartials.resize(m_RcmChunkBegins.size());
+  m_RcmCenters.resize(m_TermTypes.size());
+  m_RcmCenterGradients.resize(m_TermTypes.size());
 
   m_DeviceDataDirty = false;
 

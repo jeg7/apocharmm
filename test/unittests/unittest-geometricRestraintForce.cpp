@@ -35,6 +35,8 @@ namespace {
 
 template <typename CT>
 using GeoForce = GeometricRestraintForce<long long int, CT>;
+constexpr double QUIET_NAN = std::numeric_limits<double>::quiet_NaN();
+constexpr double INF = std::numeric_limits<double>::infinity();
 
 constexpr int NUM_ATOMS = 12;
 constexpr double INV_FORCE_SCALE_TEST = 1.0 / static_cast<double>(1LL << 40);
@@ -214,9 +216,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceConstruction", "[mmfp]", float,
   }
 
   SECTION("NonfiniteMasses") {
-    for (const double mass : {std::numeric_limits<double>::quiet_NaN(),
-                              std::numeric_limits<double>::infinity(),
-                              -std::numeric_limits<double>::infinity()}) {
+    for (const double mass : {QUIET_NAN, INF, -INF}) {
       psf->getMasses()[0] = mass;
       apo_test::CheckApoCharmmError(
           [&](void) -> void {
@@ -359,7 +359,6 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceParameterValidation", "[mmfp]",
   AtomSelection selection(NUM_ATOMS);
   selection.set(0);
   force.addPlane(selection, ORIGIN, X_DIRECTION, 2.0, 2.0, A::SYMMETRIC);
-  const double bad = std::numeric_limits<double>::quiet_NaN();
 
   SECTION("ValidityPlaneZeroDirection") {
     apo_test::CheckApoCharmmError(
@@ -374,7 +373,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceParameterValidation", "[mmfp]",
   SECTION("NonfiniteDirection") {
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
-          force.addPlane(selection, ORIGIN, {bad, 0.0, 1.0}, 2.0);
+          force.addPlane(selection, ORIGIN, {QUIET_NAN, 0.0, 1.0}, 2.0);
           return;
         },
         ApoCharmmErrorCode::InvalidArgument,
@@ -384,7 +383,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceParameterValidation", "[mmfp]",
   SECTION("NonfiniteOrigin") {
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
-          force.addPlane(selection, {bad, 0.0, 0.0}, X_DIRECTION, 2.0);
+          force.addPlane(selection, {QUIET_NAN, 0.0, 0.0}, X_DIRECTION, 2.0);
           return;
         },
         ApoCharmmErrorCode::InvalidArgument,
@@ -394,21 +393,21 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceParameterValidation", "[mmfp]",
   SECTION("NonfiniteForceConstant") {
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
-          force.addPlane(selection, ORIGIN, X_DIRECTION, bad);
+          force.addPlane(selection, ORIGIN, X_DIRECTION, QUIET_NAN);
           return;
         },
         ApoCharmmErrorCode::InvalidArgument,
-        "Force constant must be finite; observed " + std::to_string(bad));
+        "Force constant must be finite; observed " + std::to_string(QUIET_NAN));
   }
 
   SECTION("NonfiniteOffset") {
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
-          force.addPlane(selection, ORIGIN, X_DIRECTION, 2.0, bad);
+          force.addPlane(selection, ORIGIN, X_DIRECTION, 2.0, QUIET_NAN);
           return;
         },
         ApoCharmmErrorCode::InvalidArgument,
-        "Offset must be finite; observed " + std::to_string(bad));
+        "Offset must be finite; observed " + std::to_string(QUIET_NAN));
   }
 
   SECTION("InvalidCastCreatedActivation") {
@@ -925,8 +924,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceResetClearAndInitialize", "[mmfp]",
       },
       ApoCharmmErrorCode::InvalidArgument,
       "Box-dimension array size mismatch; expected 3, observed 2");
-  for (const double bad : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
-                           std::numeric_limits<double>::infinity()}) {
+  for (const double bad : {0.0, -1.0, QUIET_NAN, INF}) {
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
           force.setBoxDimensions({bad, 30.0, 40.0});
@@ -1864,7 +1862,6 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRadialTypedInputsAndValidation",
     AtomSelection mismatch(NUM_ATOMS + 1, AtomSelection::InitialValue::ALL);
     const AtomReference outOfRange(MakePsf(NUM_ATOMS + 1), NUM_ATOMS);
     const AtomReference atom(psf, 0);
-    const double bad = std::numeric_limits<double>::quiet_NaN();
 
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
@@ -1892,7 +1889,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRadialTypedInputsAndValidation",
 
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
-          add(atom, {bad, 0.0, 0.0});
+          add(atom, {QUIET_NAN, 0.0, 0.0});
           return;
         },
         ApoCharmmErrorCode::InvalidArgument,
@@ -1900,19 +1897,19 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRadialTypedInputsAndValidation",
 
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
-          add(atom, ORIGIN, bad);
+          add(atom, ORIGIN, QUIET_NAN);
           return;
         },
         ApoCharmmErrorCode::InvalidArgument,
-        "Force constant must be finite; observed " + std::to_string(bad));
+        "Force constant must be finite; observed " + std::to_string(QUIET_NAN));
 
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
-          add(atom, ORIGIN, 2.0, bad);
+          add(atom, ORIGIN, 2.0, QUIET_NAN);
           return;
         },
         ApoCharmmErrorCode::InvalidArgument,
-        "Offset must be finite; observed " + std::to_string(bad));
+        "Offset must be finite; observed " + std::to_string(QUIET_NAN));
 
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
@@ -1933,7 +1930,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRadialTypedInputsAndValidation",
 
       apo_test::CheckApoCharmmError(
           [&](void) -> void {
-            force.addCylinder(atom, ORIGIN, {bad, 0.0, 1.0}, 2.0);
+            force.addCylinder(atom, ORIGIN, {QUIET_NAN, 0.0, 1.0}, 2.0);
             return;
           },
           ApoCharmmErrorCode::InvalidArgument,
@@ -2201,6 +2198,1389 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRadialTransactionalEvaluation",
           "MMFP gradient exceeds the fixed-point force range");
       CheckOutput("radial conversion failure preserves outputs",
                   ReadOutput(force), previous.energy, previous.physicalForces);
+    }
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRcmOracle", "[mmfp][rcm]", float,
+                   double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+  struct Case {
+    const char *id;
+    int geometry; // 0=plane, 1=cylinder, 2=sphere
+    std::vector<std::array<double, 3>> positions;
+    std::vector<double> masses;
+    std::array<double, 3> origin, direction;
+    double energy, energyAbsoluteTolerance;
+    std::vector<std::array<double, 3>> physicalForces;
+    bool reorderedSelection;
+  };
+
+  // JEG261019: CHARMM forms R = sum(m_i * r_i) / sum(m_i) from raw coordinates
+  // and distributes -grad_R(E) by the signed mass fractions m_i / sum(m_i).
+  // These checks cover mass signs, geometry, selection order, and boundary
+  // crossings. Unselected atoms receive no force. All coordinates are exactly
+  // representable as float4, so input quantization adds no error.
+  const std::vector<Case> cases = {
+      {"rcm_one_atom",
+       0,
+       {{3, 0, 0}},
+       {1.0},
+       {0.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       1,
+       4.9999999999999998e-07,
+       {{-2, 0, 0}},
+       false},
+      {"rcm_equal_masses",
+       0,
+       {{1, 0, 0}, {5, 0, 0}},
+       {2.0, 2.0},
+       {0.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       1,
+       4.9999999999999998e-07,
+       {{-1, 0, 0}, {-1, 0, 0}},
+       false},
+      {"rcm_unequal_masses",
+       0,
+       {{1, 0, 0}, {5, 0, 0}},
+       {1.0, 3.0},
+       {0.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       4,
+       4.9999999999999998e-07,
+       {{-1, 0, 0}, {-3, 0, 0}},
+       false},
+      {"rcm_zero_member_positive_total",
+       0,
+       {{1, 0, 0}, {5, 0, 0}},
+       {0.0, 2.0},
+       {0.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       9,
+       4.9999999999999998e-07,
+       {{0, 0, 0}, {-6, 0, 0}},
+       false},
+      {"rcm_negative_member_positive_total",
+       0,
+       {{1, 0, 0}, {5, 0, 0}},
+       {-1.0, 3.0},
+       {0.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       25,
+       5.0000000000000004e-06,
+       {{5, 0, 0}, {-15, 0, 0}},
+       false},
+      {"rcm_negative_total_mass",
+       0,
+       {{1, 0, 0}, {5, 0, 0}},
+       {1.0, -3.0},
+       {0.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       25,
+       5.0000000000000004e-06,
+       {{5, 0, 0}, {-15, 0, 0}},
+       false},
+      {"rcm_selection_order_ascending",
+       0,
+       {{1, 0, 0}, {5, 0, 0}, {9, 0, 0}},
+       {1.0, 3.0, 2.0},
+       {0.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       13.4444444,
+       4.9999999999999998e-08,
+       {{-1.2222222222000001, 0, 0},
+        {-3.6666666666999999, 0, 0},
+        {-2.4444444444000002, 0, 0}},
+       false},
+      {"rcm_selection_order_reordered_expression",
+       0,
+       {{1, 0, 0}, {5, 0, 0}, {9, 0, 0}},
+       {1.0, 3.0, 2.0},
+       {0.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       13.4444444,
+       4.9999999999999998e-08,
+       {{-1.2222222222000001, 0, 0},
+        {-3.6666666666999999, 0, 0},
+        {-2.4444444444000002, 0, 0}},
+       true},
+      {"rcm_group_primary_cell",
+       2,
+       {{1, 1, 1}, {2, 2, 2}, {3, 3, 3}},
+       {2.0, 2.0, 2.0},
+       {0, 0, 0},
+       {0.0, 0.0, 0.0},
+       2.1435935399999999,
+       5.0000000000000001e-09,
+       {{-0.56353297440000005, -0.56353297440000005, -0.56353297440000005},
+        {-0.56353297440000005, -0.56353297440000005, -0.56353297440000005},
+        {-0.56353297440000005, -0.56353297440000005, -0.56353297440000005}},
+       false},
+      {"rcm_group_straddles_x_boundary",
+       2,
+       {{9.5, 0, 0}, {-9.5, 0, 0}},
+       {2.0, 2.0},
+       {0, 0, 0},
+       {0.0, 0.0, 0.0},
+       0,
+       4.9999999999999998e-07,
+       {{0, 0, 0}, {0, 0, 0}},
+       false},
+      {"rcm_group_straddles_xyz_boundaries",
+       2,
+       {{9.5, 14.5, 19.5}, {-9.5, -14.5, -19.5}},
+       {2.0, 2.0},
+       {0, 0, 0},
+       {0.0, 0.0, 0.0},
+       0,
+       4.9999999999999998e-07,
+       {{0, 0, 0}, {0, 0, 0}},
+       false},
+      {"r12_b022_rcm_plane_cross_x_boundary",
+       0,
+       {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
+       {2.0, 2.0},
+       {9.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       462.25,
+       5.0000000000000002e-05,
+       {{21.5, 0, 0}, {21.5, 0, 0}},
+       false},
+      {"r12_b022_rcm_cylinder_cross_x_boundary",
+       1,
+       {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
+       {2.0, 2.0},
+       {9.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       306.25,
+       5.0000000000000002e-05,
+       {{17.5, 0, 0}, {17.5, 0, 0}},
+       false},
+      {"r12_b022_rcm_sphere_cross_x_boundary",
+       2,
+       {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
+       {2.0, 2.0},
+       {9.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0},
+       306.25,
+       5.0000000000000002e-05,
+       {{17.5, 0, 0}, {17.5, 0, 0}},
+       false},
+      {"virial_rcm_planar",
+       0,
+       {{1, 0, 0}, {5, 0, 0}, {9, 0, 0}},
+       {1.0, 3.0, 2.0},
+       {0.0, 0.0, 0.0},
+       {1.0, 0.0, 0.0},
+       13.4444444,
+       4.9999999999999998e-08,
+       {{-1.2222222222000001, 0, 0},
+        {-3.6666666666999999, 0, 0},
+        {-2.4444444444000002, 0, 0}},
+       false},
+      {"virial_rcm_cylinder",
+       1,
+       {{1, 0, 0}, {5, 0, 0}, {9, 0, 0}},
+       {1.0, 3.0, 2.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 1.0},
+       13.4444444,
+       4.9999999999999998e-08,
+       {{-1.2222222222000001, 0, 0},
+        {-3.6666666666999999, 0, 0},
+        {-2.4444444444000002, 0, 0}},
+       false},
+      {"virial_rcm_sphere",
+       2,
+       {{1, 0, 0}, {5, 0, 0}, {9, 0, 0}},
+       {1.0, 3.0, 2.0},
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0},
+       13.4444444,
+       4.9999999999999998e-08,
+       {{-1.2222222222000001, 0, 0},
+        {-3.6666666666999999, 0, 0},
+        {-2.4444444444000002, 0, 0}},
+       false},
+      {"r11_b013_sph_rcm_center",
+       2,
+       {{0.25, -2.5, 3.75}, {2.25, -2.5, 3.75}},
+       {2.0, 2.0},
+       {1.25, -2.5, 3.75},
+       {0.0, 0.0, 0.0},
+       0,
+       4.9999999999999998e-07,
+       {{0, 0, 0}, {0, 0, 0}},
+       false},
+      {"r11_b014_cyl_rcm_axis",
+       1,
+       {{-1.0, 0.0, 5.0}, {1.0, 0.0, 5.0}},
+       {2.0, 2.0},
+       {0.0, 0.0, 0.0},
+       {0, 0, 1},
+       0,
+       4.9999999999999998e-07,
+       {{0, 0, 0}, {0, 0, 0}},
+       false}};
+
+  for (const Case &test : cases) {
+    INFO(test.id);
+
+    auto psf = MakePsf();
+    for (std::size_t i = 0; i < test.masses.size(); i++)
+      psf->getMasses()[i] = test.masses[i];
+
+    G force(psf);
+    force.initialize(NUM_ATOMS, BOX_DIMS);
+
+    AtomSelection selection(NUM_ATOMS);
+    const int selected = static_cast<int>(test.positions.size());
+    if (test.reorderedSelection) {
+      // JEG261019: AtomSelection is a set: insertion order must not affect the
+      // center or the forces on its members.
+      REQUIRE(selected == 3);
+      selection.set(2);
+      selection.set(0);
+      selection.set(1);
+    } else {
+      for (int i = 0; i < selected; i++)
+        selection.set(i);
+    }
+
+    if (test.geometry == 0) {
+      force.addPlane(selection, test.origin, test.direction, 2.0, 2.0,
+                     A::SYMMETRIC, S::RCM);
+    } else if (test.geometry == 1) {
+      force.addCylinder(selection, test.origin, test.direction, 2.0, 2.0,
+                        A::SYMMETRIC, S::RCM);
+    } else
+      force.addSphere(selection, test.origin, 2.0, 2.0, A::SYMMETRIC, S::RCM);
+
+    std::vector<float4> coordinates(NUM_ATOMS,
+                                    make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+    for (int i = 0; i < selected; i++) {
+      for (const double value : test.positions[i])
+        REQUIRE(static_cast<double>(static_cast<float>(value)) == value);
+      coordinates[i] =
+          make_float4(static_cast<float>(test.positions[i][0]),
+                      static_cast<float>(test.positions[i][1]),
+                      static_cast<float>(test.positions[i][2]), 0.0f);
+    }
+
+    // JEG261019: The expected decimal values have absolute and relative
+    // precision limits. Add a double-arithmetic allowance and, for force
+    // components, bounds for conversion to CT and nearest-integer fixed-point
+    // rounding. Exactly representable coordinates need no input-rounding
+    // allowance.
+    const auto checkScalar = [&](const double observed, const double expected,
+                                 const double absoluteTolerance,
+                                 const double relativeTolerance,
+                                 const bool isForce) -> void {
+      const double arithmetic = 32.0 * std::numeric_limits<double>::epsilon() *
+                                std::max(1.0, std::abs(expected));
+      const double conversion =
+          (isForce) ? 0.5 * INV_FORCE_SCALE_TEST +
+                          ((std::is_same<TestType, float>::value)
+                               ? 0.5 * std::numeric_limits<float>::epsilon() *
+                                     std::abs(expected)
+                               : 0.0)
+                    : 0.0;
+      CHECK(std::abs(observed - expected) <=
+            absoluteTolerance + relativeTolerance * std::abs(expected) +
+                arithmetic + conversion);
+      return;
+    };
+
+    for (const auto &box : {BOX_DIMS, std::vector<double>{24.0, 36.0, 48.0}}) {
+      force.setBoxDimensions(box);
+
+      const Output observed = Evaluate(force, coordinates);
+      checkScalar(observed.energy, test.energy, test.energyAbsoluteTolerance,
+                  2.2204460492503136e-16, false);
+      REQUIRE(observed.physicalForces.size() == NUM_ATOMS);
+
+      for (int i = 0; i < NUM_ATOMS; i++) {
+        INFO("atom=" << i);
+
+        const auto expected = (i < selected)
+                                  ? test.physicalForces[i]
+                                  : std::array<double, 3>{0.0, 0.0, 0.0};
+        const std::array<double, 3> actual = {observed.physicalForces[i].x,
+                                              observed.physicalForces[i].y,
+                                              observed.physicalForces[i].z};
+        for (int j = 0; j < 3; j++) {
+          INFO("component=" << j);
+          checkScalar(actual[j], expected[j], 1.0e-10, 4.4408920985006281e-16,
+                      true);
+        }
+      }
+    }
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRcmActivationAndSingleAtom",
+                   "[mmfp][rcm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  // JEG261019: A single selected atom with nonzero mass has R=r and mass
+  // fraction one, even for negative mass, so RCM must match atomwise
+  // evaluation. Apply the same geometry and activation rules to two coincident
+  // atoms and split the physical force in their 1:3 mass ratio. CHARMM's
+  // SYMMETRIC plane uses signed distance; its one-sided planes use absolute
+  // distance and the positive normal at zero. Cylinder-axis and sphere-center
+  // terms vanish.
+  for (const int geometry : {0, 1, 2}) {
+    for (const A activation : {A::SYMMETRIC, A::INSIDE, A::OUTSIDE}) {
+      for (const double offset : {-2.0, 2.0}) {
+        for (const double x : {-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0}) {
+          INFO("geometry=" << geometry
+                           << ", activation=" << static_cast<int>(activation)
+                           << ", D=" << offset << ", x=" << x);
+
+          const double q = ((geometry == 0) && (activation == A::SYMMETRIC))
+                               ? x
+                               : std::abs(x);
+          const double deviation = q - offset;
+          const bool active =
+              !((geometry != 0) && (x == 0.0)) &&
+              ((activation == A::SYMMETRIC) ||
+               ((activation == A::INSIDE) && (deviation > 0.0)) ||
+               ((activation == A::OUTSIDE) && (deviation < 0.0)));
+          const double derivative =
+              (((geometry == 0) && (activation == A::SYMMETRIC)) || (x >= 0.0))
+                  ? 1.0
+                  : -1.0;
+          const double energy = (active) ? deviation * deviation : 0.0;
+          const double physicalForce =
+              (active) ? -2.0 * deviation * derivative : 0.0;
+
+          auto psf = MakePsf();
+          psf->getMasses()[0] = -2.0;
+          G atomwise(psf), oneReference(psf), oneSelection(psf),
+              collective(psf);
+          const AtomReference atom(psf, 0);
+          AtomSelection single(NUM_ATOMS), pair(NUM_ATOMS);
+          single.set(0);
+          pair.set(0);
+          pair.set(1);
+
+          const auto add = [&](G &force, const auto &input,
+                               const S selectionMode) -> void {
+            if (geometry == 0) {
+              force.addPlane(input, ORIGIN, X_DIRECTION, 2.0, offset,
+                             activation, selectionMode);
+            } else if (geometry == 1) {
+              force.addCylinder(input, ORIGIN, {0.0, 0.0, 1.0}, 2.0, offset,
+                                activation, selectionMode);
+            } else {
+              force.addSphere(input, ORIGIN, 2.0, offset, activation,
+                              selectionMode);
+            }
+            return;
+          };
+
+          add(atomwise, atom, S::ATOMWISE);
+          add(oneReference, atom, S::RCM);
+          add(oneSelection, single, S::RCM);
+
+          std::vector<double> masses(NUM_ATOMS, 0.0);
+          masses[0] = 1.0;
+          masses[1] = 3.0;
+          collective.setMasses(masses);
+          add(collective, pair, S::RCM);
+
+          std::vector<float4> coordinates(NUM_ATOMS,
+                                          make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+          coordinates[0].x = static_cast<float>(x);
+          coordinates[1].x = static_cast<float>(x);
+
+          std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+          expected[0].x = physicalForce;
+
+          CheckOutput("one-atom atomwise control",
+                      Evaluate(atomwise, coordinates), energy, expected);
+          CheckOutput("one-atom RCM AtomReference",
+                      Evaluate(oneReference, coordinates), energy, expected);
+          CheckOutput("one-atom RCM AtomSelection",
+                      Evaluate(oneSelection, coordinates), energy, expected);
+
+          expected[0].x = 0.25 * physicalForce;
+          expected[1].x = 0.75 * physicalForce;
+
+          CheckOutput("collective activation and signed derivative",
+                      Evaluate(collective, coordinates), energy, expected);
+        }
+      }
+    }
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRcmBoundaryRotations", "[mmfp][rcm]",
+                   float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  // JEG261019: CHARMM forms the center from raw selected coordinates without
+  // unwrapping, then uses the raw center-reference displacement without minimum
+  // imaging. Rotate the checks through X, Y, and Z and cross several dimensions
+  // to verify that no coordinate component receives an implicit image shift.
+  auto psf = MakePsf();
+  psf->getMasses()[0] = psf->getMasses()[1] = 2.0;
+
+  AtomSelection pair(NUM_ATOMS);
+  pair.set(0);
+  pair.set(1);
+
+  for (const int axis : {0, 1, 2}) {
+    for (const int geometry : {0, 1, 2}) {
+      INFO("axis=" << axis << ", geometry=" << geometry);
+
+      G force(psf);
+      force.initialize(NUM_ATOMS, BOX_DIMS);
+
+      std::array<double, 3> origin = ORIGIN, normal = ORIGIN;
+      origin[axis] = BOX_DIMS[axis] * 0.5 - 1.0;
+      normal[(geometry == 1) ? (axis + 1) % 3 : axis] = 1.0;
+
+      if (geometry == 0)
+        force.addPlane(pair, origin, normal, 2.0, 2.0, A::SYMMETRIC, S::RCM);
+      else if (geometry == 1)
+        force.addCylinder(pair, origin, normal, 2.0, 2.0, A::SYMMETRIC, S::RCM);
+      else
+        force.addSphere(pair, origin, 2.0, 2.0, A::SYMMETRIC, S::RCM);
+
+      std::array<float, 3> first = {0.0f, 0.0f, 0.0f};
+      std::array<float, 3> second = first;
+      first[axis] = static_cast<float>(-BOX_DIMS[axis] * 0.5);
+      second[axis] = first[axis] - 1.0f;
+
+      std::vector<float4> coordinates(NUM_ATOMS,
+                                      make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+      coordinates[0] = make_float4(first[0], first[1], first[2], 0.0f);
+      coordinates[1] = make_float4(second[0], second[1], second[2], 0.0f);
+
+      const double separation = BOX_DIMS[axis] - 0.5;
+      const double deviation =
+          ((geometry == 0) ? -separation : separation) - 2.0;
+      const double memberForce = (geometry == 0) ? -deviation : deviation;
+
+      std::array<double, 3> component = ORIGIN;
+      component[axis] = memberForce;
+
+      std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+      expected[0] = expected[1] =
+          make_double3(component[0], component[1], component[2]);
+
+      CheckOutput("raw center-reference separation",
+                  Evaluate(force, coordinates), deviation * deviation,
+                  expected);
+    }
+  }
+
+  for (const int mask : {1, 2, 4, 7}) {
+    INFO("crossed-dimension mask=" << mask);
+
+    G force(psf);
+    force.initialize(NUM_ATOMS, BOX_DIMS);
+    force.addSphere(pair, ORIGIN, 2.0, 2.0, A::SYMMETRIC, S::RCM);
+
+    std::array<float, 3> positive = {0.0f, 0.0f, 0.0f};
+    for (int axis = 0; axis < 3; axis++) {
+      if ((mask & (1 << axis)) != 0)
+        positive[axis] = static_cast<float>(BOX_DIMS[axis] * 0.5 - 0.5);
+    }
+
+    std::vector<float4> coordinates(NUM_ATOMS,
+                                    make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+    coordinates[0] = make_float4(positive[0], positive[1], positive[2], 0.0f);
+    coordinates[1] =
+        make_float4(-positive[0], -positive[1], -positive[2], 0.0f);
+
+    CheckOutput("raw center of a boundary-crossing group is zero",
+                Evaluate(force, coordinates), 0.0,
+                std::vector<double3>(NUM_ATOMS, make_double3(0.0, 0.0, 0.0)));
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRcmNearZeroMassRepresentation",
+                   "[mmfp][rcm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+  struct Case {
+    const char *id;
+    double secondMass, sourceX, sourceForce1, sourceForce2;
+  };
+
+  // JEG261019: These small positive and negative selected totals are valid.
+  // Cancellation amplifies changes in the mass moments, so float4 rounding of
+  // the decimal coordinates changes the center appreciably. Check the original
+  // double coordinates and the coordinates stored by the native API separately.
+  const std::array<Case, 2> cases = {
+      {{"rcm_near_zero_total_mass_positive", -0.9999, 1.0001,
+        -2.0000000099999999, 1.99980001},
+       {"rcm_near_zero_total_mass_negative", -1.0001, 0.9999,
+        -2.0000000099999999, 2.0002000100999999}}};
+
+  for (const Case &test : cases) {
+    INFO(test.id);
+
+    const double total = 1.0 + test.secondMass;
+    REQUIRE(total != 0.0);
+
+    // JEG261019: Explicitly rounded products reproduce the raw double mass
+    // moments; volatile prevents host contraction with the subsequent addition.
+    const auto reference = [&](const double x) -> std::array<double, 3> {
+      const volatile double moment = test.secondMass * x;
+      const double center = (1.0 + moment) / total;
+      const double gradient = 2.0 * center;
+      return {center * center, -(1.0 / total) * gradient,
+              -(test.secondMass / total) * gradient};
+    };
+    const auto source = reference(test.sourceX);
+
+    CHECK(std::abs(source[0] - 1.00000001e-08) <=
+          4.9999999999999999e-17 + 2.2204460492503136e-16 * 1.00000001e-08);
+    CHECK(std::abs(source[1] - test.sourceForce1) <=
+          1.0e-10 + 4.4408920985006281e-16 * std::abs(test.sourceForce1));
+    CHECK(std::abs(source[2] - test.sourceForce2) <=
+          1.0e-10 + 4.4408920985006281e-16 * std::abs(test.sourceForce2));
+
+    const float storedX = static_cast<float>(test.sourceX);
+    REQUIRE(static_cast<double>(storedX) != test.sourceX);
+
+    const auto represented = reference(static_cast<double>(storedX));
+
+    // JEG261019: Float4 rounding can reverse the first force's sign after
+    // division by the small selected total. Compare each coordinate
+    // representation with its own expected force and retain the double-input
+    // precision bounds.
+    REQUIRE(std::abs(represented[1] - test.sourceForce1) > 1.0);
+
+    auto psf = MakePsf();
+    psf->getMasses()[0] = 1.0;
+    psf->getMasses()[1] = test.secondMass;
+
+    AtomSelection pair(NUM_ATOMS);
+    pair.set(0);
+    pair.set(1);
+
+    G force(psf);
+    force.addPlane(pair, ORIGIN, X_DIRECTION, 2.0, 0.0, A::SYMMETRIC, S::RCM);
+
+    std::vector<float4> coordinates(NUM_ATOMS,
+                                    make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+    coordinates[0].x = 1.0f;
+    coordinates[1].x = storedX;
+
+    std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+    expected[0].x = represented[1];
+    expected[1].x = represented[2];
+
+    const double magnitude =
+        std::max(std::abs(represented[1]), std::abs(represented[2]));
+    const double forceTolerance =
+        64.0 * std::numeric_limits<double>::epsilon() * magnitude +
+        0.5 * INV_FORCE_SCALE_TEST +
+        ((std::is_same<TestType, float>::value)
+             ? 0.5 * std::numeric_limits<float>::epsilon() * magnitude
+             : 0.0);
+
+    CheckOutput("actual float4 near-cancellation input",
+                Evaluate(force, coordinates), represented[0], expected,
+                64.0 * std::numeric_limits<double>::epsilon() * represented[0],
+                forceTolerance);
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRcmExtremeMasses", "[mmfp][rcm]",
+                   float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+  struct Case {
+    const char *id;
+    double mass;
+  };
+
+  // JEG261019: With coordinates (1,1) and masses (mass,0), the center is x=1
+  // and the signed mass fractions are (1,0) for each nonzero mass below. CHARMM
+  // accepts these magnitudes and signs. K=0 checks acceptance; the K=2 control
+  // also checks that native storage and division preserve the unit force share.
+  const std::array<Case, 16> cases = {
+      {{"r11_b045_mass_pos_1em05", 1.0e-5},
+       {"r11_b045_mass_neg_1em05", -1.0e-5},
+       {"r11_b045_mass_pos_1em06", 1.0e-6},
+       {"r11_b045_mass_neg_1em06", -1.0e-6},
+       {"r11_b045_mass_pos_1em07", 1.0e-7},
+       {"r11_b045_mass_neg_1em07", -1.0e-7},
+       {"r11_b045_mass_pos_1em08", 1.0e-8},
+       {"r11_b045_mass_neg_1em08", -1.0e-8},
+       {"r11_b045_mass_pos_1em09", 1.0e-9},
+       {"r11_b045_mass_neg_1em09", -1.0e-9},
+       {"r11_b045_mass_pos_1em10", 1.0e-10},
+       {"r11_b045_mass_neg_1em10", -1.0e-10},
+       {"r13_b047_mass_total_pos_1e300", 1.0e300},
+       {"r13_b047_mass_total_neg_1e300", -1.0e300},
+       {"r13_b047_mass_total_pos_1em300", 1.0e-300},
+       {"r13_b047_mass_total_neg_1em300", -1.0e-300}}};
+
+  for (const Case &test : cases) {
+    INFO(test.id);
+
+    auto psf = MakePsf();
+    psf->getMasses()[0] = test.mass;
+    psf->getMasses()[1] = 0.0;
+
+    AtomSelection pair(NUM_ATOMS);
+    pair.set(0);
+    pair.set(1);
+
+    std::vector<float4> coordinates(NUM_ATOMS,
+                                    make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+    coordinates[0].x = coordinates[1].x = 1.0f;
+
+    std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+
+    G force(psf);
+    force.addPlane(pair, ORIGIN, X_DIRECTION, 0.0, 0.0, A::SYMMETRIC, S::RCM);
+
+    CheckOutput("extreme-mass acceptance oracle", Evaluate(force, coordinates),
+                0.0, expected, 4.9999999999999998e-07,
+                1.0e-10 + 0.5 * INV_FORCE_SCALE_TEST);
+
+    force.reset();
+    force.addPlane(pair, ORIGIN, X_DIRECTION, 2.0, 0.0, A::SYMMETRIC, S::RCM);
+    expected[0].x = -2.0;
+
+    CheckOutput("extreme-mass nonzero-force contract composition",
+                Evaluate(force, coordinates), 1.0, expected);
+  }
+}
+
+// JEG261020: Native API regressions for copied inputs, one active mass vector,
+// transactional replacement, subscription, reset, and dynamic storage. RCM uses
+// a signed mass-weighted center and distributes its energetic gradient by m_i /
+// sum(m_i); physical forces have the opposite sign.
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRcmOwnedInputs", "[mmfp][rcm]",
+                   float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  auto psf = MakePsf(2);
+  psf->getMasses() = {1.0, 3.0};
+
+  const std::weak_ptr<CharmmPSF> weak = psf;
+
+  G force(psf);
+  psf->getMasses() = {9.0, 7.0};
+  psf.reset();
+  CHECK(weak.expired());
+  CHECK(force.getMasses() == std::vector<double>{1.0, 3.0});
+
+  {
+    AtomSelection selected(2, AtomSelection::InitialValue::ALL);
+
+    force.addPlane(selected, ORIGIN, X_DIRECTION, 2.0, 0.0, A::SYMMETRIC,
+                   S::RCM);
+    selected.clear();
+    selected.set(1);
+  }
+  force.initialize(2, BOX_DIMS);
+
+  const std::vector<float4> coordinates = {make_float4(2.0f, 0.0f, 0.0f, 0.0f),
+                                           make_float4(4.0f, 0.0f, 0.0f, 0.0f)};
+
+  // JEG261020: Copied masses (1,3) at x=(2,4) give R=3.5. With K=2 and D=0,
+  // E=R^2 and physical force -2R splits into (-1.75,-5.25).
+  CheckOutput("PSF and selection snapshots", Evaluate(force, coordinates),
+              12.25,
+              {make_double3(-1.75, 0.0, 0.0), make_double3(-5.25, 0.0, 0.0)});
+
+  {
+    std::vector<double> replacement = {3.0, 1.0};
+
+    force.setMasses(replacement);
+    replacement.assign(100, 0.0);
+  }
+  CHECK(force.getMasses() == std::vector<double>{3.0, 1.0});
+  CheckOutput("replacement owns caller data", Evaluate(force, coordinates),
+              6.25,
+              {make_double3(-3.75, 0.0, 0.0), make_double3(-1.25, 0.0, 0.0)});
+
+  // JEG261020: Borrowing the active host vector as input must also be safe.
+  force.setMasses(force.getMasses());
+  CheckOutput("self replacement", Evaluate(force, coordinates), 6.25,
+              {make_double3(-3.75, 0.0, 0.0), make_double3(-1.25, 0.0, 0.0)});
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceMassReplacementTiming",
+                   "[mmfp][rcm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  // JEG261020: Native mass replacement must affect the next calculation whether
+  // called before term creation, before initialization, after initialization,
+  // or while a preceding calculation's output commit remains queued.
+  for (int stage = 0; stage < 4; stage++) {
+    INFO("replacement stage: " << stage);
+
+    auto psf = MakePsf(2);
+    psf->getMasses() = {1.0, 1.0};
+
+    G force(psf);
+    const auto outputOwner = force.getForce();
+    const auto energyOwner = force.getEnergyVirial();
+    const auto streamOwner = force.getStream();
+    const std::vector<double> replacement = {1.0, 3.0};
+    const AtomSelection selected(2, AtomSelection::InitialValue::ALL);
+    const std::vector<float4> coordinates = {
+        make_float4(2.0f, 0.0f, 0.0f, 0.0f),
+        make_float4(4.0f, 0.0f, 0.0f, 0.0f)};
+
+    if (stage == 0)
+      force.setMasses(replacement);
+
+    force.addPlane(selected, ORIGIN, X_DIRECTION, 2.0, 0.0, A::SYMMETRIC,
+                   S::RCM);
+
+    if (stage == 1)
+      force.setMasses(replacement);
+
+    force.initialize(2, BOX_DIMS);
+
+    if (stage == 2)
+      force.setMasses(replacement);
+
+    if (stage == 3) {
+      CudaContainer<float4> xyzq(coordinates);
+
+      force.clear();
+      force.calcForce(xyzq.getDeviceArray().data(), true, false);
+      // JEG261020: Exercise replacement while the previous output commit may be
+      // queued.
+      force.setMasses(replacement);
+      CheckOutput("replacement preserves completed output", ReadOutput(force),
+                  9.0,
+                  {make_double3(-3.0, 0.0, 0.0), make_double3(-3.0, 0.0, 0.0)});
+    }
+
+    CheckOutput("replacement used on next calculation",
+                Evaluate(force, coordinates), 12.25,
+                {make_double3(-1.75, 0.0, 0.0), make_double3(-5.25, 0.0, 0.0)});
+    CHECK(force.getMasses() == replacement);
+    CHECK(force.getNumTerms() == 1);
+    CHECK(force.getForce() == outputOwner);
+    CHECK(force.getEnergyVirial() == energyOwner);
+    CHECK(force.getStream() == streamOwner);
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceAtomwiseIgnoresActiveMasses",
+                   "[mmfp][rcm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+
+  const AtomSelection selected(3, AtomSelection::InitialValue::ALL);
+
+  G force(MakePsf(3));
+  force.addPlane(selected, ORIGIN, X_DIRECTION, 2.0, 0.0, A::SYMMETRIC);
+  force.initialize(3, BOX_DIMS);
+
+  const std::vector<float4> coordinates = {make_float4(2.0f, 0.0f, 0.0f, 0.0f),
+                                           make_float4(4.0f, 0.0f, 0.0f, 0.0f),
+                                           make_float4(6.0f, 0.0f, 0.0f, 0.0f)};
+
+  // JEG261020: API rule: atomwise terms impose no selected-total-mass
+  // condition.
+  for (const auto &masses : std::vector<std::vector<double>>{
+           {0.0, 0.0, 0.0}, {-1.0, 0.0, -3.0}, {-1.0, 1.0, 0.0}}) {
+    force.setMasses(masses);
+    CHECK(force.getMasses() == masses);
+    CheckOutput("atomwise mass independence", Evaluate(force, coordinates),
+                56.0,
+                {make_double3(-4.0, 0.0, 0.0), make_double3(-8.0, 0.0, 0.0),
+                 make_double3(-12.0, 0.0, 0.0)});
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceMassReplacementTransaction",
+                   "[mmfp][rcm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+  struct Case {
+    std::vector<double> masses;
+    std::string diagnostic;
+  };
+  const std::vector<Case> cases = {
+      {{1.0, 3.0, 1.0}, "Mass count mismatch; expected 4, observed 3"},
+      {{1.0, 3.0, 1.0, 1.0, 1.0},
+       "Mass count mismatch; expected 4, observed 5"},
+      {{3.0, 1.0, 1.0, QUIET_NAN},
+       "Mass at atom index 3 must be finite; observed " +
+           std::to_string(QUIET_NAN)},
+      {{3.0, 1.0, 1.0, INF},
+       "Mass at atom index 3 must be finite; observed " + std::to_string(INF)},
+      {{3.0, 1.0, 1.0, -INF},
+       "Mass at atom index 3 must be finite; observed " + std::to_string(-INF)},
+      // JEG261020: The first RCM term would change but remain valid. The SECOND
+      // existing RCM term becomes invalid, proving validation is not first-term
+      // only.
+      {{3.0, 1.0, 1.0, -1.0},
+       "RCM total mass must be finite and nonzero; observed 0.000000"},
+      {{0.0, 0.0, 1.0, 1.0},
+       "RCM total mass must be finite and nonzero; observed 0.000000"}};
+
+  auto psf = MakePsf(4);
+  psf->getMasses() = {1.0, 3.0, 1.0, 1.0};
+
+  AtomSelection first(4), second(4);
+  first.set(0);
+  first.set(1);
+  second.set(2);
+  second.set(3);
+
+  G force(psf);
+  force.addPlane(first, ORIGIN, X_DIRECTION, 2.0, 0.0, A::SYMMETRIC, S::RCM);
+  force.addSphere(second, ORIGIN, 2.0, 0.0, A::SYMMETRIC, S::RCM);
+  force.addPlane(AtomReference(psf, 3), ORIGIN, X_DIRECTION, 2.0, 0.0,
+                 A::SYMMETRIC);
+  force.initialize(4, BOX_DIMS);
+
+  const std::vector<float4> coordinates = {
+      make_float4(2.0f, 0.0f, 0.0f, 0.0f), make_float4(4.0f, 0.0f, 0.0f, 0.0f),
+      make_float4(6.0f, 0.0f, 0.0f, 0.0f), make_float4(8.0f, 0.0f, 0.0f, 0.0f)};
+  const std::vector<double> original = force.getMasses();
+  const std::vector<double3> expected = {
+      make_double3(-1.75, 0.0, 0.0), make_double3(-5.25, 0.0, 0.0),
+      make_double3(-7.0, 0.0, 0.0), make_double3(-23.0, 0.0, 0.0)};
+
+  CheckOutput("transaction baseline", Evaluate(force, coordinates), 125.25,
+              expected);
+
+  for (const Case &test : cases) {
+    INFO(test.diagnostic);
+
+    apo_test::CheckApoCharmmError(
+        [&](void) -> void {
+          force.setMasses(test.masses);
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument, test.diagnostic);
+    CHECK(force.getMasses() == original);
+    CHECK(force.getNumTerms() == 3);
+    CheckOutput("failed replacement preserves output", ReadOutput(force),
+                125.25, expected);
+    // JEG261020: A fresh evaluation verifies device storage and term state, not
+    // just the public host mass vector and a previously cached output.
+    CheckOutput("failed replacement preserves device masses",
+                Evaluate(force, coordinates), 125.25, expected);
+  }
+
+  // JEG261020: CHARMM retains signed mass fractions. Negating every mass
+  // preserves each rfaction and the center; a negative selected total is valid.
+  force.setMasses({-1.0, -3.0, -1.0, -1.0});
+  CheckOutput("negative selected total", Evaluate(force, coordinates), 125.25,
+              expected);
+  force.setMasses({3.0, 1.0, 3.0, 1.0});
+  CheckOutput("valid replacement after failures", Evaluate(force, coordinates),
+              112.5,
+              {make_double3(-3.75, 0.0, 0.0), make_double3(-1.25, 0.0, 0.0),
+               make_double3(-9.75, 0.0, 0.0), make_double3(-19.25, 0.0, 0.0)});
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceMassValidationCoverage",
+                   "[mmfp][rcm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  auto psf = MakePsf(3);
+  psf->getMasses() = {1.0, 3.0, 2.0};
+
+  G force(psf);
+  const std::vector<double> original = force.getMasses();
+
+  // JEG261020: Complete-vector validation applies even with no installed terms.
+  for (const double bad : {QUIET_NAN, INF, -INF}) {
+    apo_test::CheckApoCharmmError(
+        [&](void) -> void {
+          force.setMasses({1.0, 3.0, bad});
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Mass at atom index 2 must be finite; observed " + std::to_string(bad));
+  }
+  CHECK(force.getMasses() == original);
+  CHECK(force.getNumTerms() == 0);
+
+  force.addPlane(AtomReference(psf, 0), ORIGIN, X_DIRECTION, 2.0, 0.0,
+                 A::SYMMETRIC, S::RCM);
+
+  // JEG261020: The zero-K term is valid with its current nonzero selected
+  // total.
+  force.addSphere(AtomReference(psf, 1), ORIGIN, 0.0, 0.0, A::SYMMETRIC,
+                  S::RCM);
+  force.initialize(3, BOX_DIMS);
+
+  const std::vector<float4> coordinates(3, make_float4(2.0f, 0.0f, 0.0f, 0.0f));
+  const std::vector<double3> expected = {make_double3(-4.0, 0.0, 0.0),
+                                         make_double3(0.0, 0.0, 0.0),
+                                         make_double3(0.0, 0.0, 0.0)};
+
+  CheckOutput("zero-K term baseline", Evaluate(force, coordinates), 4.0,
+              expected);
+
+  // JEG261020: Atom 2 is not selected by any term; it still must have a finite
+  // mass.
+  for (const double bad : {QUIET_NAN, INF, -INF}) {
+    apo_test::CheckApoCharmmError(
+        [&](void) -> void {
+          force.setMasses({1.0, 3.0, bad});
+          return;
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Mass at atom index 2 must be finite; observed " + std::to_string(bad));
+  }
+
+  // JEG261020: A zero selected total leaves the center undefined even when the
+  // force constant is zero, so native validation rejects the replacement.
+  apo_test::CheckApoCharmmError(
+      [&](void) -> void {
+        force.setMasses({1.0, 0.0, 2.0});
+        return;
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "RCM total mass must be finite and nonzero; observed 0.000000");
+  CHECK(force.getMasses() == original);
+  CHECK(force.getNumTerms() == 2);
+  CheckOutput("zero-K and unselected validation preserve device state",
+              Evaluate(force, coordinates), 4.0, expected);
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRcmArithmeticEnvelope",
+                   "[mmfp][rcm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  auto psf = MakePsf(3);
+  psf->getMasses() = {1.0, 1.0, 1.0};
+
+  const AtomSelection selected(3, AtomSelection::InitialValue::ALL);
+
+  G force(psf);
+  force.addPlane(selected, ORIGIN, X_DIRECTION, 3.0, 1.0, A::SYMMETRIC, S::RCM);
+  force.initialize(3, BOX_DIMS);
+
+  const std::vector<float4> coordinates(3, make_float4(3.0f, 0.0f, 0.0f, 0.0f));
+  const std::vector<double> original = force.getMasses();
+  const std::vector<double3> expected(3, make_double3(-2.0, 0.0, 0.0));
+
+  CheckOutput("arithmetic-envelope baseline", Evaluate(force, coordinates), 6.0,
+              expected);
+
+  // JEG261020: Native validation requires a finite selected total and finite
+  // fractions. The first replacement overflows the total; the second has a
+  // nonzero total so small that an individual mass fraction overflows.
+  const double maximum = std::numeric_limits<double>::max();
+  apo_test::CheckApoCharmmError(
+      [&] { force.setMasses({maximum, maximum, 0.0}); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "RCM total mass must be finite and nonzero; observed " +
+          std::to_string(INF));
+  apo_test::CheckApoCharmmError(
+      [&] { force.setMasses({1.0, -1.0, 1.0e-310}); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "RCM mass fraction must be finite at atom index 0");
+  CHECK(force.getMasses() == original);
+  CHECK(force.getNumTerms() == 1);
+  CheckOutput("arithmetic rejection preserves output", ReadOutput(force), 6.0,
+              expected);
+  CheckOutput("arithmetic rejection preserves device masses",
+              Evaluate(force, coordinates), 6.0, expected);
+
+  // JEG261020: Masses alone are valid, but the weighted moment overflows at
+  // x=4.
+  force.setMasses({1.0e308, 0.0, 0.0});
+
+  CudaContainer<float4> overflowCoordinates(
+      std::vector<float4>(3, make_float4(4.0f, 0.0f, 0.0f, 0.0f)));
+  for (const bool calcEnergy : {true, false}) {
+    apo_test::CheckApoCharmmError(
+        [&] {
+          force.calcForce(overflowCoordinates.getDeviceArray().data(),
+                          calcEnergy, false);
+        },
+        ApoCharmmErrorCode::Runtime,
+        "MMFP evaluation produced a non-finite value");
+    CheckOutput("invalid weighted moment does not commit output",
+                ReadOutput(force), 6.0, expected);
+  }
+
+  CheckOutput("successful evaluation after weighted-moment rejection",
+              Evaluate(force, std::vector<float4>(
+                                  3, make_float4(0.5f, 0.0f, 0.0f, 0.0f))),
+              0.375,
+              {make_double3(1.5, 0.0, 0.0), make_double3(0.0, 0.0, 0.0),
+               make_double3(0.0, 0.0, 0.0)});
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRcmTypedInputsAndFailedAddition",
+                   "[mmfp][rcm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  auto psf = MakePsf(4);
+  psf->getMasses() = {1.0, 3.0, 1.0, -1.0};
+
+  for (int geometry = 0; geometry < 3; geometry++) {
+    INFO("geometry: " << geometry);
+
+    G force(psf);
+    const auto add = [&](const auto &input, const double k = 2.0,
+                         const S mode = S::RCM) -> void {
+      if (geometry == 0)
+        force.addPlane(input, ORIGIN, X_DIRECTION, k, 2.0, A::SYMMETRIC, mode);
+      else if (geometry == 1) {
+        force.addCylinder(input, ORIGIN, {0.0, 0.0, 1.0}, k, 2.0, A::SYMMETRIC,
+                          mode);
+      } else
+        force.addSphere(input, ORIGIN, k, 2.0, A::SYMMETRIC, mode);
+      return;
+    };
+
+    {
+      AtomSelection selection(4);
+      selection.set(0);
+      add(selection);
+      selection.clear();
+      selection.set(1);
+    }
+
+    std::weak_ptr<CharmmPSF> weak;
+    {
+      auto foreign = MakePsf(5);
+      weak = foreign;
+      add(AtomReference(foreign, 0));
+    }
+
+    CHECK(weak.expired());
+    force.initialize(4, BOX_DIMS);
+
+    const std::vector<float4> coordinates(4,
+                                          make_float4(3.0f, 0.0f, 0.0f, 0.0f));
+    const std::vector<double3> expected = {
+        make_double3(-4.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0),
+        make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)};
+
+    CheckOutput("two owned one-atom RCM terms", Evaluate(force, coordinates),
+                2.0, expected);
+
+    const AtomSelection empty(4);
+    const AtomSelection mismatch(5, AtomSelection::InitialValue::ALL);
+    const AtomReference outOfRange(MakePsf(5), 4);
+    const AtomReference atom(psf, 0);
+    AtomSelection one(4), zeroTotal(4);
+    one.set(0);
+    zeroTotal.set(2);
+    zeroTotal.set(3);
+
+    // JEG261020: Native term creation requires a nonempty typed selection for
+    // the same atom count, or one in-range AtomReference, and a recognized
+    // mode.
+    apo_test::CheckApoCharmmError(
+        [&] { add(empty); }, ApoCharmmErrorCode::InvalidArgument,
+        "Selection must contain at least one atom; observed 0");
+    apo_test::CheckApoCharmmError(
+        [&] { add(mismatch); }, ApoCharmmErrorCode::InvalidArgument,
+        "Selection atom count mismatch; expected 4, observed 5");
+    apo_test::CheckApoCharmmError(
+        [&] { add(outOfRange); }, ApoCharmmErrorCode::InvalidArgument,
+        "Atom index is out of range; expected [0, 4), observed 4");
+    apo_test::CheckApoCharmmError(
+        [&] { add(one, 2.0, static_cast<S>(99)); },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Selection mode must be ATOMWISE or RCM; observed 99");
+    apo_test::CheckApoCharmmError(
+        [&] { add(atom, 2.0, static_cast<S>(99)); },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Selection mode must be ATOMWISE or RCM; observed 99");
+
+    // JEG261020: CHARMM cannot form an RCM center when selected masses sum to
+    // zero. Native term creation rejects this before evaluation, including when
+    // the force constant is zero, and preserves all installed terms.
+    for (const double k : {0.0, 2.0}) {
+      apo_test::CheckApoCharmmError(
+          [&] { add(zeroTotal, k); }, ApoCharmmErrorCode::InvalidArgument,
+          "RCM total mass must be finite and nonzero; observed 0.000000");
+      CHECK(force.getNumTerms() == 2);
+      CheckOutput("failed addition preserves terms and output",
+                  ReadOutput(force), 2.0, expected);
+      CheckOutput("failed addition preserves evaluable state",
+                  Evaluate(force, coordinates), 2.0, expected);
+    }
+    CHECK(force.getMasses() == psf->getMasses());
+
+    force.setMasses({1.0, 3.0, 0.0, -1.0});
+    for (const double k : {0.0, 2.0}) {
+      apo_test::CheckApoCharmmError(
+          [&] { add(AtomReference(psf, 2), k); },
+          ApoCharmmErrorCode::InvalidArgument,
+          "RCM total mass must be finite and nonzero; observed 0.000000");
+      CHECK(force.getNumTerms() == 2);
+      CheckOutput("zero-mass AtomReference rejected transactionally",
+                  Evaluate(force, coordinates), 2.0, expected);
+    }
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceMixedRcmLifecycle", "[mmfp][rcm]",
+                   float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  auto psf = MakePsf(3);
+
+  AtomSelection first(3), second(3), third(3);
+  first.set(0);
+  first.set(1);
+  second.set(1);
+  second.set(2);
+  third.set(0);
+  third.set(2);
+
+  G force(psf);
+  force.setMasses({1.0, 3.0, 1.0});
+  force.addPlane(AtomReference(psf, 0), ORIGIN, X_DIRECTION, 2.0, 0.0,
+                 A::SYMMETRIC, S::ATOMWISE);
+  force.addPlane(first, ORIGIN, X_DIRECTION, 2.0, 0.0, A::SYMMETRIC, S::RCM);
+  force.addCylinder(second, ORIGIN, {0.0, 0.0, 1.0}, 2.0, 0.0, A::SYMMETRIC,
+                    S::RCM);
+  force.addSphere(third, ORIGIN, 2.0, 0.0, A::SYMMETRIC, S::RCM);
+  force.initialize(3, BOX_DIMS);
+
+  const std::vector<float4> coordinates = {make_float4(2.0f, 0.0f, 0.0f, 0.0f),
+                                           make_float4(4.0f, 0.0f, 0.0f, 0.0f),
+                                           make_float4(6.0f, 0.0f, 0.0f, 0.0f)};
+  // JEG261020: Each term contributes independently. On shared atoms, add the
+  // atomwise force and the mass-weighted shares from every RCM term. All three
+  // RCM geometries use the force object's single active mass vector.
+  CheckOutput("mixed overlapping RCM selections", Evaluate(force, coordinates),
+              52.5,
+              {make_double3(-9.75, 0.0, 0.0), make_double3(-12.0, 0.0, 0.0),
+               make_double3(-6.25, 0.0, 0.0)});
+
+  const std::vector<double> custom = {3.0, 1.0, 1.0};
+  force.setMasses(custom);
+
+  const std::vector<double3> changed = {make_double3(-12.25, 0.0, 0.0),
+                                        make_double3(-6.25, 0.0, 0.0),
+                                        make_double3(-6.5, 0.0, 0.0)};
+
+  CheckOutput("one active vector updates every RCM geometry",
+              Evaluate(force, coordinates), 44.25, changed);
+  force.clear();
+
+  CHECK(force.getNumTerms() == 4);
+  CHECK(force.getMasses() == custom);
+
+  const std::vector<double3> zero(3, make_double3(0.0, 0.0, 0.0));
+
+  CheckOutput("clear changes only output", ReadOutput(force), 0.0, zero);
+  CheckOutput("force-only RCM evaluation", Evaluate(force, coordinates, false),
+              0.0, changed);
+
+  const Output withVirial = Evaluate(force, coordinates, true, true);
+
+  CheckOutput("RCM virial deferred to Step 10", withVirial, 44.25, changed);
+
+  for (const double component : withVirial.virial)
+    CHECK(component == 0.0);
+
+  // JEG261020: Native reset removes every term while preserving the active
+  // custom mass vector and the current output. Repeated reset is harmless, and
+  // newly added RCM terms must use the preserved masses.
+  force.reset();
+  force.reset();
+
+  CHECK(force.getNumTerms() == 0);
+  CHECK(force.getMasses() == custom);
+  CheckOutput("reset does not change output", ReadOutput(force), 44.25,
+              changed);
+  CheckOutput("reset removes all old terms", Evaluate(force, coordinates), 0.0,
+              zero);
+  force.addSphere(first, ORIGIN, 2.0, 0.0, A::SYMMETRIC, S::RCM);
+  CheckOutput("reset reuse retains custom masses", Evaluate(force, coordinates),
+              6.25,
+              {make_double3(-3.75, 0.0, 0.0), make_double3(-1.25, 0.0, 0.0),
+               make_double3(0.0, 0.0, 0.0)});
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRcmManagerMassReplacement",
+                   "[mmfp][rcm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
+                                                "toppar_water_ions.str");
+  auto psf =
+      std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
+  REQUIRE(psf->getNumAtoms() == 2);
+
+  auto ctx = std::make_shared<CharmmContext>(psf, prm);
+  auto fm = ctx->getForceManager();
+  auto force = std::make_shared<G>(psf);
+  force->setMasses({1.0, 1.0});
+
+  SECTION("SubscribeBeforeInitialization") {
+    fm->subscribe(force, "mmfp", force->getStream(), force->getForce(),
+                  force->getEnergyVirial());
+    ctx->setBoxDimensions({30.0, 32.0, 34.0});
+  }
+
+  SECTION("SubscribeAfterInitialization") {
+    ctx->setBoxDimensions({30.0, 32.0, 34.0});
+    fm->subscribe(force, "mmfp", force->getStream(), force->getForce(),
+                  force->getEnergyVirial());
+  }
+
+  REQUIRE(fm->isInitialized());
+
+  ctx->setCoordinates(std::vector<double3>{make_double3(2.0, 0.0, 0.0),
+                                           make_double3(4.0, 4.0, 4.0)});
+  ctx->useHolonomicConstraints(false);
+
+  const ManagerOutput baseline = EvaluateManager(ctx);
+  const auto outputOwner = force->getForce();
+  const auto energyOwner = force->getEnergyVirial();
+  const auto streamOwner = force->getStream();
+  const AtomSelection selected(2, AtomSelection::InitialValue::ALL);
+
+  force->addPlane(selected, ORIGIN, X_DIRECTION, 2.0, 0.0, A::SYMMETRIC,
+                  S::RCM);
+  CheckManagerDelta(baseline, EvaluateManager(ctx), 9.0,
+                    {make_double3(3.0, 0.0, 0.0), make_double3(3.0, 0.0, 0.0)});
+
+  // JEG261020: API-only integration regression: no resubscription or manager
+  // rebuild.
+  force->setMasses({1.0, 3.0});
+  CheckManagerDelta(
+      baseline, EvaluateManager(ctx), 12.25,
+      {make_double3(1.75, 0.0, 0.0), make_double3(5.25, 0.0, 0.0)});
+  apo_test::CheckApoCharmmError(
+      [&] { force->setMasses({1.0, -1.0}); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "RCM total mass must be finite and nonzero; observed 0.000000");
+  CHECK(force->getMasses() == std::vector<double>{1.0, 3.0});
+  CheckManagerDelta(
+      baseline, EvaluateManager(ctx), 12.25,
+      {make_double3(1.75, 0.0, 0.0), make_double3(5.25, 0.0, 0.0)});
+  CHECK(force->getForce() == outputOwner);
+  CHECK(force->getEnergyVirial() == energyOwner);
+  CHECK(force->getStream() == streamOwner);
+
+  force->reset();
+  CHECK(force->getMasses() == std::vector<double>{1.0, 3.0});
+  CheckManagerDelta(baseline, EvaluateManager(ctx), 0.0,
+                    {make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
+
+  force->addSphere(selected, ORIGIN, 2.0, 0.0, A::SYMMETRIC, S::RCM);
+  CheckManagerDelta(
+      baseline, EvaluateManager(ctx), 30.25,
+      {make_double3(1.75, 1.5, 1.5), make_double3(5.25, 4.5, 4.5)});
+
+  fm->unsubscribe(force);
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceRcmDynamicCapacity", "[mmfp][rcm]",
+                   float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  SECTION("LargeSelection") {
+    // JEG261020: A 4097-member group exercises multiple reduction blocks and a
+    // partial final block. Equal masses at the same position divide the total
+    // physical force -2 evenly among all members.
+    constexpr int count = 4097;
+    auto psf = MakePsf(count);
+    psf->getMasses().assign(count, 1.0);
+
+    const AtomSelection selected(count, AtomSelection::InitialValue::ALL);
+
+    G force(psf);
+    force.addPlane(selected, ORIGIN, X_DIRECTION, 2.0, 2.0, A::SYMMETRIC,
+                   S::RCM);
+    force.initialize(count, BOX_DIMS);
+
+    const std::vector<float4> coordinates(count,
+                                          make_float4(3.0f, 0.0f, 0.0f, 0.0f));
+    const double share = -2.0 / static_cast<double>(count);
+    const std::vector<double3> expected(count, make_double3(share, 0.0, 0.0));
+    const double tolerance =
+        0.5 * INV_FORCE_SCALE_TEST + 1.0e-15 +
+        ((std::is_same<TestType, float>::value)
+             ? 0.5 * std::numeric_limits<float>::epsilon() * std::abs(share)
+             : 0.0);
+    const Output result = Evaluate(force, coordinates);
+
+    CheckOutput("4097 selected atoms", result, 1.0, expected, 1.0e-12,
+                tolerance);
+
+    double sum = 0.0;
+    for (const auto &physicalForce : result.physicalForces)
+      sum += physicalForce.x;
+    CHECK(std::abs(sum + 2.0) <= static_cast<double>(count) * tolerance);
+  }
+
+  SECTION("ManyTerms") {
+    // JEG261020: Adding plane, cylinder, and sphere RCM terms exercises native
+    // growth of term, membreship, and reduction storage. Each term adds energy
+    // 1 and force -1 to each atom, including after earlier evaluations.
+    auto psf = MakePsf(2);
+    psf->getMasses() = {1.0, 1.0};
+
+    const AtomSelection selected(2, AtomSelection::InitialValue::ALL);
+
+    G force(psf);
+    force.initialize(2, BOX_DIMS);
+
+    const std::vector<float4> coordinates(2,
+                                          make_float4(3.0f, 0.0f, 0.0f, 0.0f));
+
+    constexpr int count = 1025;
+    for (int term = 0; term < count; term++) {
+      if (term % 3 == 0) {
+        force.addPlane(selected, ORIGIN, X_DIRECTION, 2.0, 2.0, A::SYMMETRIC,
+                       S::RCM);
+      } else if (term % 3 == 1) {
+        force.addCylinder(selected, ORIGIN, {0.0, 0.0, 1.0}, 2.0, 2.0,
+                          A::SYMMETRIC, S::RCM);
+      } else
+        force.addSphere(selected, ORIGIN, 2.0, 2.0, A::SYMMETRIC, S::RCM);
+
+      if ((term == 0) || (term == 255) || (term + 1 == count)) {
+        const double number = static_cast<double>(term + 1);
+        CHECK(force.getNumTerms() == static_cast<std::size_t>(term + 1));
+        CheckOutput(
+            "dynamic RCM term growth", Evaluate(force, coordinates), number,
+            {make_double3(-number, 0.0, 0.0), make_double3(-number, 0.0, 0.0)});
+      }
     }
   }
 }
