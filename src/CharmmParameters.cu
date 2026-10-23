@@ -9,6 +9,7 @@
 // ENDLICENSE
 
 #include "CharmmParameters.h"
+#include "CmapSpline.h"
 
 #include "ApoCharmmError.h"
 #include "str_utils.h"
@@ -53,8 +54,8 @@ std::string CleanPrmLine(const std::string &rawLine) {
 
 CharmmParameters::CharmmParameters(void)
     : m_BondParams(), m_UreybParams(), m_AngleParams(), m_DihedralParams(),
-      m_ImproperParams(), m_NbfixParams(), m_VdwParams(), m_Vdw14Params(),
-      m_PrmFilePaths() {}
+      m_ImproperParams(), m_CmapParams(), m_NbfixParams(), m_VdwParams(), 
+      m_Vdw14Params(), m_PrmFilePaths() {}
 
 CharmmParameters::CharmmParameters(const std::filesystem::path &filePath)
     : CharmmParameters() {
@@ -99,6 +100,11 @@ CharmmParameters::getImproperParams(void) const {
   return m_ImproperParams;
 }
 
+const std::map<CmapKey, CmapValues> &
+CharmmParameters::getCmapParams(void) const {
+  return m_CmapParams;
+}
+
 const std::map<std::string, VdwParameters> &
 CharmmParameters::getVdwParams(void) const {
   return m_VdwParams;
@@ -135,13 +141,14 @@ BondedParamsAndLists CharmmParameters::getBondedParamsAndLists(
   const std::vector<Angle> &angles = psf->getAngles();
   const std::vector<Dihedral> &dihedrals = psf->getDihedrals();
   const std::vector<Dihedral> &impropers = psf->getImpropers();
-  // const std::vector<CrossTerm> &cmaps = psf->getCrossTerms();
+  const std::vector<CrossTerm> &cmaps = psf->getCrossTerms();
 
   std::vector<BondKey> bondKeysPresent;
   std::vector<AngleKey> ureybKeysPresent;
   std::vector<AngleKey> angleKeysPresent;
   std::vector<DihedralKey> dihedralKeysPresent;
   std::vector<DihedralKey> improperKeysPresent;
+  std::vector<CmapKey> cmapKeysPresent;
 
   for (int bond = 0; bond < psf->getNumBonds(); bond++) {
     std::string atom1 = atomTypes[bonds[bond].iatom];
@@ -406,19 +413,66 @@ BondedParamsAndLists CharmmParameters::getBondedParamsAndLists(
   listsSize.push_back(listVal.size() - listsSize[0] - listsSize[1] -
                       listsSize[2] - listsSize[3]);
 
-  // CMAP are currently not being used
-  /*
-  for (int i = 0; i < psf->getNumCrossTerms(); ++i) {
-    auto cmap = cmaps[i];
-    auto dihe1 = DihedralKey(atomTypes[cmap.iatom1], atomTypes[cmap.jatom1],
-                             atomTypes[cmap.katom1], atomTypes[cmap.latom1]);
-    auto dihe2 = DihedralKey(atomTypes[cmap.iatom2], atomTypes[cmap.jatom2],
-                             atomTypes[cmap.katom2], atomTypes[cmap.latom2]);
-    auto key = CmapKey(dihe1, dihe2);
+  for (int cmap = 0; cmap < psf->getNumCrossTerms(); cmap++) {
+    const CrossTerm &crossTerm = cmaps[cmap];
+
+    std::string atom1 = atomTypes[crossTerm.iatom1];
+    std::string atom2 = atomTypes[crossTerm.jatom1];
+    std::string atom3 = atomTypes[crossTerm.katom1];
+    std::string atom4 = atomTypes[crossTerm.latom1];
+
+    const DihedralKey dihe1(atom1, atom2, atom3, atom4);
+
+    atom1 = atomTypes[crossTerm.iatom2];
+    atom2 = atomTypes[crossTerm.jatom2];
+    atom3 = atomTypes[crossTerm.katom2];
+    atom4 = atomTypes[crossTerm.latom2];
+
+    const DihedralKey dihe2(atom1, atom2, atom3, atom4);
+    const CmapKey key(dihe1, dihe2);
+
+    const auto parameter = m_CmapParams.find(key);
+
+    APOCHARMM_REQUIRE(
+        parameter != m_CmapParams.end(), ApoCharmmErrorCode::Runtime,
+        "CMAP parameters were not found for cross term " + std::to_string(cmap));
+
+    auto findResult =
+        std::find(cmapKeysPresent.begin(), cmapKeysPresent.end(), key);
+
+    if (findResult == cmapKeysPresent.end()) {
+      cmapKeysPresent.push_back(key);
+
+      const CmapValues &value = parameter->second;
+
+      APOCHARMM_REQUIRE(
+          value.values.size() == CmapValues::numValues &&
+          value.coeff.size() == CmapValues::numCoefficients,
+          ApoCharmmErrorCode::Runtime,
+          "CMAP coefficient data has an invalid size");
+
+      for (const double coefficient : value.coeff)
+        paramsVal.push_back({static_cast<float>(coefficient)});
+    }
+
+    const int cmapType = static_cast<int>(std::find(cmapKeysPresent.begin(),
+                         cmapKeysPresent.end(), key) - cmapKeysPresent.begin());
+
+    listVal.push_back({crossTerm.iatom1, crossTerm.jatom1,
+                       crossTerm.katom1, crossTerm.latom1,
+                       crossTerm.iatom2, crossTerm.jatom2,
+                       crossTerm.katom2, crossTerm.latom2,
+                       cmapType, 13, 13, 13, 13, 13, 13
+    });
   }
-  */
-  paramsSize.push_back(0);
-  listsSize.push_back(0);
+
+  paramsSize.push_back(
+      static_cast<int>(cmapKeysPresent.size() * CmapValues::numCoefficients));
+
+  listsSize.push_back(
+      listVal.size() - listsSize[0] - listsSize[1] -
+      listsSize[2] - listsSize[3] - listsSize[4]);
+
   return BondedParamsAndLists(paramsSize, paramsVal, listsSize, listVal);
 }
 
@@ -697,6 +751,9 @@ void CharmmParameters::readCharmmParameterFile(
     case Section::IMPROPERS:
       this->parseImproperRecord(tokens, line, fileName, lineNumber);
       break;
+    case Section::CMAP:
+      this->parseCmapRecord(tokens, prmFile, line, fileName, lineNumber);
+      break;
     case Section::NONBONDED:
       this->parseNonbondedRecord(tokens, line, fileName, lineNumber);
       break;
@@ -705,7 +762,6 @@ void CharmmParameters::readCharmmParameterFile(
       break;
     case Section::NONE:
     case Section::ATOMS:
-    case Section::CMAP:
     case Section::HBOND:
       break;
     }
@@ -838,6 +894,82 @@ void CharmmParameters::parseImproperRecord(
 
   m_ImproperParams.insert(
       {DihedralKey(atom1, atom2, atom3, atom4), ImDihedralValues(kPsi, psi0)});
+
+  return;
+}
+
+void CharmmParameters::parseCmapRecord(
+    const std::vector<std::string> &tokens, std::ifstream &prmFile,
+    const std::string &line, const std::string &fileName,
+    std::size_t &lineNumber) {
+
+  APOCHARMM_REQUIRE(tokens.size() == 9, ApoCharmmErrorCode::Runtime,
+      "Invalid CMAP parameter record in file \"" + fileName +
+          "\" at line " + std::to_string(lineNumber) + ": " + line);
+
+  const std::string valueContext =
+      GetPrmValueContext("CMAP", line, fileName, lineNumber);
+
+  const int gridSize =
+      apo::parse_int(tokens[8], "grid size", valueContext);
+
+  APOCHARMM_REQUIRE(
+      gridSize == CmapValues::gridSize,
+      ApoCharmmErrorCode::Runtime,
+      "Unsupported CMAP grid size in file \"" + fileName +
+          "\" at line " + std::to_string(lineNumber) +
+          ": expected " + std::to_string(CmapValues::gridSize) +
+          ", observed " + std::to_string(gridSize));
+
+  std::vector<double> values;
+  values.reserve(CmapValues::numValues);
+
+  while (values.size() < CmapValues::numValues) {
+    std::string cmapLine;
+
+    APOCHARMM_REQUIRE(
+        static_cast<bool>(std::getline(prmFile, cmapLine)),
+        ApoCharmmErrorCode::Runtime,
+        "Unexpected end of file while reading CMAP parameter in file \"" +
+            fileName + "\" after line " +
+            std::to_string(lineNumber));
+
+    lineNumber++;
+    cmapLine = CleanPrmLine(cmapLine);
+
+    if (cmapLine.empty() || cmapLine.front() == '*')
+      continue;
+
+    const std::vector<std::string> cmapTokens = apo::split(cmapLine);
+
+    for (const std::string &token : cmapTokens) {
+      const double value =
+          apo::parse_double(token, "CMAP value", valueContext);
+
+      values.push_back(value);
+
+      APOCHARMM_REQUIRE(
+          values.size() <= CmapValues::numValues,
+          ApoCharmmErrorCode::Runtime,
+          "Too many CMAP values in file \"" + fileName +
+              "\" at line " + std::to_string(lineNumber));
+    }
+  }
+
+  const DihedralKey dihe1(tokens[0], tokens[1], tokens[2], tokens[3]);
+  const DihedralKey dihe2(tokens[4], tokens[5], tokens[6], tokens[7]);
+  const CmapKey key(dihe1, dihe2);
+
+  CmapValues cmap(values);
+
+  const double dx = 360.0 / static_cast<double>(CmapValues::gridSize);
+
+  // CHARMM uses xm = grid / 2.
+  const int xm = CmapValues::gridSize / 2;
+
+  cmap_set_spline(CmapValues::gridSize, xm, dx, cmap.values, cmap.coeff);
+
+  m_CmapParams.insert_or_assign(key, std::move(cmap));
 
   return;
 }
