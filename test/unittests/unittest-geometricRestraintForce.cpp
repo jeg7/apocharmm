@@ -188,6 +188,37 @@ void CheckManagerDelta(const ManagerOutput &baseline,
   return;
 }
 
+// JEG261027: A forwarding native-force verifies the ForceView dispatch
+// arguments. It is shared by the box-propagation and atom-count mismatch tests
+// below.
+template <typename CT>
+class ObservedGeometricRestraintForce : public GeoForce<CT> {
+public:
+  using GeoForce<CT>::GeoForce;
+
+  void initialize(const int numAtoms,
+                  const std::vector<double> &boxDimensions) {
+    GeoForce<CT>::initialize(numAtoms, boxDimensions);
+    initializedAtomCount = numAtoms;
+    initializedBox = boxDimensions;
+    initializeCalls++;
+    return;
+  }
+
+  void setBoxDimensions(const std::vector<double> &boxDimensions) {
+    GeoForce<CT>::setBoxDimensions(boxDimensions);
+    propagatedBox = boxDimensions;
+    boxUpdateCalls++;
+    return;
+  }
+
+  int initializedAtomCount = -1;
+  int initializeCalls = 0;
+  int boxUpdateCalls = 0;
+  std::vector<double> initializedBox;
+  std::vector<double> propagatedBox;
+};
+
 } // namespace
 
 TEMPLATE_TEST_CASE("GeometricRestraintForceConstruction", "[mmfp]", float,
@@ -346,14 +377,12 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceTypedInputs", "[mmfp]", float,
   SECTION("EmptySelection") {
     // JEG261006: Native API decision, not CHARMM. CHARMM accepts "SELECT NONE"
     AtomSelection selection(NUM_ATOMS);
-    apo_test::CheckApoCharmmError(
-        [&](void) -> void {
-          force.addPlane(selection, ORIGIN, X_DIRECTION, 2.0);
-          return;
-        },
-        ApoCharmmErrorCode::InvalidArgument,
-        "Selection must contain at least one atom; observed 0");
+    REQUIRE_NOTHROW(force.addPlane(selection, ORIGIN, X_DIRECTION, 2.0));
     CHECK(force.getNumTerms() == 0);
+    CheckOutput("empty selection", Evaluate(force, coordinates, true, true),
+                0.0,
+                std::vector<double3>(NUM_ATOMS, make_double3(0.0, 0.0, 0.0)));
+    CheckVirial("empty selection", ReadOutput(force).virial, {});
     return;
   }
 
@@ -1880,13 +1909,13 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRadialTypedInputsAndValidation",
     const AtomReference outOfRange(MakePsf(NUM_ATOMS + 1), NUM_ATOMS);
     const AtomReference atom(psf, 0);
 
-    apo_test::CheckApoCharmmError(
-        [&](void) -> void {
-          add(empty);
-          return;
-        },
-        ApoCharmmErrorCode::InvalidArgument,
-        "Selection must contain at least one atom; observed 0");
+    // JEG261027: Empty selection contribute zero; adding one preserves radial
+    // output.
+    const auto termsBeforeEmpty = force.getNumTerms();
+    REQUIRE_NOTHROW(add(empty));
+    CHECK(force.getNumTerms() == termsBeforeEmpty);
+    CheckOutput("empty selection preserves radial output", ReadOutput(force),
+                previous.energy, previous.physicalForces);
 
     apo_test::CheckApoCharmmError(
         [&](void) -> void {
@@ -3318,12 +3347,16 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRcmTypedInputsAndFailedAddition",
     zeroTotal.set(2);
     zeroTotal.set(3);
 
-    // JEG261020: Native term creation requires a nonempty typed selection for
-    // the same atom count, or one in-range AtomReference, and a recognized
-    // mode.
-    apo_test::CheckApoCharmmError(
-        [&] { add(empty); }, ApoCharmmErrorCode::InvalidArgument,
-        "Selection must contain at least one atom; observed 0");
+    // JEG261020: CHARMM's empty atomwise selection contributes nothing. The
+    // native RCM API extends that rule without adding a term or dividing by an
+    // empty mass.
+    REQUIRE_NOTHROW(add(empty));
+    CHECK(force.getNumTerms() == 2);
+    CheckOutput("empty selection preserves RCM output", ReadOutput(force), 2.0,
+                expected);
+
+    // JEG261027: Nonempty selection still require the correct atom count, valid
+    // indices, a recognized mode and a nonzero signed RCM total.
     apo_test::CheckApoCharmmError(
         [&] { add(mismatch); }, ApoCharmmErrorCode::InvalidArgument,
         "Selection atom count mismatch; expected 4, observed 5");
@@ -4672,4 +4705,2602 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerVirial", "[mmfp][virial]",
                     {make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
   CheckVirial("unsubscribed baseline", unsubscribed.virial, baseline.virial,
               1.0e-8);
+}
+
+// JEG261027: CHARMM harmonic restraints cover all three geometries, activation
+// modes, signed RCM masses, accumulation, reset, and reuse. Compare energy and
+// physical force with CHARMM values. The none external-tensor components are
+// constructed from CHARMM coordinates and energetic gradients, not an internal
+// accumulator. Empty reset phases use the separate zero-energy consistency
+// check below. Every coordinate in this table is exactly representable by
+// float4. Further tests cover boundary resolution, direction acceptance, and
+// native coordinate/output representation limits.
+TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
+                   "[mmfp][charmm][virial]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+  using Shape = typename G::Geometry;
+  struct Term {
+    Shape geometry;
+    A activation;
+    S selectionMode;
+    std::vector<int> atoms;
+    std::array<double, 3> origin, direction;
+    double k, offset;
+    bool defaultActivation;
+  };
+  struct Phase {
+    const char *name;
+    const char *charmmBehavior;
+    bool replaceTerms;
+    std::array<double, 3> box;
+    std::vector<Term> terms;
+    int repeat;
+    bool energyReportedByCharmm;
+    double energy;
+    std::vector<std::array<double, 3>> forces;
+    std::array<double, 9> virial;
+    double energyTolerance, forceTolerance, virialTolerance;
+  };
+  struct Case {
+    const char *id;
+    std::vector<std::array<double, 3>> coordinatePrefix;
+    std::vector<double> massPrefix;
+    std::vector<Phase> phases;
+  };
+  const std::vector<std::array<double, 3>> baseCoordinates = {
+      {0, 0, 0}, {1, 0, 0},    {0, 1, 0},  {0, 0, 1},
+      {3, 4, 5}, {-3, -4, -5}, {7, 1, -2}, {-7, -1, 2},
+      {9, 9, 9}, {-9, -9, -9}, {2, 5, -6}, {-2, -5, 6}};
+  const std::vector<double> baseMasses = {1, 1.5, 2, 2.5, 3, 3.5,
+                                          4, 4.5, 5, 5.5, 6, 6.5};
+
+  const std::vector<Case> cases = {
+      {"Positive harmonic constant above the plane",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM uses U=K*(q-D)^2/2 and physical force -K*(q-D)*n.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         1.0,
+         {{-2.0, 0.0, 0.0}},
+         {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.7000000000599994e-09}}},
+      {"Negative harmonic constant below the plane",
+       {{1.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM accepts a negative K and preserves its sign in energy and "
+         "force.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           -2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         -1.0,
+         {{-2.0, 0.0, 0.0}},
+         {2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.60000000006e-09}}},
+      {"Zero harmonic constant",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM accepts K=0 and contributes zero energy, force, and external "
+         "tensor.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           0.0,
+           2.0,
+           false}},
+         1,
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.600000000059999e-09}}},
+      {"Symmetric plane on its negative side",
+       {{-3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM uses signed plane distance for SYMMETRIC, including negative "
+         "coordinates.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         25.0,
+         {{10.0, 0.0, 0.0}},
+         {30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-06,
+         1e-10,
+         5.100000000059999e-09}}},
+      {"Plane with a nonunit oblique normal",
+       {{3.0, 2.0, 4.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM normalizes the plane direction before computing signed "
+         "distance and force.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.5, -1.0, 1.5},
+           {2.0, 4.0, 6.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         5.1809948,
+         {{-1.2166693181, -2.4333386361, -3.6500079542}},
+         {3.6500079542999995, 7.300015908299999, 10.9500238626, 2.4333386362,
+          4.8666772722, 7.3000159084, 4.8666772724, 9.7333545444,
+          14.6000318168},
+         5e-08,
+         1e-10,
+         5.08250039777e-09}}},
+      {"OUTSIDE plane at zero signed distance",
+       {},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM uses absolute distance for OUTSIDE and chooses the positive "
+         "normal at zero.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::OUTSIDE,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 2.0, 3.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         4.0,
+         {{1.0690449676, 2.1380899353, 3.2071349029}},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.660356745205e-09}}},
+      {"INSIDE plane with negative offset at zero distance",
+       {},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM accepts a negative offset; INSIDE activates at zero distance "
+         "and uses the positive normal.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::INSIDE,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 2.0, 3.0},
+           2.0,
+           -2.0,
+           false}},
+         1,
+         true,
+         4.0,
+         {{-1.0690449676, -2.1380899353, -3.2071349029}},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.660356745205e-09}}},
+      {"INSIDE plane exactly at the boundary",
+       {{2.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM contributes zero energy and force when the geometry "
+         "coordinate equals the offset.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::INSIDE,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.50000000006e-09}}},
+      {"Cylinder with a nonunit oblique axis",
+       {{4.0, 1.0, -1.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM normalizes the axis and uses the perpendicular distance to "
+         "the infinite cylinder axis.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::CYLINDER,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {1.0, -2.0, 3.0},
+           {2.0, 4.0, 6.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         14.2548857,
+         {{-4.2024438653, -4.4826067897, 4.3892191482}},
+         {16.8097754612, 17.9304271588, -17.5568765928, 4.2024438653,
+          4.4826067897, -4.3892191482, -4.2024438653, -4.4826067897,
+          4.3892191482},
+         5e-08,
+         1e-10,
+         4.924130339544999e-09}}},
+      {"Cylinder with its axis reversed",
+       {{4.0, 1.0, -1.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM gives the same cylinder energy and force when the normalized "
+         "axis is reversed.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::CYLINDER,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {1.0, -2.0, 3.0},
+           {-1.0, -2.0, -3.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         14.2548857,
+         {{-4.2024438653, -4.4826067897, 4.3892191482}},
+         {16.8097754612, 17.9304271588, -17.5568765928, 4.2024438653,
+          4.4826067897, -4.3892191482, -4.2024438653, -4.4826067897,
+          4.3892191482},
+         5e-08,
+         1e-10,
+         4.924130339544999e-09}}},
+      {"Sphere with a displaced center",
+       {{4.25, -2.5, 3.75}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM uses the radial distance from the specified center and the "
+         "radial force direction.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {1.25, -2.5, 3.75},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         1.0,
+         {{-2.0, 0.0, 0.0}},
+         {8.5, 0.0, 0.0, -5.0, 0.0, 0.0, 7.5, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.9750000000599994e-09}}},
+      {"Sphere center with a negative offset",
+       {},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM suppresses the sphere contribution at its center before "
+         "applying INSIDE activation.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::INSIDE,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           -2.0,
+           false}},
+         1,
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.50000000006e-09}}},
+      {"Cylinder axis with a negative offset",
+       {{0.0, 0.0, 5.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM suppresses the cylinder contribution on its axis before "
+         "applying INSIDE activation.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::CYLINDER,
+           A::INSIDE,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 1.0},
+           2.0,
+           -2.0,
+           false}},
+         1,
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.00000000006e-09}}},
+      {"Sphere at the positive P1 image coordinate",
+       {{9.5, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM uses the supplied Cartesian coordinate without replacing the "
+         "separation by a minimum image.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {9.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         2.25,
+         {{3.0, 0.0, 0.0}},
+         {-28.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.400000000059999e-09}}},
+      {"Sphere at the negative P1 image coordinate",
+       {{-10.5, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM retains the raw separation after shifting an atom to another "
+         "P1 image.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {9.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         306.25,
+         {{35.0, 0.0, 0.0}},
+         {367.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-05,
+         1e-10,
+         7.1000000000599994e-09}}},
+      {"Plane and atom translated together",
+       {{21.0, 2.0, 3.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM preserves energy and force under a common translation; the "
+         "external coordinate-gradient tensor changes.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {20.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         1.0,
+         {{2.0, 0.0, 0.0}},
+         {-42.0, 0.0, 0.0, -4.0, 0.0, 0.0, -6.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         6.50000000006e-09}}},
+      {"Unchanged coordinates with two box sizes",
+       {{-9.5, 0.0, 0.0}},
+       {},
+       {{"First box",
+         "CHARMM leaves the GEO contribution unchanged when only the P1 box "
+         "lengths change.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {9.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         272.25,
+         {{33.0, 0.0, 0.0}},
+         {313.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-05,
+         1e-10,
+         6.900000000059999e-09},
+        {"Changed box",
+         "CHARMM leaves the GEO contribution unchanged when only the P1 box "
+         "lengths change.",
+         false,
+         {24.0, 36.0, 48.0},
+         {},
+         1,
+         true,
+         272.25,
+         {{33.0, 0.0, 0.0}},
+         {313.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-05,
+         1e-10,
+         6.900000000059999e-09}}},
+      {"Two atoms restrained independently",
+       {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {8.0, 8.0, 8.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM evaluates each selected atom independently and sums their "
+         "contributions.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         5.0,
+         {{-2.0, 0.0, 0.0}, {-4.0, 0.0, 0.0}},
+         {22.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         6.1000000000599996e-09}}},
+      {"Three atoms restrained independently",
+       {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {8.0, 8.0, 8.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM evaluates distinct selected coordinates independently and "
+         "adds their energy and force contributions.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0, 1, 2},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         6.0,
+         {{-2.0, 0.0, 0.0}, {-4.0, 0.0, 0.0}, {2.0, 0.0, 0.0}},
+         {20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         6.20000000006e-09}}},
+      {"Omitted selection means all atoms",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM applies GEO to all atoms when SELECT is omitted; the typed "
+         "call supplies an explicit all-atom selection.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         328.0,
+         {{-2.0, 0.0, 0.0},
+          {2.0, 0.0, 0.0},
+          {4.0, 0.0, 0.0},
+          {4.0, 0.0, 0.0},
+          {-2.0, 0.0, 0.0},
+          {10.0, 0.0, 0.0},
+          {-10.0, 0.0, 0.0},
+          {18.0, 0.0, 0.0},
+          {-14.0, 0.0, 0.0},
+          {22.0, 0.0, 0.0},
+          {0.0, 0.0, 0.0},
+          {8.0, 0.0, 0.0}},
+         {576.0, 0.0, 0.0, 436.0, 0.0, 0.0, 276.0, 0.0, 0.0},
+         5e-05,
+         1e-10,
+         9.400000000060002e-09}}},
+      {"Empty selection contributes zero",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM accepts SELECT NONE END and contributes zero; the typed API "
+         "accepts the corresponding empty selection.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.600000000059999e-09}}},
+      {"RCM with unequal positive masses",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
+       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
+       {{"Restraint evaluated",
+         "CHARMM forms the signed mass-weighted center and distributes its "
+         "force in the ratios m_i/M.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         4.0,
+         {{-1.0, 0.0, 0.0}, {-3.0, 0.0, 0.0}},
+         {16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.9000000000599994e-09}}},
+      {"RCM with a zero-mass member",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
+       {0.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
+       {{"Restraint evaluated",
+         "CHARMM accepts a zero-mass member when the selected total is "
+         "nonzero; that member receives zero force.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         9.0,
+         {{0.0, 0.0, 0.0}, {-6.0, 0.0, 0.0}},
+         {30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         6.0000000000599995e-09}}},
+      {"RCM with a negative member and positive total",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
+       {-1.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
+       {{"Restraint evaluated",
+         "CHARMM retains a negative member mass in both center construction "
+         "and the signed force share.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         25.0,
+         {{5.0, 0.0, 0.0}, {-15.0, 0.0, 0.0}},
+         {70.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-06,
+         1e-10,
+         6.70000000006e-09}}},
+      {"RCM with a negative selected total",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
+       {1.0, -3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
+       {{"Restraint evaluated",
+         "CHARMM accepts a nonzero negative total and uses signed masses "
+         "without taking absolute values.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         25.0,
+         {{5.0, 0.0, 0.0}, {-15.0, 0.0, 0.0}},
+         {70.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-06,
+         1e-10,
+         6.70000000006e-09}}},
+      {"RCM selection straddling a P1 boundary",
+       {{9.5, 0.0, 0.0}, {-9.5, 0.0, 0.0}},
+       {2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
+       {{"Restraint evaluated",
+         "CHARMM averages the raw selected coordinates without unwrapping the "
+         "group across the P1 boundary.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         6.1000000000599996e-09}}},
+      {"RCM sphere across a P1 boundary",
+       {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
+       {2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
+       {{"Restraint evaluated",
+         "CHARMM uses the raw center-to-reference separation without a "
+         "minimum-image replacement.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1},
+           {9.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         306.25,
+         {{17.5, 0.0, 0.0}, {17.5, 0.0, 0.0}},
+         {367.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-05,
+         1e-10,
+         8.05000000006e-09}}},
+      {"Mixed plane cylinder and sphere terms",
+       {{3.0, 2.0, 1.0}, {4.0, 1.0, 2.0}, {5.0, 3.0, 1.0}},
+       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
+       {{"Restraint evaluated",
+         "CHARMM adds the energy, force, and external tensor contributions of "
+         "different geometries.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           1.0,
+           false},
+          {Shape::CYLINDER,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {1},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 1.0},
+           1.0,
+           1.0,
+           false},
+          {Shape::SPHERE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {2},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           1.0,
+           1.0,
+           false}},
+         1,
+         true,
+         18.9608146,
+         {{-2.0, 0.0, 0.0},
+          {-3.0298574999, -0.757464375, 0.0},
+          {-4.1548457453, -2.4929074472, -0.8309691491}},
+         {38.8936587261, 15.494394736, 4.154845745499999, 19.4943947358,
+          8.236186716599999, 2.4929074473, 12.214560745100002, 4.0078361972,
+          0.8309691491},
+         5e-08,
+         1e-10,
+         5.859235162319999e-09}}},
+      {"Mixed atomwise and RCM terms",
+       {{3.0, 2.0, 1.0}, {4.0, 1.0, 2.0}, {5.0, 3.0, 1.0}},
+       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
+       {{"Restraint evaluated",
+         "CHARMM adds independent-atom and mass-weighted-center contributions "
+         "on shared atoms.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           1.0,
+           false},
+          {Shape::SPHERE,
+           A::SYMMETRIC,
+           S::RCM,
+           {1, 2},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           1.0,
+           1.0,
+           false}},
+         1,
+         true,
+         14.5640255,
+         {{-2.0, 0.0, 0.0},
+          {-5.1136815329, -0.8646878998, -0.7686114665},
+          {-1.409121022, -0.5764585999, -0.5124076443}},
+         {33.5003312416, 6.3410445987, 5.6364840874999995, 13.341044598899998,
+          2.5940636995000004, 2.3058343993999997, 13.6364840878, 2.3058343995,
+          2.0496305773},
+         5e-08,
+         1e-10,
+         5.826140127804999e-09}}},
+      {"Terms with overlapping selections",
+       {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {8.0, 8.0, 8.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM retains every term contribution on an atom present in more "
+         "than one selection.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           2.0,
+           false},
+          {Shape::SPHERE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {1, 2},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           1.5,
+           2.0,
+           false}},
+         1,
+         true,
+         6.25,
+         {{-1.0, 0.0, 0.0}, {-5.0, 0.0, 0.0}, {1.5, 0.0, 0.0}},
+         {21.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         6.1750000000599994e-09}}},
+      {"Duplicate equivalent terms",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM keeps duplicate terms; two identical terms double the "
+         "single-term contribution.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           2.0,
+           false}},
+         2,
+         true,
+         1.0,
+         {{-2.0, 0.0, 0.0}},
+         {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.7000000000599994e-09}}},
+      {"Plane sphere cylinder insertion order",
+       {{3.0, 2.0, 1.0}, {4.0, 1.0, 2.0}, {5.0, 3.0, 1.0}},
+       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
+       {{"Restraint evaluated",
+         "CHARMM accumulates distinct terms in definition order; the native "
+         "calculation preserves that order.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           1.5,
+           false},
+          {Shape::SPHERE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1, 2},
+           {1.0, 1.0, 1.0},
+           {0.0, 0.0, 0.0},
+           0.75,
+           2.5,
+           false},
+          {Shape::CYLINDER,
+           A::OUTSIDE,
+           S::ATOMWISE,
+           {1, 2},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 1.0},
+           1.25,
+           2.0,
+           false}},
+         1,
+         true,
+         4.49751867,
+         {{-1.5970852864, -0.0255487596, -0.0153292557},
+          {-2.7912558591, -0.0766462787, -0.0459877672},
+          {-0.1941705727, -0.0510975191, -0.0306585115}},
+         {16.9271321591, 0.6387189891, 0.3832313934, 6.567938150000001,
+          0.28103635520000003, 0.16862181310000002, 7.3737675773, 0.2299388361,
+          0.1379633016},
+         5e-09,
+         1e-10,
+         5.629125585969999e-09}}},
+      {"Large terms cancel before the small term",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM retains the small contribution when the large positive and "
+         "negative terms cancel first.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1e+16,
+           2.0,
+           false},
+          {Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           -1e+16,
+           2.0,
+           false},
+          {Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           2.0,
+           false}},
+         1,
+         true,
+         0.5,
+         {{-1.0, 0.0, 0.0}},
+         {3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-08,
+         1e-10,
+         4.650000000059999e-09}}},
+      {"Small term added before large cancellation",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM can lose the small contribution to floating-point rounding "
+         "when the insertion order changes.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1e+16,
+           2.0,
+           false},
+          {Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           2.0,
+           false},
+          {Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           -1e+16,
+           2.0,
+           false}},
+         1,
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.600000000059999e-09}}},
+      {"External tensor for an INSIDE plane",
+       {{3.0, 0.5, -0.25}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM supplies the atom gradient; the external tensor uses every "
+         "raw coordinate-gradient product r_a*g_b.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::INSIDE,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         1.0,
+         {{-2.0, 0.0, 0.0}},
+         {6.0, 0.0, 0.0, 1.0, 0.0, 0.0, -0.5, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.7000000000599994e-09}}},
+      {"External tensor for an RCM sphere",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
+       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
+       {{"Restraint evaluated",
+         "CHARMM distributes the center gradient over atoms; the external "
+         "tensor uses those distributed gradients.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1, 2},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         13.4444444,
+         {{-1.2222222222, 0.0, 0.0},
+          {-3.6666666667, 0.0, 0.0},
+          {-2.4444444444, 0.0, 0.0}},
+         {41.5555555553, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-08,
+         1e-10,
+         6.066666666725e-09}}},
+      {"External tensor at a P1 image coordinate",
+       {{-9.5, 1.0, 0.5}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM uses raw Cartesian GEO coordinates and gradients; their "
+         "external tensor keeps the image-position dependence.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {9.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         273.364988,
+         {{33.0072846537, -1.7841775488, -0.8920887744}},
+         {313.56920421014996, -16.9496867136, -8.4748433568, -33.0072846537,
+          1.7841775488, 0.8920887744, -16.50364232685, 0.8920887744,
+          0.4460443872},
+         5e-07,
+         1e-10,
+         6.900364232744999e-09}}},
+      {"External tensor for mixed atomwise and RCM terms",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
+       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
+       {{"Restraint evaluated",
+         "CHARMM adds all gradients on each atom; the external tensor is "
+         "reconstructed from that sum.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           2.0,
+           false},
+          {Shape::CYLINDER,
+           A::OUTSIDE,
+           S::ATOMWISE,
+           {1, 2},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 1.0},
+           1.5,
+           2.0,
+           false},
+          {Shape::SPHERE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1, 2},
+           {1.0, 1.0, 1.0},
+           {0.0, 0.0, 0.0},
+           0.75,
+           2.5,
+           false}},
+         1,
+         true,
+         7.11745489,
+         {{0.7157355097, 0.0609138193, 0.0609138193},
+          {-3.8527934708, 0.182741458, 0.182741458},
+          {-0.5685289805, 0.1218276387, 0.1218276387}},
+         {23.664992668800004, -2.0710698576, -2.0710698576, 0.0, 0.0, 0.0, 0.0,
+          0.0, 0.0},
+         5e-09,
+         1e-10,
+         5.95685289811e-09}}},
+      {"Remove terms with GEO RESET",
+       {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}},
+       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
+       {{"Before reset",
+         "CHARMM GEO RESET removes the installed terms, so subsequent "
+         "evaluation has no contribution from them.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         5.0,
+         {{-2.0, 0.0, 0.0}, {-4.0, 0.0, 0.0}},
+         {22.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.20000000006e-09},
+        {"After reset",
+         "CHARMM GEO RESET removes the installed terms, so subsequent "
+         "evaluation has no contribution from them.",
+         true,
+         {20.0, 30.0, 40.0},
+         {},
+         1,
+         false,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         0.0,
+         1e-10,
+         4.9000000000599996e-09}}},
+      {"Reset then reuse with an RCM term",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}},
+       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
+       {{"Before reset",
+         "CHARMM permits a new RCM definition after GEO RESET while preserving "
+         "the PSF masses.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         1.0,
+         {{2.0, 0.0, 0.0}},
+         {-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.9000000000599996e-09},
+        {"After reset",
+         "CHARMM permits a new RCM definition after GEO RESET while preserving "
+         "the PSF masses.",
+         true,
+         {20.0, 30.0, 40.0},
+         {},
+         1,
+         false,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         0.0,
+         1e-10,
+         4.8000000000599995e-09},
+        {"New RCM term after reset",
+         "CHARMM permits a new RCM definition after GEO RESET while preserving "
+         "the PSF masses.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         4.0,
+         {{-1.0, 0.0, 0.0}, {-3.0, 0.0, 0.0}},
+         {16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.000000000059999e-09}}},
+      {"Repeated reset and reuse cycles",
+       {{3.0, 0.0, 0.0}, {5.0, 0.0, 0.0}},
+       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
+       {{"First cycle: atomwise terms",
+         "CHARMM supports repeated GEO RESET and new definitions without "
+         "restoring removed terms or changing masses.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         1.0,
+         {{-2.0, 0.0, 0.0}},
+         {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.100000000059999e-09},
+        {"First cycle: reset",
+         "CHARMM supports repeated GEO RESET and new definitions without "
+         "restoring removed terms or changing masses.",
+         true,
+         {20.0, 30.0, 40.0},
+         {},
+         1,
+         false,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         0.0,
+         1e-10,
+         5.000000000059999e-09},
+        {"Second cycle: RCM terms",
+         "CHARMM supports repeated GEO RESET and new definitions without "
+         "restoring removed terms or changing masses.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         6.25,
+         {{-1.25, 0.0, 0.0}, {-3.75, 0.0, 0.0}},
+         {22.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.250000000059999e-09},
+        {"Second cycle: reset",
+         "CHARMM supports repeated GEO RESET and new definitions without "
+         "restoring removed terms or changing masses.",
+         true,
+         {20.0, 30.0, 40.0},
+         {},
+         1,
+         false,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         0.0,
+         1e-10,
+         5.000000000059999e-09},
+        {"Third cycle: atomwise terms",
+         "CHARMM supports repeated GEO RESET and new definitions without "
+         "restoring removed terms or changing masses.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {1.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           1.5,
+           1.0,
+           false}},
+         1,
+         true,
+         0.75,
+         {{-1.5, 0.0, 0.0}},
+         {4.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-08,
+         1e-10,
+         5.0750000000599995e-09}}},
+      {"Default harmonic potential and INSIDE activation",
+       {{4.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM defaults to HARMONIC and INSIDE; the native test omits the "
+         "activation argument.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::INSIDE,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           true}},
+         1,
+         true,
+         4.0,
+         {{-4.0, 0.0, 0.0}},
+         {16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.900000000059999e-09}}},
+      {"Omitted FORCE means zero",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM defaults an omitted FORCE to zero; the typed call supplies "
+         "K=0 explicitly.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           0.0,
+           2.0,
+           false}},
+         1,
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.600000000059999e-09}}},
+      {"Omitted DROFF means zero",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM defaults an omitted DROFF to zero; the native test uses the "
+         "same offset.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           0.0,
+           false}},
+         1,
+         true,
+         9.0,
+         {{-6.0, 0.0, 0.0}},
+         {18.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.900000000059999e-09}}},
+      {"Omitted reference means the origin",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM defaults an omitted reference to the origin; the typed call "
+         "supplies that origin explicitly.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::SPHERE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         1,
+         true,
+         1.0,
+         {{-2.0, 0.0, 0.0}},
+         {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.7000000000599994e-09}}},
+      {"Large finite coordinate with a small constant",
+       {{900000000.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM accepts this large coordinate and small K when the resulting "
+         "arithmetic remains finite.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1e-18,
+           0.0,
+           false}},
+         1,
+         true,
+         0.405,
+         {{-9e-10, 0.0, 0.0}},
+         {0.8099999999999999, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-08,
+         1e-10,
+         0.0900000043}}},
+      {"Thirteen terms exceed the atom count",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM can grow the GEO term allocation beyond the atom count and "
+         "evaluates all thirteen terms.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         13,
+         true,
+         13.0,
+         {{-26.0, 0.0, 0.0}},
+         {78.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-06,
+         1e-10,
+         5.9000000000599994e-09}}},
+      {"Two terms exceed an initial capacity of one",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM treats MAXGEO as an initial allocation, so a second term is "
+         "still evaluated.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         2,
+         true,
+         2.0,
+         {{-4.0, 0.0, 0.0}},
+         {12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.8000000000599995e-09}}},
+      {"Reset thirteen terms and define two",
+       {{3.0, 0.0, 0.0}},
+       {},
+       {{"Thirteen terms",
+         "CHARMM allows GEO RESET followed by a smaller new definition without "
+         "retaining old terms.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         13,
+         true,
+         13.0,
+         {{-26.0, 0.0, 0.0}},
+         {78.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-06,
+         1e-10,
+         5.9000000000599994e-09},
+        {"Two terms after reset",
+         "CHARMM allows GEO RESET followed by a smaller new definition without "
+         "retaining old terms.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0,
+           false}},
+         2,
+         true,
+         2.0,
+         {{-4.0, 0.0, 0.0}},
+         {12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.8000000000599995e-09}}},
+      {"Energy underflow suppresses the gradient",
+       {},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM squares the deviation before scaling energy and suppresses "
+         "the gradient when that energy becomes zero.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {-1e-300, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1e+300,
+           0.0,
+           false}},
+         1,
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.50000000006e-09}}},
+      {"Very large offset balanced by a small constant",
+       {},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM accepts this large finite offset with a small K and produces "
+         "finite energy.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1e-300,
+           1e+150,
+           false}},
+         1,
+         true,
+         0.5,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-08,
+         1e-10,
+         4.50000000006e-09}}},
+      {"Very large reference balanced by a small constant",
+       {},
+       {},
+       {{"Restraint evaluated",
+         "CHARMM accepts this large finite reference with a small K and "
+         "produces finite energy.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::ATOMWISE,
+           {0},
+           {1e+150, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1e-300,
+           0.0,
+           false}},
+         1,
+         true,
+         0.5,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-08,
+         1e-10,
+         4.50000000006e-09}}},
+      {"Tiny negative RCM total with zero force constant",
+       {{1.0, 0.0, 0.0}},
+       {-1e-300, 0.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
+       {{"Restraint evaluated",
+         "CHARMM accepts this tiny negative total with a zero-mass partner in "
+         "the zero-K configuration.",
+         true,
+         {20.0, 30.0, 40.0},
+         {{Shape::PLANE,
+           A::SYMMETRIC,
+           S::RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           0.0,
+           0.0,
+           false}},
+         1,
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.50000000006e-09}}}};
+
+  for (const auto &test : cases) {
+    INFO(test.id);
+
+    auto positions = baseCoordinates;
+    auto masses = baseMasses;
+    std::copy(test.coordinatePrefix.begin(), test.coordinatePrefix.end(),
+              positions.begin());
+    std::copy(test.massPrefix.begin(), test.massPrefix.end(), masses.begin());
+
+    auto psf = MakePsf();
+    psf->getMasses() = masses;
+
+    std::vector<float4> coordinates;
+    for (const auto &position : positions) {
+      for (const double value : position)
+        REQUIRE(static_cast<double>(static_cast<float>(value)) == value);
+      coordinates.push_back(make_float4(static_cast<float>(position[0]),
+                                        static_cast<float>(position[1]),
+                                        static_cast<float>(position[2]), 0.0f));
+    }
+
+    G force(psf);
+    force.initialize(NUM_ATOMS, BOX_DIMS);
+
+    for (const auto &phase : test.phases) {
+      INFO("phase=" << phase.name << ", " << phase.charmmBehavior);
+
+      force.setBoxDimensions({phase.box[0], phase.box[1], phase.box[2]});
+
+      if (phase.replaceTerms)
+        force.reset();
+
+      for (int copy = 0; copy < phase.repeat; copy++) {
+        for (const auto &term : phase.terms) {
+          AtomSelection selection(NUM_ATOMS);
+
+          for (const int atom : term.atoms)
+            selection.set(atom);
+
+          if (term.defaultActivation) {
+            REQUIRE(term.geometry == Shape::PLANE);
+            REQUIRE(term.selectionMode == S::ATOMWISE);
+
+            force.addPlane(selection, term.origin, term.direction, term.k,
+                           term.offset);
+          } else if (term.geometry == Shape::PLANE) {
+            force.addPlane(selection, term.origin, term.direction, term.k,
+                           term.offset, term.activation, term.selectionMode);
+          } else if (term.geometry == Shape::CYLINDER) {
+            force.addCylinder(selection, term.origin, term.direction, term.k,
+                              term.offset, term.activation, term.selectionMode);
+          } else {
+            force.addSphere(selection, term.origin, term.k, term.offset,
+                            term.activation, term.selectionMode);
+          }
+        }
+      }
+
+      // JEG261027: CHARMM GEO RESET removes restraint contributions. Empty
+      // phases check zero native energy as a reset invariant and forces against
+      // CHARMM. Their external tensors use CHARMM coordinates and energetic
+      // gradients; these phases make no direct CHARMM energy comparison.
+      INFO("energy reported by CHARMM=" << phase.energyReportedByCharmm);
+
+      const auto observed = Evaluate(force, coordinates, true, true);
+      std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+      double forceMagnitude = 0.0;
+
+      for (std::size_t i = 0; i < phase.forces.size(); i++) {
+        expected[i] = make_double3(phase.forces[i][0], phase.forces[i][1],
+                                   phase.forces[i][2]);
+        for (const double component : phase.forces[i])
+          forceMagnitude = std::max(forceMagnitude, std::abs(component));
+      }
+
+      const double arithmetic = 64.0 * std::numeric_limits<double>::epsilon();
+      const double conversion =
+          0.5 * INV_FORCE_SCALE_TEST +
+          (std::is_same<TestType, float>::value
+               ? 0.5 * std::numeric_limits<float>::epsilon() * forceMagnitude
+               : 0.0);
+
+      CheckOutput(test.id, observed, phase.energy, expected,
+                  phase.energyTolerance + arithmetic * std::abs(phase.energy),
+                  phase.forceTolerance + conversion +
+                      arithmetic * std::max(1.0, forceMagnitude));
+      CheckVirial(test.id, observed.virial, phase.virial,
+                  phase.virialTolerance + arithmetic, arithmetic);
+      CHECK(force.getMasses() == masses);
+
+      if (std::string(test.id) == "Energy underflow suppresses the gradient") {
+        // JEG261027: CHARMM suppresses the gradient when the computed term
+        // energy is zero. Preserve that force behavior for every energy/virial
+        // flag pair.
+        for (const bool calcEnergy : {true, false}) {
+          for (const bool calcVirial : {true, false}) {
+            const auto gated =
+                Evaluate(force, coordinates, calcEnergy, calcVirial);
+
+            CheckOutput("zero-energy gate with output flags", gated, 0.0,
+                        expected);
+            CheckVirial("zero-energy gate with output flags", gated.virial, {});
+          }
+        }
+      }
+    }
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
+                   "[mmfp][charmm][representation][virial]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using Shape = typename G::Geometry;
+  struct Case {
+    const char *id;
+    Shape geometry;
+    A activation;
+    std::array<double, 3> sourcePosition, sourceOrigin;
+    double energy;
+    std::array<double, 3> physicalForce;
+    std::array<double, 9> sourceVirial;
+    double energyTolerance, virialTolerance;
+  };
+
+  // JEG261027: CHARMM suppresses radial energy and force near the center or
+  // axis and resumes the harmonic law outside that region. The plane probe
+  // approaches its activation boundary. float4 cannot preserve these decimal
+  // positions. Translate the atom to zero and shift its double origin by the
+  // same amount to preserve the displacement used for the CHARMM energy/force
+  // comparison. The external coordinate-gradient tensor changes under
+  // translation: recover the tensor constructed from the original CHARMM
+  // coordinates and gradients as W_original = W_translated + r_original tensor
+  // g. These checks compare translated inputs; they do not demonstrate that
+  // float4 retains the original positions or their raw-coordinate tensor.
+  const std::vector<Case> cases = {
+      {"OUTSIDE plane just inside the boundary",
+       Shape::PLANE,
+       A::OUTSIDE,
+       {1.999999, 0.0, 0.0},
+       {0.0, 0.0, 0.0},
+       9.999999998e-13,
+       {2e-06, 0.0, 0.0},
+       {-3.999998e-06, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+       5e-23,
+       4.50000010006e-09},
+      {"Sphere distance just below the radial cutoff",
+       Shape::SPHERE,
+       A::SYMMETRIC,
+       {1.2500099999, -2.5, 3.75},
+       {1.25, -2.5, 3.75},
+       0.0,
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+       5e-07,
+       4.87500000006e-09},
+      {"Sphere distance just above the radial cutoff",
+       Shape::SPHERE,
+       A::SYMMETRIC,
+       {1.25001, -2.5, 3.75},
+       {1.25, -2.5, 3.75},
+       3.99996,
+       {3.99998, 0.0, 0.0},
+       {-5.0000149998, 0.0, 0.0, 9.99995, 0.0, 0.0, -14.999925, 0.0, 0.0},
+       5e-07,
+       5.07499900006e-09},
+      {"Cylinder distance just below the radial cutoff",
+       Shape::CYLINDER,
+       A::SYMMETRIC,
+       {9.9999e-06, 0.0, 5.0},
+       {0.0, 0.0, 0.0},
+       0.0,
+       {0.0, 0.0, 0.0},
+       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+       5e-07,
+       5.00000000006e-09},
+      {"Cylinder distance just above the radial cutoff",
+       Shape::CYLINDER,
+       A::SYMMETRIC,
+       {1e-05, 0.0, 5.0},
+       {0.0, 0.0, 0.0},
+       3.99996,
+       {3.99998, 0.0, 0.0},
+       {-3.99998e-05, 0.0, 0.0, 0.0, 0.0, 0.0, -19.9999, 0.0, 0.0},
+       5e-07,
+       5.1999990000599995e-09}};
+
+  for (const auto &test : cases) {
+    INFO(test.id);
+
+    auto psf = MakePsf();
+
+    const AtomReference atom(psf, 0);
+    const std::array<double, 3> translatedOrigin = {
+        test.sourceOrigin[0] - test.sourcePosition[0],
+        test.sourceOrigin[1] - test.sourcePosition[1],
+        test.sourceOrigin[2] - test.sourcePosition[2]};
+    CHECK(static_cast<double>(static_cast<float>(test.sourcePosition[0])) !=
+          test.sourcePosition[0]);
+
+    G force(psf);
+    if (test.geometry == Shape::PLANE)
+      force.addPlane(atom, translatedOrigin, X_DIRECTION, 2.0, 2.0,
+                     test.activation);
+    else if (test.geometry == Shape::CYLINDER)
+      force.addCylinder(atom, translatedOrigin, {0, 0, 1}, 2.0, 2.0,
+                        test.activation);
+    else
+      force.addSphere(atom, translatedOrigin, 2.0, 2.0, test.activation);
+
+    const std::vector<float4> coordinates(NUM_ATOMS,
+                                          make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+    std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+    expected[0] = make_double3(test.physicalForce[0], test.physicalForce[1],
+                               test.physicalForce[2]);
+    const double magnitude = std::max({std::abs(test.physicalForce[0]),
+                                       std::abs(test.physicalForce[1]),
+                                       std::abs(test.physicalForce[2])});
+    const double conversion =
+        0.5 * INV_FORCE_SCALE_TEST +
+        (std::is_same<TestType, float>::value
+             ? 0.5 * std::numeric_limits<float>::epsilon() * magnitude
+             : 0.0);
+    const double forceTolerance = 1.0e-10 + conversion + 1.0e-13;
+    const auto observed = Evaluate(force, coordinates, true, true);
+    CheckOutput(test.id, observed, test.energy, expected,
+                test.energyTolerance +
+                    64.0 * std::numeric_limits<double>::epsilon() *
+                        std::abs(test.energy),
+                forceTolerance);
+    CheckVirial("translated native tensor", observed.virial, {});
+    const std::array<double, 3> gradient = {-observed.physicalForces[0].x,
+                                            -observed.physicalForces[0].y,
+                                            -observed.physicalForces[0].z};
+    for (std::size_t a = 0; a < 3; a++) {
+      for (std::size_t b = 0; b < 3; b++) {
+        INFO("source tensor component=" << 3 * a + b);
+        const double restored =
+            observed.virial[3 * a + b] + test.sourcePosition[a] * gradient[b];
+        CHECK(std::abs(restored - test.sourceVirial[3 * a + b]) <=
+              test.virialTolerance +
+                  std::abs(test.sourcePosition[a]) * forceTolerance + 1.0e-13);
+      }
+    }
+  }
+  // float4 rounds the two sphere boundary positions to the same value and
+  // moves the first active cylinder radius below the suppression threshold.
+  // Preserve this resolution limit explicitly instead of widening tolerances.
+  CHECK(static_cast<float>(1.2500099999) == static_cast<float>(1.2500100000));
+  const double roundedRadius = static_cast<double>(static_cast<float>(1.0e-5));
+  CHECK(roundedRadius * roundedRadius < 1.0e-10);
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmDirectionCompatibility",
+                   "[mmfp][charmm][representation]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  struct Case {
+    const char *id;
+    bool cylinder;
+    bool acceptedByCharmm;
+    std::array<double, 3> direction;
+  };
+  // CHARMM accepts two of these tiny directions and rejects the other
+  // three inputs. The accepted directions give E=1 and a nonzero physical-
+  // force component of -2 after normalization.
+  // The native typed API uses std::hypot and accepts all five finite nonzero
+  // vectors because their norms are finite. For the CHARMM-rejected inputs,
+  // the expected values check this native normalization policy only.
+  const std::array<Case, 5> cases = {
+      {{"Tiny plane direction rejected by CHARMM",
+        false,
+        false,
+        {1.571290965192e-162, 0, 0}},
+       {"Tiny plane direction accepted by CHARMM",
+        false,
+        true,
+        {1.57129096519201e-162, 0, 0}},
+       {"Tiny cylinder direction rejected by CHARMM",
+        true,
+        false,
+        {1.178759765625e-162, 1.5716796875e-162, 0}},
+       {"Tiny cylinder direction accepted by CHARMM",
+        true,
+        true,
+        {1.178759765625006e-162, 1.571679687500008e-162, 0}},
+       {"Very large plane direction rejected by CHARMM",
+        false,
+        false,
+        {1e300, 0, 0}}}};
+  for (const auto &test : cases) {
+    INFO(test.id << ", CHARMM accepted=" << test.acceptedByCharmm);
+    auto psf = MakePsf();
+    G force(psf);
+    const AtomReference atom(psf, 0);
+    std::vector<float4> coordinates(NUM_ATOMS, make_float4(0, 0, 0, 0));
+    std::vector<double3> expected(NUM_ATOMS, make_double3(0, 0, 0));
+    std::array<double, 9> virial{};
+    if (test.cylinder) {
+      force.addCylinder(atom, ORIGIN, test.direction, 2, 2, A::SYMMETRIC);
+      coordinates[0].z = 3.0f;
+      expected[0].z = -2.0;
+      virial[8] = 6.0;
+    } else {
+      force.addPlane(atom, ORIGIN, test.direction, 2, 2, A::SYMMETRIC);
+      coordinates[0].x = 3.0f;
+      expected[0].x = -2.0;
+      virial[0] = 6.0;
+    }
+    const auto observed = Evaluate(force, coordinates, true, true);
+    CheckOutput(test.id, observed, 1.0, expected, 5.0e-7,
+                1.0e-10 + 0.5 * INV_FORCE_SCALE_TEST);
+    CheckVirial(test.id, observed.virial, virial, 5.0e-9);
+  }
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmInputValidation",
+                   "[mmfp][charmm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+  auto psf = MakePsf();
+  G force(psf);
+  const AtomReference atom(psf, 0);
+  // CHARMM rejects a zero direction; it cannot define a plane normal.
+  apo_test::CheckApoCharmmError(
+      [&] { force.addPlane(atom, ORIGIN, ORIGIN, 2.0); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Direction must have a positive finite norm");
+  // CHARMM rejects a NaN force-constant token. The typed API instead
+  // receives numeric NaN and rejects it before installing a term.
+  apo_test::CheckApoCharmmError(
+      [&] { force.addPlane(atom, ORIGIN, X_DIRECTION, QUIET_NAN); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Force constant must be finite; observed " + std::to_string(QUIET_NAN));
+  // A zero signed total mass leaves CHARMM's RCM center undefined and
+  // yields invalid arithmetic. The native API rejects it before adding a term.
+  auto masses = force.getMasses();
+  masses[0] = 1.0;
+  masses[1] = -1.0;
+  force.setMasses(masses);
+  AtomSelection pair(NUM_ATOMS);
+  pair.set(0);
+  pair.set(1);
+  apo_test::CheckApoCharmmError(
+      [&] {
+        force.addPlane(pair, ORIGIN, X_DIRECTION, 2.0, 2.0, A::SYMMETRIC,
+                       S::RCM);
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "RCM total mass must be finite and nonzero; observed 0.000000");
+  CHECK(force.getNumTerms() == 0);
+  // CHARMM rejects unknown geometry keywords. Native callers choose
+  // addPlane, addCylinder or addSphere; this interface has no geometry-token
+  // parser or generic Geometry argument to exercise with an unknown keyword.
+}
+
+// CHARMM forms an RCM center from the signed mass sum even when that sum
+// nearly cancels. GeometricRestraintForceRcmNearZeroMassRepresentation checks
+// decimal-coordinate results separately from GPU results at float4-rounded
+// coordinates: near-cancellation can amplify rounding enough to reverse force.
+// CHARMM can also produce Fx=-1e7, outside the native signed 2^40-scaled output
+// range. GeometricRestraintForceCheckedNumericalLimits checks that both native
+// specializations reject this output without changing existing values.
+// That rejection verifies the native storage limit, not matching force output.
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceEmptySelectionMutation",
+                   "[mmfp][charmm][rcm]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+  auto psf = MakePsf();
+  G force(psf);
+  force.setMasses(std::vector<double>(NUM_ATOMS, 0.0));
+  force.addSphere(AtomReference(psf, 0), ORIGIN, 2.0, 2.0, A::SYMMETRIC);
+  std::vector<float4> coordinates(NUM_ATOMS, make_float4(0, 0, 0, 0));
+  coordinates[0].x = 3.0f;
+  const auto previous = Evaluate(force, coordinates, true, true);
+  const auto stream = force.getStream();
+  const auto output = force.getForce();
+  const auto energyVirial = force.getEnergyVirial();
+  const auto masses = force.getMasses();
+  const AtomSelection empty(NUM_ATOMS);
+  // CHARMM's empty atomwise selection contributes nothing. The native RCM
+  // API extends that rule by skipping center division, even with all-zero
+  // masses. The native API still validates parameters before returning without
+  // changes.
+  for (const auto mode : {S::ATOMWISE, S::RCM}) {
+    for (int geometry = 0; geometry < 3; geometry++) {
+      INFO("selection mode=" << static_cast<int>(mode)
+                             << ", geometry=" << geometry);
+      const auto add = [&](const double k, const A activation) -> void {
+        if (geometry == 0)
+          force.addPlane(empty, ORIGIN, X_DIRECTION, k, 2.0, activation, mode);
+        else if (geometry == 1)
+          force.addCylinder(empty, ORIGIN, X_DIRECTION, k, 2.0, activation,
+                            mode);
+        else
+          force.addSphere(empty, ORIGIN, k, 2.0, activation, mode);
+      };
+      REQUIRE_NOTHROW(add(2.0, A::SYMMETRIC));
+      apo_test::CheckApoCharmmError([&] { add(QUIET_NAN, A::SYMMETRIC); },
+                                    ApoCharmmErrorCode::InvalidArgument,
+                                    "Force constant must be finite; observed " +
+                                        std::to_string(QUIET_NAN));
+      apo_test::CheckApoCharmmError(
+          [&] { add(2.0, static_cast<A>(99)); },
+          ApoCharmmErrorCode::InvalidArgument,
+          "Invalid MMFP activation value; observed 99");
+      CHECK(force.getNumTerms() == 1);
+      CHECK(force.getMasses() == masses);
+      CHECK(force.getStream() == stream);
+      CHECK(force.getForce() == output);
+      CHECK(force.getEnergyVirial() == energyVirial);
+      const auto preserved = ReadOutput(force);
+      CheckOutput("empty addition preserves output", preserved, previous.energy,
+                  previous.physicalForces);
+      CheckVirial("empty addition preserves tensor", preserved.virial,
+                  previous.virial);
+      const auto reevaluated = Evaluate(force, coordinates, true, true);
+      CheckOutput("empty addition preserves installed terms", reevaluated,
+                  previous.energy, previous.physicalForces);
+      CheckVirial("empty addition preserves installed tensor",
+                  reevaluated.virial, previous.virial);
+    }
+  }
+}
+
+// CHARMM adds overlapping terms and permits reuse after GEO RESET.
+// These integration checks verify that native subscription and mutation keep
+// those contributions correct. Resource ownership is a native API contract.
+TEMPLATE_TEST_CASE("GeometricRestraintForceManagerResubscription",
+                   "[mmfp][manager]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
+                                                "toppar_water_ions.str");
+  auto psf =
+      std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
+  auto ctx = std::make_shared<CharmmContext>(psf, prm);
+  auto fm = ctx->getForceManager();
+  ctx->setBoxDimensions({30.0, 32.0, 34.0});
+  ctx->setCoordinates(std::vector<double3>{make_double3(2.0, 1.0, -1.0),
+                                           make_double3(4.0, 4.0, 3.0)});
+  ctx->useHolonomicConstraints(false);
+  const ManagerOutput baseline = EvaluateManager(ctx, true, true);
+  auto force = std::make_shared<G>(psf);
+  force->addPlane(AtomReference(psf, 0), ORIGIN, X_DIRECTION, 2.0, 0.0,
+                  A::SYMMETRIC);
+  fm->subscribe(force, "mmfp_lifecycle", force->getStream(), force->getForce(),
+                force->getEnergyVirial());
+  const auto streamOwner = force->getStream();
+  const auto outputOwner = force->getForce();
+  const auto energyOwner = force->getEnergyVirial();
+  const std::vector<double3> planeGradient = {make_double3(4.0, 0.0, 0.0),
+                                              make_double3(0.0, 0.0, 0.0)};
+  const ManagerOutput subscribed = EvaluateManager(ctx, true, true);
+  CheckManagerDelta(baseline, subscribed, 4.0, planeGradient);
+
+  apo_test::CheckApoCharmmError(
+      [&] {
+        fm->subscribe(force, "different_tag_same_object", force->getStream(),
+                      force->getForce(), force->getEnergyVirial());
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Force is already subscribed to this ForceManager");
+  CheckManagerDelta(baseline, EvaluateManager(ctx, true, true), 4.0,
+                    planeGradient);
+
+  // PBC::UNSET is the current name of the old NONE sentinel (value zero).
+  ForceView view(force.get());
+  CHECK(view.supportsPBC(PBC::P1));
+  CHECK(!view.supportsPBC(PBC::UNSET));
+  CHECK(!view.supportsPBC(PBC::P21));
+  CHECK(!view.supportsPBC(static_cast<PBC>(99)));
+  for (const PBC rejected : {PBC::UNSET, PBC::P21, static_cast<PBC>(99)}) {
+    const std::string message =
+        rejected == PBC::P21
+            ? "Subscribed force does not support periodic boundary condition "
+              "value 2"
+            : "Periodic boundary condition must be PBC::P1 or PBC::P21; "
+              "observed " +
+                  std::to_string(static_cast<int>(rejected));
+    apo_test::CheckApoCharmmError(
+        [&] { fm->setPeriodicBoundaryCondition(rejected); },
+        ApoCharmmErrorCode::InvalidArgument, message);
+    REQUIRE(fm->getPeriodicBoundaryCondition() == PBC::P1);
+    REQUIRE(fm->isInitialized());
+    CHECK(force->getStream() == streamOwner);
+    CHECK(force->getForce() == outputOwner);
+    CHECK(force->getEnergyVirial() == energyOwner);
+    const ManagerOutput afterRejection = EvaluateManager(ctx, true, true);
+    CheckManagerDelta(baseline, afterRejection, 4.0, planeGradient);
+    CheckVirial("PBC rejection preserves aggregate tensor",
+                afterRejection.virial, subscribed.virial, 1.0e-8);
+  }
+
+  fm->unsubscribe(force);
+  const ManagerOutput removed = EvaluateManager(ctx, true, true);
+  CheckManagerDelta(baseline, removed, 0.0,
+                    {make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
+  CheckVirial("unsubscribe restores baseline", removed.virial, baseline.virial,
+              1.0e-8);
+  CHECK_NOTHROW(fm->setPeriodicBoundaryCondition(PBC::P21));
+  CHECK(fm->getPeriodicBoundaryCondition() == PBC::P21);
+  apo_test::CheckApoCharmmError(
+      [&] {
+        fm->subscribe(force, "mmfp_lifecycle", force->getStream(),
+                      force->getForce(), force->getEnergyVirial());
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Subscribed force does not support periodic boundary condition value 2");
+  fm->setPeriodicBoundaryCondition(PBC::P1);
+  fm->subscribe(force, "mmfp_lifecycle", force->getStream(), force->getForce(),
+                force->getEnergyVirial());
+  CheckManagerDelta(baseline, EvaluateManager(ctx, true, true), 4.0,
+                    planeGradient);
+
+  force->reset();
+  force->addPlane(AtomReference(psf, 1), ORIGIN, {0.0, 1.0, 0.0}, 2.0, 1.0,
+                  A::SYMMETRIC);
+  CheckManagerDelta(baseline, EvaluateManager(ctx), 9.0,
+                    {make_double3(0.0, 0.0, 0.0), make_double3(0.0, 6.0, 0.0)});
+  fm->unsubscribe("mmfp_lifecycle");
+  CheckManagerDelta(baseline, EvaluateManager(ctx), 0.0,
+                    {make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceManagerBoxPropagation",
+                   "[mmfp][manager]", float, double) {
+  using G = ObservedGeometricRestraintForce<TestType>;
+  using A = typename G::Activation;
+  auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
+                                                "toppar_water_ions.str");
+  auto psf =
+      std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
+  auto ctx = std::make_shared<CharmmContext>(psf, prm);
+  auto fm = ctx->getForceManager();
+  auto force = std::make_shared<G>(psf);
+  const std::vector<double> firstBox = {30.0, 32.0, 34.0};
+  const std::vector<double> secondBox = {40.0, 42.0, 44.0};
+
+  SECTION("SubscribeBeforeInitialization") {
+    fm->subscribe(force, "mmfp_box", force->getStream(), force->getForce(),
+                  force->getEnergyVirial());
+    // Terms can be added while subscribed and before manager initialization.
+    force->addPlane(AtomReference(psf, 0), ORIGIN, X_DIRECTION, 2.0, 0.0,
+                    A::SYMMETRIC);
+    ctx->setBoxDimensions(firstBox);
+    CHECK(force->boxUpdateCalls == 1);
+    CHECK(force->propagatedBox == firstBox);
+  }
+  SECTION("SubscribeAfterInitialization") {
+    ctx->setBoxDimensions(firstBox);
+    fm->subscribe(force, "mmfp_box", force->getStream(), force->getForce(),
+                  force->getEnergyVirial());
+    force->addPlane(AtomReference(psf, 0), ORIGIN, X_DIRECTION, 2.0, 0.0,
+                    A::SYMMETRIC);
+    CHECK(force->boxUpdateCalls == 0);
+  }
+  REQUIRE(fm->isInitialized());
+  CHECK(force->initializeCalls == 1);
+  CHECK(force->initializedAtomCount == 2);
+  CHECK(force->initializedBox == firstBox);
+
+  ctx->setCoordinates(std::vector<double3>{make_double3(2.0, 1.0, -1.0),
+                                           make_double3(4.0, 4.0, 3.0)});
+  ctx->useHolonomicConstraints(false);
+  const ManagerOutput firstRestrained = EvaluateManager(ctx, true, true);
+  const Output firstNative = ReadOutput<TestType>(*force);
+  const int oldBoxUpdates = force->boxUpdateCalls;
+  ctx->setBoxDimensions(secondBox);
+  CHECK(force->boxUpdateCalls == oldBoxUpdates + 1);
+  CHECK(force->initializeCalls == 1);
+  CHECK(force->propagatedBox == secondBox);
+  CHECK(fm->getBoxDimensions() == secondBox);
+  const ManagerOutput secondRestrained = EvaluateManager(ctx, true, true);
+  const Output secondNative = ReadOutput<TestType>(*force);
+  // CHARMM GEO uses raw Cartesian displacement under P1. Changing only the
+  // box must preserve this native term's energy, force and absolute tensor.
+  CheckOutput("box update preserves native plane contribution", secondNative,
+              firstNative.energy, firstNative.physicalForces);
+  CheckVirial("box update preserves native raw-coordinate tensor",
+              secondNative.virial, firstNative.virial);
+
+  fm->unsubscribe(force);
+  const ManagerOutput secondBaseline = EvaluateManager(ctx, true, true);
+  CheckManagerDelta(secondBaseline, secondRestrained, 4.0,
+                    {make_double3(4.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
+  ctx->setBoxDimensions(firstBox);
+  CHECK(force->boxUpdateCalls == oldBoxUpdates + 1);
+  const ManagerOutput firstBaseline = EvaluateManager(ctx, true, true);
+  CheckManagerDelta(firstBaseline, firstRestrained, 4.0,
+                    {make_double3(4.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceManagerAtomCountMismatch",
+                   "[mmfp][manager]", float, double) {
+  using G = ObservedGeometricRestraintForce<TestType>;
+  auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
+                                                "toppar_water_ions.str");
+  auto psf =
+      std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
+  ForceManager manager(psf, prm);
+  manager.setBoxDimensions({30.0, 32.0, 34.0});
+  auto wrongPsf = MakePsf(3);
+  auto force = std::make_shared<G>(wrongPsf);
+  force->addPlane(AtomReference(wrongPsf, 0), ORIGIN, X_DIRECTION, 2.0);
+  const auto outputOwner = force->getForce();
+  const auto streamOwner = force->getStream();
+  const auto energyOwner = force->getEnergyVirial();
+
+  SECTION("SubscribedBeforeInitialization") {
+    manager.subscribe(force, "wrong_atom_count", streamOwner, outputOwner,
+                      energyOwner);
+    apo_test::CheckApoCharmmError(
+        [&] { manager.initialize(); }, ApoCharmmErrorCode::InvalidArgument,
+        "Initialization atom count mismatch; expected 3, observed 2");
+    CHECK(!manager.isInitialized());
+    // Rejection does not silently remove a pre-existing subscription.
+    CHECK_NOTHROW(manager.unsubscribe(force));
+  }
+  SECTION("SubscribedAfterInitialization") {
+    manager.initialize();
+    apo_test::CheckApoCharmmError(
+        [&] {
+          manager.subscribe(force, "wrong_atom_count", streamOwner, outputOwner,
+                            energyOwner);
+        },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Initialization atom count mismatch; expected 3, observed 2");
+    CHECK(manager.isInitialized());
+    apo_test::CheckApoCharmmError(
+        [&] { manager.unsubscribe(force); },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Force is not subscribed to this ForceManager");
+  }
+  CHECK(force->initializeCalls == 0);
+  CHECK(force->initializedBox.empty());
+  CHECK(force->getNumAtoms() == 3);
+  CHECK(force->getNumTerms() == 1);
+  CHECK(force->getForce() == outputOwner);
+  CHECK(force->getStream() == streamOwner);
+  CHECK(force->getEnergyVirial() == energyOwner);
+}
+
+TEMPLATE_TEST_CASE("GeometricRestraintForceManagerOwnershipAndDestruction",
+                   "[mmfp][manager]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
+                                                "toppar_water_ions.str");
+  auto psf =
+      std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
+  auto ctx = std::make_shared<CharmmContext>(psf, prm);
+  auto fm = ctx->getForceManager();
+  ctx->setBoxDimensions({30.0, 32.0, 34.0});
+  ctx->setCoordinates(std::vector<double3>{make_double3(2.0, 1.0, -1.0),
+                                           make_double3(4.0, 4.0, 3.0)});
+  ctx->useHolonomicConstraints(false);
+  const ManagerOutput baseline = EvaluateManager(ctx);
+  auto force = std::make_shared<G>(psf);
+  force->addPlane(AtomReference(psf, 0), ORIGIN, X_DIRECTION, 2.0, 0.0,
+                  A::SYMMETRIC);
+  const std::weak_ptr<G> weakForce = force;
+  const std::weak_ptr<cudaStream_t> weakStream = force->getStream();
+  const std::weak_ptr<Force<long long int>> weakOutput = force->getForce();
+  const std::weak_ptr<CudaEnergyVirial> weakEnergy = force->getEnergyVirial();
+  fm->subscribe(force, "mmfp_owned", force->getStream(), force->getForce(),
+                force->getEnergyVirial());
+  CheckManagerDelta(baseline, EvaluateManager(ctx), 4.0,
+                    {make_double3(4.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
+
+  SECTION("CallerReleasesFirstThenUnsubscribeByTag") {
+    force.reset();
+    CHECK(!weakForce.expired());
+    CHECK(!weakStream.expired());
+    CHECK(!weakOutput.expired());
+    CHECK(!weakEnergy.expired());
+    CheckManagerDelta(
+        baseline, EvaluateManager(ctx), 4.0,
+        {make_double3(4.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
+    fm->unsubscribe("mmfp_owned");
+    CheckManagerDelta(
+        baseline, EvaluateManager(ctx), 0.0,
+        {make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
+  }
+  SECTION("CallerReleasesFirstThenManagerDestruction") {
+    force.reset();
+    REQUIRE(!weakForce.expired());
+    ctx.reset();
+    REQUIRE(!weakForce.expired());
+    fm.reset();
+  }
+  SECTION("ManagerDestroyedWhileCallerRetainsForce") {
+    ctx.reset();
+    fm.reset();
+    REQUIRE(!weakForce.expired());
+    REQUIRE(!weakStream.expired());
+    REQUIRE(!weakOutput.expired());
+    REQUIRE(!weakEnergy.expired());
+    const std::vector<float4> coordinates = {
+        make_float4(2.0f, 1.0f, -1.0f, 0.0f),
+        make_float4(4.0f, 4.0f, 3.0f, 0.0f)};
+    CheckOutput("native force survives manager destruction",
+                Evaluate(*force, coordinates), 4.0,
+                {make_double3(-4.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
+    force.reset();
+  }
+  SECTION("OutputOwnersOutliveForceAndManager") {
+    auto retainedOutput = force->getForce();
+    auto retainedEnergy = force->getEnergyVirial();
+    auto retainedStreamHolder = force->getStream();
+    force.reset();
+    ctx.reset();
+    fm.reset();
+    CHECK(weakForce.expired());
+    CHECK(!weakOutput.expired());
+    CHECK(!weakEnergy.expired());
+    CHECK(!weakStream.expired());
+    std::vector<long long int> x(2), y(2), z(2);
+    retainedOutput->getXYZ(x.data(), y.data(), z.data());
+    CHECK(x == std::vector<long long int>{4LL * (1LL << 40), 0LL});
+    CHECK(y == std::vector<long long int>{0LL, 0LL});
+    CHECK(z == std::vector<long long int>{0LL, 0LL});
+    retainedEnergy->copyToHost();
+    cudaCheck(cudaStreamSynchronize(0));
+    CHECK(retainedEnergy->getEnergy("mmfp") == 4.0);
+    // The holder remains shared, but the concrete force destroyed its CUDA
+    // stream. Never submit work through retainedStreamHolder here.
+    retainedOutput.reset();
+    retainedEnergy.reset();
+    retainedStreamHolder.reset();
+  }
+  CHECK(weakForce.expired());
+  CHECK(weakStream.expired());
+  CHECK(weakOutput.expired());
+  CHECK(weakEnergy.expired());
+  cudaCheck(cudaDeviceSynchronize());
+}
+
+// CHARMM sums atomwise and RCM terms, including duplicates and overlapping
+// selections, and GEO RESET permits new terms. Apply those additive equations
+// analytically to 102 native terms with two 256-atom selections in a 257-atom
+// system. The selections overlap on atoms 1 through 255. This checks native
+// storage growth, accumulation and reuse without a performance threshold.
+TEMPLATE_TEST_CASE("GeometricRestraintForceCombinedNativeCapacity",
+                   "[mmfp][rcm][virial][capacity]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+
+  constexpr int count = 257;
+  constexpr int selectedCount = 256;
+  auto psf = MakePsf(count);
+  psf->getMasses().assign(count, 1.0);
+  AtomSelection atomwise(count), rcm(count);
+  for (int atom = 0; atom < selectedCount; atom++) {
+    atomwise.set(atom);
+    rcm.set(atom + 1);
+  }
+
+  G force(psf);
+  force.initialize(count, BOX_DIMS);
+  const std::vector<float4> coordinates(count,
+                                        make_float4(3.0f, 4.0f, 12.0f, 0.0f));
+
+  // One three-geometry group has energy 1 + 25 + 169 = 195 and
+  // energetic gradient (2,0,0) + (6,8,0) + (6,8,24) = (14,16,24).
+  // Each atomwise group contributes once per selected atom. Each RCM group
+  // contributes once and divides its gradient into 256 exactly binary shares.
+  // Seventeen repetitions produce 102 terms and 26,112 memberships.
+  for (int repeat = 1; repeat <= 17; repeat++) {
+    force.addPlane(atomwise, ORIGIN, X_DIRECTION, 2.0, 2.0, A::SYMMETRIC,
+                   S::ATOMWISE);
+    force.addCylinder(atomwise, ORIGIN, {0.0, 0.0, 1.0}, 2.0, 0.0, A::SYMMETRIC,
+                      S::ATOMWISE);
+    force.addSphere(atomwise, ORIGIN, 2.0, 0.0, A::SYMMETRIC, S::ATOMWISE);
+    force.addPlane(rcm, ORIGIN, X_DIRECTION, 2.0, 2.0, A::SYMMETRIC, S::RCM);
+    force.addCylinder(rcm, ORIGIN, {0.0, 0.0, 1.0}, 2.0, 0.0, A::SYMMETRIC,
+                      S::RCM);
+    force.addSphere(rcm, ORIGIN, 2.0, 0.0, A::SYMMETRIC, S::RCM);
+
+    if ((repeat == 1) || (repeat == 9) || (repeat == 17)) {
+      INFO("repeated six-term group: " << repeat);
+      CHECK(force.getNumTerms() == static_cast<std::size_t>(6 * repeat));
+      const double repetitions = static_cast<double>(repeat);
+      std::vector<double3> expected;
+      expected.reserve(count);
+      for (int atom = 0; atom < count; atom++) {
+        const double weight = ((atom < selectedCount) ? 1.0 : 0.0) +
+                              ((atom > 0) ? 1.0 / 256.0 : 0.0);
+        expected.push_back(make_double3(-14.0 * repetitions * weight,
+                                        -16.0 * repetitions * weight,
+                                        -24.0 * repetitions * weight));
+      }
+
+      const Output observed = Evaluate(force, coordinates, true, true);
+      CheckOutput("mixed atomwise and RCM capacity", observed,
+                  50115.0 * repetitions, expected);
+      CheckVirial("mixed atomwise and RCM capacity", observed.virial,
+                  {10794.0 * repetitions, 12336.0 * repetitions,
+                   18504.0 * repetitions, 14392.0 * repetitions,
+                   16448.0 * repetitions, 24672.0 * repetitions,
+                   43176.0 * repetitions, 49344.0 * repetitions,
+                   74016.0 * repetitions});
+    }
+  }
+
+  force.reset();
+  CHECK(force.getNumTerms() == 0);
+  CHECK(force.getMasses() == std::vector<double>(count, 1.0));
+  const Output empty = Evaluate(force, coordinates, true, true);
+  CheckOutput("reset combined capacity tables", empty, 0.0,
+              std::vector<double3>(count, make_double3(0.0, 0.0, 0.0)));
+  CheckVirial("reset combined capacity tables", empty.virial, {});
+
+  force.addSphere(rcm, ORIGIN, 2.0, 0.0, A::SYMMETRIC, S::RCM);
+  std::vector<double3> reused(
+      count, make_double3(-6.0 / 256.0, -8.0 / 256.0, -24.0 / 256.0));
+  reused[0] = make_double3(0.0, 0.0, 0.0);
+  const Output afterReuse = Evaluate(force, coordinates, true, true);
+  CheckOutput("reuse combined capacity tables", afterReuse, 169.0, reused);
+  CheckVirial("reuse combined capacity tables", afterReuse.virial,
+              {18.0, 24.0, 72.0, 24.0, 32.0, 96.0, 72.0, 96.0, 288.0});
+}
+
+// In smooth active regions, CHARMM's physical harmonic force is the
+// negative energy gradient. Finite differences check this relation within
+// the native implementation for each geometry, activation and application mode.
+// Direct comparisons with CHARMM forces remain separate regression checks.
+TEMPLATE_TEST_CASE("GeometricRestraintForceFiniteDifferenceGradients",
+                   "[mmfp][rcm][derivative]", float, double) {
+  using G = GeoForce<TestType>;
+  using A = typename G::Activation;
+  using S = typename G::SelectionMode;
+  using Geometry = typename G::Geometry;
+
+  auto psf = MakePsf(3);
+  psf->getMasses() = {1.0, 3.0, 2.0};
+  AtomSelection selected(3);
+  selected.set(0);
+  selected.set(1);
+  const std::vector<float4> coordinates = {
+      make_float4(3.0f, 4.0f, 12.0f, 0.0f),
+      make_float4(5.0f, 6.0f, 14.0f, 0.0f),
+      make_float4(7.0f, 8.0f, 16.0f, 0.0f)};
+  const std::array<double, 3> origin = {1.0, -2.0, 0.5};
+  const std::array<double, 3> direction = {1.0, 2.0, 2.0};
+  constexpr float step = 1.0f / 4096.0f;
+
+  for (const Geometry geometry :
+       {Geometry::PLANE, Geometry::CYLINDER, Geometry::SPHERE}) {
+    for (const A activation : {A::SYMMETRIC, A::INSIDE, A::OUTSIDE}) {
+      for (const S selectionMode : {S::ATOMWISE, S::RCM}) {
+        INFO("geometry " << static_cast<int>(geometry) << ", activation "
+                         << static_cast<int>(activation) << ", selection mode "
+                         << static_cast<int>(selectionMode));
+        G force(psf);
+        const double offset = (activation == A::OUTSIDE) ? 32.0 : 1.0;
+        if (geometry == Geometry::PLANE) {
+          force.addPlane(selected, origin, direction, 1.25, offset, activation,
+                         selectionMode);
+        } else if (geometry == Geometry::CYLINDER) {
+          force.addCylinder(selected, origin, direction, 1.25, offset,
+                            activation, selectionMode);
+        } else {
+          force.addSphere(selected, origin, 1.25, offset, activation,
+                          selectionMode);
+        }
+        force.initialize(3, BOX_DIMS);
+
+        // All selected points and centers are well away from activation
+        // boundaries, the plane cusp, and radial suppression. Every branch is
+        // active. Both perturbations are exactly representable as float4,
+        // including perturbations of the unselected third atom.
+        const Output central = Evaluate(force, coordinates);
+        REQUIRE(std::isfinite(central.energy));
+        REQUIRE(central.energy > 0.0);
+        for (std::size_t atom = 0; atom < coordinates.size(); atom++) {
+          const std::array<double, 3> physicalForce = {
+              central.physicalForces[atom].x, central.physicalForces[atom].y,
+              central.physicalForces[atom].z};
+          for (std::size_t component = 0; component < physicalForce.size();
+               component++) {
+            INFO("atom " << atom << ", component " << component);
+            std::vector<float4> plus = coordinates;
+            std::vector<float4> minus = coordinates;
+            if (component == 0) {
+              plus[atom].x += step;
+              minus[atom].x -= step;
+            } else if (component == 1) {
+              plus[atom].y += step;
+              minus[atom].y -= step;
+            } else {
+              plus[atom].z += step;
+              minus[atom].z -= step;
+            }
+            const double energyPlus = Evaluate(force, plus).energy;
+            const double energyMinus = Evaluate(force, minus).energy;
+            const double negativeDerivative =
+                -(energyPlus - energyMinus) / (2.0 * static_cast<double>(step));
+            // The 2e-7 absolute allowance covers central-difference truncation
+            // and double energy subtraction at this step and these points.
+            // CT=float additionally rounds the final Cartesian gradient; its
+            // relative allowance is separate from the derivative allowance.
+            const double tolerance =
+                2.0e-7 + ((std::is_same<TestType, float>::value)
+                              ? 2.0 * std::numeric_limits<float>::epsilon() *
+                                    std::abs(physicalForce[component])
+                              : 0.0);
+            CHECK(std::isfinite(negativeDerivative));
+            CHECK(std::abs(physicalForce[component] - negativeDerivative) <=
+                  tolerance);
+          }
+        }
+      }
+    }
+  }
 }

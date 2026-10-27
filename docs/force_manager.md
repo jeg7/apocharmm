@@ -227,9 +227,11 @@ File parsing through `CharmmPSF` and `CharmmParameters` can raise categorized
 runtime or invalid-argument errors. Host allocation can also raise standard
 allocation exceptions.
 
-Initialization, box propagation, and subscription-vector growth are not fully
-transactional. Consult each symbol contract before assuming that failure
-preserves all prior state.
+Initialization and box propagation are not fully transactional. Subscription
+prepares registration capacity and the tag before initializing the candidate;
+failure preserves the sizes and existing entries of all subscription vectors.
+Candidate initialization retains its own failure guarantees. Consult each symbol
+contract before assuming that failure preserves all prior state.
 
 ### C ABI
 
@@ -317,7 +319,8 @@ synchronization.
 - [CudaContainer](@ref cuda_container) describes host/device mirrored container
   behavior.
 - `ForceManagerComposite` is the direct composite-manager extension.
-- [HarmonicRestraintForce](@ref harmonic_restraint_force) and
+- [GeometricRestraintForce](@ref geometric_restraint_force),
+  [HarmonicRestraintForce](@ref harmonic_restraint_force) and
   [HarmonicCenterOfMassRestraintForce](@ref harmonic_center_of_mass_restraint_force)
   are subscription clients.
 - [ApoCharmmError](@ref apocharmm_error) describes native, C ABI, and Python
@@ -475,10 +478,10 @@ calculation path when possible.
 
 The current implementation contains duplicated float and double box state,
 mutable accessors that bypass invariants, a non-transactional initialization
-path, non-transactional parallel subscription growth, a cached graph tied to
-specific force buffers, a legacy incomplete host energy sum, and unresolved
-public virial ordering and force-sign documentation. These constraints should
-be preserved or explicitly resolved when reorganizing the subsystem.
+path, a cached graph tied to specific force buffers, a legacy incomplete host
+energy sum, and unresolved public virial ordering and force-sign documentation.
+These constraints should be preserved or explicitly resolved when reorganizing
+the subsystem.
 
 ## API Reference
 

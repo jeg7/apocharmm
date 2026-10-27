@@ -27,6 +27,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Forward declaration
@@ -1462,13 +1463,13 @@ public:
    * `ForceType::initialize()` when the manager is already initialized.
    * @throws std::bad_alloc If subscription-vector growth fails.
    *
-   * @note A PBC validation or compatibility failure leaves all six parallel
-   * subscription vectors unchanged and does not initialize the candidate force.
+   * @note Validation, allocation, or candidate-initialization failure leaves
+   * all subscription-vector sizes and existing entries unchanged. Capacity
+   * growth and the tag copy complete before candidate initialization. The final
+   * registration uses nonthrowing element construction in reserved storage.
+   * Candidate initialization retains its own failure guarantees.
    * @warning The supplied stream, force storage, and energy-virial object must
    * belong to `force`; the manager does not verify this relationship.
-   * @warning Host allocation failure during the sequence of `push_back()`
-   * operations can leave the parallel subscription vectors with different
-   * lengths.
    */
   template <typename ForceType>
   void subscribe(std::shared_ptr<ForceType> force, const std::string &forceTag,
@@ -1509,6 +1510,18 @@ public:
         "Subscribed force does not support periodic boundary condition value " +
             std::to_string(static_cast<int>(m_Pbc)));
 
+    // JEG261022: Prepare every potentially allocating registration operation
+    // before initializing the candidate or changing any subscription-vector
+    // size.
+    std::string registeredTag(forceTag);
+    const std::size_t requiredSize = m_ForceViews.size() + 1;
+    m_ForcePtrs.reserve(requiredSize);
+    m_ForceViews.reserve(requiredSize);
+    m_ForceTags.reserve(requiredSize);
+    m_ForceStreams.reserve(requiredSize);
+    m_ForceValues.reserve(requiredSize);
+    m_EnergyVirials.reserve(requiredSize);
+
     if (m_IsInitialized == true) {
       force->initialize(m_Psf->getNumAtoms(), {static_cast<double>(m_BoxX),
                                                static_cast<double>(m_BoxY),
@@ -1517,7 +1530,7 @@ public:
 
     m_ForcePtrs.push_back(static_cast<std::shared_ptr<void>>(force));
     m_ForceViews.push_back(forceView);
-    m_ForceTags.push_back(forceTag);
+    m_ForceTags.push_back(std::move(registeredTag));
     m_ForceStreams.push_back(forceStream);
     m_ForceValues.push_back(forceValues);
     m_EnergyVirials.push_back(energyVirial);

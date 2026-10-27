@@ -19,6 +19,7 @@ Start with the Python API index or browse the mainted subsystem documentation.
 - @subpage device_vector
 - @subpage distance_restraint_force
 - @subpage force_manager
+- @subpage geometric_restraint_force
 - @subpage harmonic_center_of_mass_restraint_force
 - @subpage harmonic_restraint_force
 - @subpage subscriber

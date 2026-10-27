@@ -48,6 +48,24 @@ GeometricRestraintForce<AT, CT>::GeometricRestraintForce(
                     "Atom count must be positive; observed " +
                         std::to_string(numAtoms));
 
+  // JEG261022: Match Force::realloc's 256-byte stride and both applications of
+  // its growth factor, using wide arithmetic before any allocation or
+  // narrowing.
+  constexpr float forceAllocationFactor = 1.5f;
+  const std::size_t forceStride =
+      (((static_cast<std::size_t>(numAtoms) + 31) * sizeof(AT) - 1) / 256 + 1) *
+      256 / sizeof(AT);
+  const double requestedForceCapacity =
+      static_cast<double>(3 * forceStride) * forceAllocationFactor;
+  const double allocatedForceCapacity =
+      std::floor(requestedForceCapacity) * forceAllocationFactor;
+  APOCHARMM_REQUIRE(allocatedForceCapacity <=
+                        static_cast<double>(std::numeric_limits<int>::max()),
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "Atom count exceeds the fixed-point force storage "
+                    "representation limit; observed " +
+                        std::to_string(numAtoms));
+
   const std::vector<double> &masses = psf->getMasses();
   APOCHARMM_REQUIRE(masses.size() == static_cast<std::size_t>(numAtoms),
                     ApoCharmmErrorCode::Runtime,
@@ -74,7 +92,7 @@ GeometricRestraintForce<AT, CT>::GeometricRestraintForce(
   m_EnergyVirial = std::make_shared<CudaEnergyVirial>();
   m_EnergyVirial->insert("mmfp");
   m_Forces = std::make_shared<Force<AT>>();
-  m_Forces->realloc(numAtoms, 1.5f);
+  m_Forces->realloc(numAtoms, forceAllocationFactor);
   m_Stream = std::make_shared<cudaStream_t>();
   try {
     cudaCheck(cudaStreamCreate(m_Stream.get()));
@@ -978,8 +996,6 @@ void GeometricRestraintForce<AT, CT>::appendTerm(
     const std::array<double, 3> &origin, const std::array<double, 3> &direction,
     const double forceConstant, const double offset,
     const Activation activation, const SelectionMode selectionMode) {
-  APOCHARMM_REQUIRE(!atomIndices.empty(), ApoCharmmErrorCode::InvalidArgument,
-                    "Selection must contain at least one atom; observed 0");
   APOCHARMM_REQUIRE(atomIndices.size() <=
                         std::numeric_limits<std::size_t>::max() -
                             m_AtomIndices.size(),
@@ -1034,6 +1050,14 @@ void GeometricRestraintForce<AT, CT>::appendTerm(
                     ApoCharmmErrorCode::InvalidArgument,
                     "Selection mode must be ATOMWISE or RCM; observed " +
                         std::to_string(static_cast<int>(selectionMode)));
+
+  // JEG261027: CHARMM accepts an empty atomwise selection with zero
+  // contribution. Validate parameters, then preserve existing terms, outputs
+  // and device state. The native RCM no-op also skips center construction and
+  // mass division.
+  if (atomIndices.empty())
+    return;
+
   const double selectedMassTotal =
       (selectionMode == SelectionMode::RCM)
           ? this->validateRcmMasses(m_Masses.getHostArray(), atomIndices, 0,
