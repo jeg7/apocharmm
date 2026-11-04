@@ -14,7 +14,7 @@ from ._base import _ApoObject
 from ._lib import encode_path, lib
 from ._types import FilePath
 from ._validation import require_c_uint64
-from .enums import PeriodicBoundaryCondition, VdwType
+from .enums import CrystalType, PeriodicBoundaryCondition, VdwType
 from .error import configure_status_function
 
 from .charmm_crd import CharmmCrd
@@ -157,6 +157,12 @@ def _initialize_prototypes() -> None:
     )
 
     configure_status_function(
+        lib().apo_charmm_context_set_crystal_type,
+        [ctypes.c_void_p, ctypes.c_int],
+        "CharmmContext.setCrystalType(crystal_type)",
+    )
+
+    configure_status_function(
         lib().apo_charmm_context_set_box_dimensions,
         [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t],
         "CharmmContext.setBoxDimensions(box_dimensions)",
@@ -244,6 +250,12 @@ def _initialize_prototypes() -> None:
         lib().apo_charmm_context_get_periodic_boundary_condition,
         [ctypes.POINTER(ctypes.c_int), ctypes.c_void_p],
         "CharmmContext.getPeriodicBoundaryCondition()",
+    )
+
+    configure_status_function(
+        lib().apo_charmm_context_get_crystal_type,
+        [ctypes.POINTER(ctypes.c_int), ctypes.c_void_p],
+        "CharmmContext.getCrystalType()",
     )
 
     configure_status_function(
@@ -783,6 +795,48 @@ class CharmmContext(_ApoObject):
 
         return
 
+    def setCrystalType(self, crystal_type: CrystalType | int) -> None:
+        """
+        @brief Selects the context's authoritative crystal type.
+
+        `crystal_type` is normalized through `CrystalType` before its integer
+        value is passed to the C ABI.
+
+        @param[in] crystal_type `CrystalType` or matching integer value.
+        `CUBIC`, `TETRAGONAL`, and `ORTHORHOMBIC`, with values `1`, `2`, and
+        `3`, are accepted. `UNSET`, with value `0`, is declared but rejected by
+        the native setter.
+
+        @throws TypeError If `crystal_type` cannot be interpreted by the
+        enumeration.
+        @throws ValueError If the integer is not a declared enum value.
+        @throws RuntimeError If this context is closed.
+        @throws ApoCharmmError If `crystal_type` is `CrystalType.UNSET` or the
+        existing box is incompatible with the requested type.
+
+        @note Set the type before attaching a piston integrator or importing or
+        exporting a restart. A compatible change is allowed between completed
+        propagation calls; repeating the same selection is allowed. After a
+        change, call `initialize()` on each attached piston integrator before
+        accessing piston state, propagating, or importing/exporting a restart,
+        then configure custom new-layout piston masses if needed. Friction is
+        retained; set it only when deliberately changing it. Box lengths remain
+        adjustable within the selected symmetry and never imply a type.
+        Serialize these operations with propagation.
+        """
+        _initialize_prototypes()
+
+        try:
+            crystal_type_value: CrystalType = CrystalType(crystal_type)
+        except ValueError as exc:
+            raise ValueError(f"invalid crystal type: {crystal_type!r}") from exc
+
+        c_crystal_type: ctypes.c_int = ctypes.c_int(int(crystal_type_value))
+
+        lib().apo_charmm_context_set_crystal_type(self.handle, c_crystal_type)
+
+        return
+
     def setBoxDimensions(self, box_dimensions: Sequence[float]) -> None:
         """
         @brief Sets orthorhombic box dimensions.
@@ -797,8 +851,9 @@ class CharmmContext(_ApoObject):
         @throws ValueError If scalar conversion raises `ValueError`.
         @throws RuntimeError If this context is closed.
         @throws ApoCharmmError If the length is not three, a dimension is not
-        positive, attached force configuration is invalid, or native
-        initialization or neighbor-list work fails.
+        finite and positive, the lengths do not match the configured crystal
+        type, attached force configuration is invalid, or native initialization
+        or neighbor-list work fails.
         """
         _initialize_prototypes()
 
@@ -1164,6 +1219,29 @@ class CharmmContext(_ApoObject):
         )
 
         return PeriodicBoundaryCondition(c_pbc.value)
+
+    def getCrystalType(self) -> CrystalType:
+        """
+        @brief Returns the context's authoritative crystal type.
+
+        @return `CrystalType` mapped from the native value, including
+        `CrystalType.UNSET` before explicit selection. The value is independent
+        of the current box proportions.
+
+        @throws RuntimeError If this context is closed.
+        @throws ApoCharmmError If the C ABI getter fails.
+        @throws ValueError If a successful C ABI call returns an integer not
+        represented by `CrystalType`.
+        """
+        _initialize_prototypes()
+
+        c_crystal_type: ctypes.c_int = ctypes.c_int()
+
+        lib().apo_charmm_context_get_crystal_type(
+            ctypes.byref(c_crystal_type), self.handle
+        )
+
+        return CrystalType(c_crystal_type.value)
 
     def getBoxDimensions(self) -> tuple[float, float, float]:
         """

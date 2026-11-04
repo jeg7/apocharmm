@@ -177,29 +177,6 @@ apo_cuda_langevin_piston_integrator_set_constant_surface_tension(
       function_name);
 }
 
-extern "C" apo_status apo_cuda_langevin_piston_integrator_set_crystal_type(
-    apo_cuda_langevin_piston_integrator *integrator,
-    const apo_crystal_type crystal_type) {
-  const char *function_name =
-      "apo_cuda_langevin_piston_integrator_set_crystal_type";
-
-  return apocharmm_c::guard(
-      [&](void) -> apo_status {
-        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_handle_object<
-                                    apo_cuda_langevin_piston_integrator>(
-            integrator, function_name, "CudaLangevinPistonIntegrator"));
-
-        CRYSTAL cpp_crystal_type = CRYSTAL::NONE;
-        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::to_crystal_type(
-            &cpp_crystal_type, crystal_type, function_name));
-
-        integrator->object->setCrystalType(cpp_crystal_type);
-
-        return APO_STATUS_OK;
-      },
-      function_name);
-}
-
 extern "C" apo_status
 apo_cuda_langevin_piston_integrator_set_langevin_piston_mass(
     apo_cuda_langevin_piston_integrator *integrator, const double *mass,

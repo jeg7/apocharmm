@@ -12,6 +12,7 @@
 #include "CharmmPSF.h"
 #include "CharmmParameters.h"
 #include "Coordinates.h"
+#include "Crystal.h"
 #include "ForceManager.h"
 #include "apo_test_helpers.h"
 #include "apocharmm_c/CharmmContext.h"
@@ -568,7 +569,7 @@ TEST_CASE("CharmmContextScalarAndBoxValidation") {
     apo_test::CheckApoCharmmError(
         [&context](void) { context.setBoxDimensions({20.0, 20.0}); },
         ApoCharmmErrorCode::InvalidArgument,
-        "Box dimensions must contain exactly 3 positive values");
+        "Box dimensions must contain exactly 3 finite positive values");
   }
 
   SECTION("InvalidBoxValue") {
@@ -576,7 +577,7 @@ TEST_CASE("CharmmContextScalarAndBoxValidation") {
     apo_test::CheckApoCharmmError(
         [&context](void) { context.setBoxDimensions({20.0, 0.0, 20.0}); },
         ApoCharmmErrorCode::InvalidArgument,
-        "Box dimensions must contain exactly 3 positive values");
+        "Box dimensions must contain exactly 3 finite positive values");
   }
 }
 
@@ -1374,4 +1375,94 @@ TEST_CASE("CapiCharmmContextSuccessClearsStaleDiagnostic") {
         APO_STATUS_OK);
   CHECK(numAtoms == -1);
   CHECK(std::string(apo_last_error()).empty() == true);
+}
+
+TEST_CASE("CapiCharmmContextCrystalTypeOwnership") {
+  CharmmContextHandle context = MakeDefaultContext();
+  apo_crystal_type observed = APO_CRYSTAL_TYPE_CUBIC;
+
+  REQUIRE(apo_charmm_context_get_crystal_type(&observed, context.get()) ==
+          APO_STATUS_OK);
+  CHECK(observed == APO_CRYSTAL_TYPE_UNSET);
+
+  CheckCharmmContextHandleValidation(
+      "apo_charmm_context_set_crystal_type", [](apo_charmm_context *handle) {
+        return apo_charmm_context_set_crystal_type(
+            handle, APO_CRYSTAL_TYPE_ORTHORHOMBIC);
+      });
+
+  CheckCharmmContextHandleValidation(
+      "apo_charmm_context_get_crystal_type",
+      [&observed](apo_charmm_context *handle) {
+        return apo_charmm_context_get_crystal_type(&observed, handle);
+      });
+
+  CHECK(observed == APO_CRYSTAL_TYPE_UNSET);
+
+  apo_test::CheckStatusAndDiagnostic(
+      apo_charmm_context_get_crystal_type(nullptr, context.get()),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_charmm_context_get_crystal_type: crystal_type is NULL");
+  apo_test::CheckStatusAndDiagnostic(
+      apo_charmm_context_set_crystal_type(context.get(),
+                                          static_cast<apo_crystal_type>(999)),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_charmm_context_set_crystal_type: invalid crystal type");
+  apo_test::CheckNativeError(
+      apo_charmm_context_set_crystal_type(context.get(),
+                                          APO_CRYSTAL_TYPE_UNSET),
+      APO_STATUS_INVALID_ARGUMENT, "InvalidArgument",
+      "apo_charmm_context_set_crystal_type",
+      "Crystal type must be CRYSTAL::CUBIC, CRYSTAL::TETRAGONAL, or "
+      "CRYSTAL::ORTHORHOMBIC; observed 0",
+      "src/CharmmContext.cu", "setCrystalType");
+
+  REQUIRE(apo_charmm_context_get_crystal_type(&observed, context.get()) ==
+          APO_STATUS_OK);
+  CHECK(observed == APO_CRYSTAL_TYPE_UNSET);
+
+  const double equalBox[3] = {50.0, 50.0, 50.0};
+  REQUIRE(apo_charmm_context_set_box_dimensions(context.get(), equalBox, 3) ==
+          APO_STATUS_OK);
+  REQUIRE(apo_charmm_context_set_crystal_type(
+              context.get(), APO_CRYSTAL_TYPE_CUBIC) == APO_STATUS_OK);
+  REQUIRE(apo_charmm_context_set_crystal_type(
+              context.get(), APO_CRYSTAL_TYPE_CUBIC) == APO_STATUS_OK);
+  REQUIRE(apo_charmm_context_get_crystal_type(&observed, context.get()) ==
+          APO_STATUS_OK);
+  CHECK(observed == APO_CRYSTAL_TYPE_CUBIC);
+
+  REQUIRE(apo_charmm_context_set_crystal_type(
+              context.get(), APO_CRYSTAL_TYPE_ORTHORHOMBIC) == APO_STATUS_OK);
+  REQUIRE(apo_charmm_context_set_crystal_type(
+              context.get(), APO_CRYSTAL_TYPE_ORTHORHOMBIC) == APO_STATUS_OK);
+  REQUIRE(apo_charmm_context_get_crystal_type(&observed, context.get()) ==
+          APO_STATUS_OK);
+  CHECK(observed == APO_CRYSTAL_TYPE_ORTHORHOMBIC);
+  CHECK(context->object->getCrystalType() == CRYSTAL::ORTHORHOMBIC);
+
+  const double orthogonalBox[3] = {50.0, 51.0, 52.0};
+  REQUIRE(apo_charmm_context_set_box_dimensions(context.get(), orthogonalBox,
+                                                3) == APO_STATUS_OK);
+  apo_test::CheckNativeError(
+      apo_charmm_context_set_crystal_type(context.get(),
+                                          APO_CRYSTAL_TYPE_CUBIC),
+      APO_STATUS_INVALID_ARGUMENT, "InvalidArgument",
+      "apo_charmm_context_set_crystal_type",
+      "Box dimensions are incompatible with the crystal type",
+      "src/CharmmContext.cu", "setCrystalType");
+  REQUIRE(apo_charmm_context_get_crystal_type(&observed, context.get()) ==
+          APO_STATUS_OK);
+  CHECK(observed == APO_CRYSTAL_TYPE_ORTHORHOMBIC);
+  apo_test::CheckNativeError(
+      apo_charmm_context_set_crystal_type(context.get(),
+                                          APO_CRYSTAL_TYPE_UNSET),
+      APO_STATUS_INVALID_ARGUMENT, "InvalidArgument",
+      "apo_charmm_context_set_crystal_type",
+      "Crystal type must be CRYSTAL::CUBIC, CRYSTAL::TETRAGONAL, or "
+      "CRYSTAL::ORTHORHOMBIC; observed 0",
+      "src/CharmmContext.cu", "setCrystalType");
+  REQUIRE(apo_charmm_context_get_crystal_type(&observed, context.get()) ==
+          APO_STATUS_OK);
+  CHECK(observed == APO_CRYSTAL_TYPE_ORTHORHOMBIC);
 }

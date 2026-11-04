@@ -223,6 +223,11 @@ public:
    *
    * @warning Restart loading is not transactional. State parsed or transferred
    * before a later failure can remain observable.
+   * @note A successful load begins a new CHARMM-style run: every attached
+   * subscriber's run origin is cleared and the next `propagate()` fixes it at
+   * the imported step count, as a CHARMM `DYNA RESTART` run counts `ISTEP` from
+   * the restart point. A `DcdSubscriber` that already wrote frames rejects the
+   * next request; give it a new path and call `openFile()` first.
    */
   virtual void
   initializeFromRestartFile(const std::filesystem::path &rstFilePath) final;
@@ -252,28 +257,30 @@ public:
   /**
    * @brief Propagates dynamics and invokes scheduled subscriber updates.
    *
-   * The method validates readiness, resets the context neighbor list, resets
-   * the per-call neighbor-list counter, stores `numSteps`, and adds the full
-   * request to the total-step counter before entering the loop. Local loop
-   * indices run from one through `numSteps`.
+   * The method validates readiness, resets the context neighbor list and
+   * per-call neighbor-list counter, stores `numSteps`, invokes each
+   * subscriber's `onPropagationStart()` hook with the completed starting step
+   * and requested length, and then assigns that starting step as the run
+   * origin of every subscriber that does not have one.
    *
-   * After each successful concrete step, the method increments the
-   * neighbor-list counter and wrapped current-step counter, performs a periodic
-   * NaN-energy check, and synchronously invokes subscribers whose cached
-   * reporting interval divides the local loop index. A later call restarts the
-   * local subscriber schedule at one.
+   * After each successful concrete step, the method increments the completed
+   * and neighbor-list counters, performs a periodic NaN-energy check, and
+   * synchronously invokes subscribers whose cached reporting interval divides
+   * the number of steps completed since their run origin. Successive calls
+   * therefore continue one CHARMM-style run: a subscriber with frequency 10
+   * reports at steps 10, 20, 30, ... regardless of how the steps are split
+   * across calls.
    *
    * @param[in] numSteps Positive number of dynamics steps to request.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `numSteps` is not positive or a
-   * native participant rejects an argument.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if the context, force manager,
-   * concrete integrator, or scheduled subscriber lacks required state.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotImplemented` if a concrete operation or subscriber
-   * reports an unsupported operation.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `numSteps` is not positive, the requested final step would overflow the
+   * completed-step counter, or a native participant rejects an argument.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if
+   * the context, force manager, concrete integrator, or scheduled subscriber
+   * lacks required state.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotImplemented` if a
+   * concrete operation or subscriber reports an unsupported operation.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if force
    * evaluation, a kernel, a transfer, or CUDA synchronization fails.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if a runtime
@@ -290,9 +297,9 @@ public:
    * @post The total-step counter has increased by `numSteps`, and the
    * most-recent-request counter equals `numSteps`.
    * @warning The operation is not transactional. The total-step counter records
-   * requested steps and is incremented before the first concrete step. Earlier
-   * steps, state changes, and output bytes remain observable after a later
-   * failure.
+   * only concrete steps that returned successfully. A failing concrete step may
+   * have partly changed state. Earlier steps, subscriber announcements, and
+   * output remain observable after a later failure.
    */
   void propagate(const int numSteps);
 
@@ -302,8 +309,8 @@ public:
    * @param[in] freq Non-negative, dimensionless number of propagated steps
    * between debug calculations. Zero disables the feature.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `freq` is negative.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `freq` is negative.
    *
    * @note The base class stores this value. Whether and what a concrete
    * integrator calculates at the interval is implementation-specific.
@@ -316,8 +323,8 @@ public:
    * @param[in] freq Positive, dimensionless number of propagated steps between
    * concrete-integrator neighbor-list resets.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `freq` is not positive.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `freq` is not positive.
    *
    * @note The per-call counter is reset to zero before `propagate()` enters its
    * loop, so concrete implementations test the update condition during the
@@ -330,8 +337,9 @@ public:
    *
    * The method rejects null and duplicate subscribers, obtains a shared owner
    * of this integrator, calls `sub->setCharmmContext(m_Context)`, calls
-   * `sub->setIntegrator(...)`, appends the subscriber, and appends its current
-   * report frequency to the parallel scheduling array.
+   * `sub->setIntegrator(...)`, clears the subscriber's run origin so the next
+   * `propagate()` starts a new CHARMM-style run, appends the subscriber, and
+   * appends its current report frequency to the parallel scheduling array.
    *
    * @param[in] sub Non-null shared subscriber owner retained on success.
    *
@@ -444,10 +452,10 @@ public:
    * @param[in] freq Positive, dimensionless number of propagated steps between
    * concrete-integrator center-of-mass corrections.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `freq` is not positive.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `freq` is not positive.
    *
-   * @note The wrapped current-step counter starts at zero, so the concrete
+   * @note The completed-step counter starts at zero, so the concrete
    * integrators perform their correction during the first propagated step.
    */
   void setRemoveCenterOfMassFrequency(const int freq);
@@ -460,9 +468,11 @@ public:
    * Components `x`, `y`, and `z` contain angstrom-valued displacements. The
    * integrator assigns no public meaning to `w`.
    *
-   * @note The accessor performs no host/device transfer or synchronization.
-   * The alias remains valid until integrator destruction or structural mutation
-   * of the container.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if
+   * concrete state no longer matches the context configuration.
+   * @note The accessor performs no host/device transfer or synchronization. The
+   * alias remains valid until integrator destruction or structural mutation of
+   * the container.
    */
   const CudaContainer<double4> &getCoordsDelta(void) const;
 
@@ -472,6 +482,8 @@ public:
    * @return Borrowed mutable alias to the integrator-owned `N`-element
    * `CudaContainer<double4>`.
    *
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if
+   * concrete state no longer matches the context configuration.
    * @warning Preserve the atom-count length and the concrete integrator's
    * host/device state. Resizing or independently changing one mirror can
    * invalidate later kernels.
@@ -485,6 +497,8 @@ public:
    * `CudaContainer<double4>`. Components `x`, `y`, and `z` contain
    * angstrom-valued displacements; `w` has no public integrator meaning.
    *
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if
+   * concrete state no longer matches the context configuration.
    * @note The accessor performs no host/device transfer or synchronization.
    */
   const CudaContainer<double4> &getCoordsDeltaPrevious(void) const;
@@ -495,6 +509,8 @@ public:
    * @return Borrowed mutable alias to the integrator-owned `N`-element
    * `CudaContainer<double4>`.
    *
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if
+   * concrete state no longer matches the context configuration.
    * @warning Preserve the atom-count length, component interpretation, and
    * host/device coherence expected by the concrete integrator.
    */
@@ -519,19 +535,20 @@ public:
    *
    * @return A dimensionless value in the range zero through `INT_MAX`.
    *
-   * @note `propagate()` increments this counter after each successful concrete
-   * step and wraps `INT_MAX + 1` to zero. Direct `propagateOneStep()` calls do
-   * not increment it.
+   * @note This compatibility view is derived from @ref getTotNumSteps modulo
+   * `INT_MAX + 1`; it has no independent storage. Internal periodic operations
+   * use the full cumulative count. Direct `propagateOneStep()` calls do not
+   * advance the cumulative count.
    */
   int getCurrentPropagatedStep(void) const;
 
   /**
-   * @brief Returns the total number of requested propagation steps.
+   * @brief Returns the total number of completed base-loop steps.
    *
-   * @return The dimensionless sum of every accepted `propagate()` request.
-   *
-   * @warning A request is added before its first concrete step. After a
-   * propagation failure this value can exceed the number of completed steps.
+   * @return The restored restart step plus concrete steps that returned
+   * successfully from `propagate()`. Subscribers observe the completed step
+   * associated with their snapshot. Direct `propagateOneStep()` calls do not
+   * advance this counter.
    */
   unsigned long long int getTotNumSteps(void) const;
 
@@ -539,7 +556,8 @@ public:
    * @brief Returns the most recently requested propagation length.
    *
    * @return The positive dimensionless `numSteps` value from the most recent
-   * accepted `propagate()` call, or zero before the first call.
+   * accepted `propagate()` call, the saved NSTEP after restart loading, or zero
+   * before either operation. This is request metadata, not a second clock.
    */
   int getNumSteps(void) const;
 
@@ -585,47 +603,51 @@ protected:
    * @brief Validates shared state required for propagation.
    *
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if
-   * the context is absent, its force manager is absent, or the force manager is
-   * not initialized.
+   * the context is absent, its force manager is absent, the force manager is
+   * not initialized, or concrete state no longer matches the context.
    */
   void requirePropagationReady(void) const;
 
+  /**
+   * @brief Checks whether cached concrete state matches the current context.
+   *
+   * The base implementation does nothing. Concrete integrators may reject stale
+   * configuration before propagation, restart loading, or history access.
+   * `initialize()` deliberately bypasses this check so it can rebuild state.
+   */
+  virtual void requireCurrentState(void) const;
+
 protected:
   /**
-   * @brief Invokes subscribers scheduled for one local propagation step.
+   * @brief Invokes subscribers scheduled for the just-completed step.
    *
    * The method iterates over the cached frequency array and calls
-   * `m_Subscribers[i]->update()` when `istep % m_ReportFreqList[i] == 0`.
-   * Calls are synchronous and occur in subscriber-vector order.
-   *
-   * @param[in] istep Positive step index local to the current propagation call.
+   * `m_Subscribers[i]->update()` when the number of steps completed since
+   * that subscriber's run origin is divisible by `m_ReportFreqList[i]`. This
+   * reproduces CHARMM's `MOD(ISTEP,NSAVC)` schedule, where `ISTEP` counts from
+   * the start of the run rather than from each `propagate()` call. Calls are
+   * synchronous and occur in subscriber-vector order.
    *
    * @pre @ref m_Subscribers and @ref m_ReportFreqList have identical lengths
-   * and corresponding order, and every cached frequency is positive.
+   * and corresponding order, every cached frequency is positive, and every
+   * subscriber's run origin has been assigned by `propagate()`.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if a
+   * subscriber has no run origin.
    * @note Any exception raised by a subscriber propagates immediately. Later
    * subscribers scheduled for the same step are not called.
    */
-  void reportIfNeeded(const int istep);
+  void reportIfNeeded(void);
   void checkForNanEnergy(void);
-  int wrapCurrentPropagatedStep(const unsigned long long int propagatedStep);
-  void incrementCurrentPropagatedStep(void);
+  static int
+  wrapCurrentPropagatedStep(const unsigned long long int propagatedStep);
 
 protected:
   /**
    * @brief Stores the internal time step in AKMA time.
    *
-   * Public setters divide picoseconds by @ref m_Timfac before storing this
-   * value.
+   * Public setters divide picoseconds by TIMFAC before storing this value.
    */
   double m_TimeStep;
-
-  /**
-   * @brief Stores the picoseconds-to-AKMA-time conversion factor.
-   *
-   * The current value is `0.0488882129`, with
-   * `AKMA time = picoseconds / m_Timfac`.
-   */
-  double m_Timfac;
 
   /**
    * @brief Stores the non-negative concrete debug-calculation interval.
@@ -651,21 +673,12 @@ protected:
   int m_StepsSinceNeighborListUpdate;
 
   /**
-   * @brief Stores the wrapped number of completed base-loop steps.
-   *
-   * The value wraps to zero after `INT_MAX` and is not changed by direct
-   * `propagateOneStep()` calls.
-   */
-  int m_CurrentPropagatedStep;
-
-  /**
-   * @brief Stores the accumulated number of requested propagation steps.
-   *
-   * Each accepted request is added before any step in that request executes.
+   * @brief Stores the restored step plus successfully completed base-loop
+   * steps.
    */
   unsigned long long int m_TotNumSteps;
 
-  /** @brief Stores the most recently accepted propagation request length. */
+  /** @brief Stores the most recently accepted request length or saved NSTEP. */
   int m_NumSteps;
 
   /**

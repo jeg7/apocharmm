@@ -13,11 +13,14 @@
 #include "CharmmCrd.h"
 #include "CharmmPSF.h"
 #include "CharmmParameters.h"
+#include "Crystal.h"
 #include "CudaLangevinThermostatIntegrator.h"
 #include "CurandStateString.h"
 #include "ForceManager.h"
+#include "RestartIO.h"
 #include "apo_test_helpers.h"
 #include "catch.hpp"
+#include "str_utils.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -52,31 +55,49 @@ std::string MakeRestartPrefix(const bool isApoRestart, const int natom,
                               const int ndegf,
                               const std::string &rngStateString) {
   std::ostringstream output;
-
-  if (isApoRestart)
-    output << std::string(30, ' ') << "APO\n";
-  else
-    output << "CHARMM restart\n";
-
-  output << " !CRYSTAL PARAMETERS\n";
-  output << std::setw(22) << 50.0 << std::setw(22) << 90.0 << std::setw(22)
-         << 50.0 << '\n';
-  output << std::setw(22) << 90.0 << std::setw(22) << 90.0 << std::setw(22)
-         << 50.0 << '\n';
-
-  for (int i = 0; i < 13; i++)
-    output << "0\n";
-
-  output << " !NATOM,NPRIV,NSTEP,NSAVC,NSAVV,JHSTRT,NDEGF,SEED,NSAVL\n";
-  output << std::setw(12) << natom << std::setw(12) << 0 << std::setw(12) << 0
-         << std::setw(12) << 0 << std::setw(12) << 0 << std::setw(12) << 0
-         << std::setw(12) << ndegf << std::setw(22) << THERMOSTAT_SEED;
-
-  if (isApoRestart)
-    output << rngStateString;
-
-  output << '\n';
-
+  const std::string zero = apo::format_fortran_double(0.0, 22, 15);
+  // apoCHARMM output carries "APO" in columns 32-34; CHARMM output does not.
+  output << "REST" << std::setw(6) << 52 << std::setw(6) << 1
+         << (isApoRestart ? "  CUBI          APO\n\n" : "  CUBI      \n\n");
+  output << std::setw(8) << 1 << " !NTITLE followed by title\n";
+  output << (isApoRestart ? "* APOCHARMM RESTART FILE\n"
+                          : "* CHARMM RESTART PARSER TEST\n");
+  output << "\n !CRYSTAL PARAMETERS\n";
+  output << apo::format_fortran_double(50.0, 22, 15) << zero
+         << apo::format_fortran_double(50.0, 22, 15) << '\n';
+  output << zero << zero << apo::format_fortran_double(50.0, 22, 15) << '\n';
+  // HDOT, PNH/PNHV/PNHF, four cell-statistic arrays and first three GRADs.
+  for (int i = 0; i < 12; ++i)
+    output << zero << zero << zero << '\n';
+  output << zero << '\n'; // GRAD2B
+  output << "\n !NATOM,NPRIV,NSTEP,NSAVC,NSAVV,JHSTRT,NDEGF,SEED,NSAVL\n";
+  output << std::setw(12) << natom << std::setw(12) << 1 << std::setw(12) << 1
+         << std::setw(12) << 0 << std::setw(12) << 0 << std::setw(12) << 1
+         << std::setw(12) << ndegf << apo::format_fortran_double(1.0, 22, 15)
+         << std::setw(12) << 0 << std::setw(22) << 0 << std::setw(22) << 0
+         << '\n';
+  output << "\n !ENERGIES and STATISTICS\n"
+         << std::string(96, 'T') << '\n'
+         << std::string(192, 'T') << '\n';
+  output << std::setw(8) << 0 << zero << zero << zero << '\n';
+  for (const int count : {96, 192, 50}) {
+    for (int i = 0; i < count; ++i)
+      output << zero << zero << zero << '\n';
+    for (int i = 0; i < count; ++i)
+      output << zero << zero << '\n';
+  }
+  for (const char *section :
+       {" !XOLD, YOLD, ZOLD", " !VX, VY, VZ", " !X, Y, Z"}) {
+    output << '\n' << section << '\n';
+    for (int i = 0; i < natom; ++i)
+      output << zero << zero << zero << '\n';
+  }
+  if (isApoRestart) {
+    output << "\n !APOCHARMM RNG STATE\n"
+           << "1 LANGEVIN_THERMOSTAT PHILOX4_32_10\n"
+           << THERMOSTAT_SEED << '\n'
+           << rngStateString << '\n';
+  }
   return output.str();
 }
 
@@ -452,6 +473,7 @@ TEST_CASE("CudaLangevinThermostatIntegratorRestartValidation") {
 
   auto ctx = std::make_shared<CharmmContext>(psf, prm);
   ctx->setBoxDimensions(BOX_DIMENSIONS);
+  ctx->setCrystalType(CRYSTAL::CUBIC);
   ctx->setCoordinates(crd);
   ctx->useHolonomicConstraints(false);
   ctx->setRandomSeed(RANDOM_SEED);
@@ -462,7 +484,7 @@ TEST_CASE("CudaLangevinThermostatIntegratorRestartValidation") {
   apo_test::CheckApoCharmmError(
       [&]() { integrator->initializeFromRestartFile(missingFilePath); },
       ApoCharmmErrorCode::Runtime,
-      "Could not open file \"" + missingFilePath.string() + "\"");
+      "Could not open restart file: " + missingFilePath.string());
 
   const int numAtoms = ctx->getNumAtoms();
   const int ndegf = ctx->getNumDegreesOfFreedom();
@@ -476,7 +498,7 @@ TEST_CASE("CudaLangevinThermostatIntegratorRestartValidation") {
   apo_test::CheckApoCharmmError(
       [&]() { integrator->initializeFromRestartFile(missingRngStatePath); },
       ApoCharmmErrorCode::Runtime,
-      "Restart field \"RNGSTATE\" is missing in restart file \"" +
+      "Missing or inconsistent APOCHARMM RNG state in restart file \"" +
           missingRngStatePath.string() + "\"");
 
   apo_test::RemoveIfExists(missingRngStatePath);
@@ -508,8 +530,7 @@ TEST_CASE("CudaLangevinThermostatIntegratorRestartValidation") {
   apo_test::CheckApoCharmmError(
       [&]() { integrator->initializeFromRestartFile(rngCountMismatchPath); },
       ApoCharmmErrorCode::InvalidArgument,
-      "RNG state count must match number of atoms; expected " +
-          std::to_string(numAtoms) + ", observed 0");
+      "Restart RNG state count must match the atom count");
 
   apo_test::RemoveIfExists(rngCountMismatchPath);
 }

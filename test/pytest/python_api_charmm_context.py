@@ -1046,14 +1046,14 @@ def check_validation(
             "CharmmContext.setBoxDimensions rejects zero dimensions",
             lambda: context.setBoxDimensions((20.0, 0.0, 20.0)),
             apo.APO_STATUS_INVALID_ARGUMENT,
-            "Box dimensions must contain exactly 3 positive values",
+            "Box dimensions must contain exactly 3 finite positive values",
             "CharmmContext.setBoxDimensions(box_dimensions)",
         )
         apo_test.expect_apo_error(
             "CharmmContext.setBoxDimensions rejects negative dimensions",
             lambda: context.setBoxDimensions((20.0, -1.0, 20.0)),
             apo.APO_STATUS_INVALID_ARGUMENT,
-            "Box dimensions must contain exactly 3 positive values",
+            "Box dimensions must contain exactly 3 finite positive values",
             "CharmmContext.setBoxDimensions(box_dimensions)",
         )
 
@@ -1149,6 +1149,81 @@ def check_validation(
     return
 
 
+def check_crystal_type(parameters: apo.CharmmParameters, psf: apo.CharmmPsf) -> None:
+    print("Checking context-owned crystal type...")
+    context = apo.CharmmContext(psf, parameters)
+    try:
+        apo_test.assert_equal(
+            "default crystal type", context.getCrystalType(), apo.CrystalType.UNSET
+        )
+        context.setBoxDimensions((50.0, 50.0, 50.0))
+        apo_test.expect_exception(
+            "unknown crystal enum",
+            ValueError,
+            lambda: context.setCrystalType(999),
+        )
+        apo_test.expect_exception(
+            "large crystal integer does not wrap",
+            ValueError,
+            lambda: context.setCrystalType(2**32 + 1),
+        )
+        apo_test.expect_apo_error(
+            "UNSET is not a configured crystal type",
+            lambda: context.setCrystalType(apo.CrystalType.UNSET),
+            apo.APO_STATUS_INVALID_ARGUMENT,
+            "Crystal type must be CRYSTAL::CUBIC, CRYSTAL::TETRAGONAL, or "
+            "CRYSTAL::ORTHORHOMBIC; observed 0",
+            "CharmmContext.setCrystalType(crystal_type)",
+        )
+        context.setCrystalType(apo.CrystalType.CUBIC)
+        context.setCrystalType(int(apo.CrystalType.CUBIC))
+        apo_test.assert_equal(
+            "same-type selection remains CUBIC",
+            context.getCrystalType(),
+            apo.CrystalType.CUBIC,
+        )
+        context.setCrystalType(apo.CrystalType.ORTHORHOMBIC)
+        context.setCrystalType(int(apo.CrystalType.ORTHORHOMBIC))
+        apo_test.assert_equal(
+            "equal-sided CUBIC can become ORTH",
+            context.getCrystalType(),
+            apo.CrystalType.ORTHORHOMBIC,
+        )
+        context.setBoxDimensions((50.0, 51.0, 52.0))
+        apo_test.expect_apo_error(
+            "unequal box rejects reverse change to CUBIC",
+            lambda: context.setCrystalType(apo.CrystalType.CUBIC),
+            apo.APO_STATUS_INVALID_ARGUMENT,
+            "Box dimensions are incompatible with the crystal type",
+            "CharmmContext.setCrystalType(crystal_type)",
+        )
+        apo_test.expect_apo_error(
+            "configured context rejects UNSET",
+            lambda: context.setCrystalType(apo.CrystalType.UNSET),
+            apo.APO_STATUS_INVALID_ARGUMENT,
+            "Crystal type must be CRYSTAL::CUBIC, CRYSTAL::TETRAGONAL, or "
+            "CRYSTAL::ORTHORHOMBIC; observed 0",
+            "CharmmContext.setCrystalType(crystal_type)",
+        )
+        apo_test.assert_equal(
+            "rejected changes preserve ORTH",
+            context.getCrystalType(),
+            apo.CrystalType.ORTHORHOMBIC,
+        )
+    finally:
+        context.close()
+    apo_test.expect_exception(
+        "closed crystal getter", RuntimeError, lambda: context.getCrystalType()
+    )
+    apo_test.expect_exception(
+        "closed crystal setter",
+        RuntimeError,
+        lambda: context.setCrystalType(apo.CrystalType.ORTHORHOMBIC),
+    )
+
+    return
+
+
 def main(argc: int, argv: list[str]) -> int:
     repo_root: Path = apo_test.get_repo_root()
     output_dir: Path = repo_root / "test/pytest"
@@ -1206,6 +1281,7 @@ def main(argc: int, argv: list[str]) -> int:
         crd = apo.CharmmCrd(crd_path)
 
         check_construction_and_default_state(parameters, psf)
+        check_crystal_type(parameters, psf)
         check_object_setters(parameter_path, psf_path, parameters, psf)
         check_array_state_round_trips(parameters, psf, crd)
         check_velocity_file_loading(

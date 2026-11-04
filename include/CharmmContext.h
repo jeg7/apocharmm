@@ -13,6 +13,7 @@
 #include "CharmmPSF.h"
 #include "CharmmParameters.h"
 #include "Coordinates.h"
+#include "Crystal.h"
 #include "CudaContainer.h"
 #include "Force.h"
 #include "ForceManager.h"
@@ -50,9 +51,10 @@
  *
  * Copy construction deep-copies the context-owned containers and shares the
  * PSF and parameter objects, but does not copy the force-manager association.
- * Copy assignment remains compiler-generated and therefore performs memberwise
- * assignment, including the force-manager member. No implicit move operations
- * are generated because a copy constructor is explicitly declared.
+ * The selected crystal symmetry is copied. Copy assignment is defaulted and
+ * performs the memberwise assignment, including the force-manager association.
+ * No implicit move operations are generated because a copy constructor is
+ * explicitly declared.
  *
  * @warning Operations that update host state and then perform CUDA work are not
  * transactional. A CUDA or backend failure can leave already-applied host-side
@@ -66,9 +68,10 @@ public:
    * @brief Constructs an incomplete context without molecular collaborators.
    *
    * The atom count and degree-of-freedom count are initialized to `-1`, the box
-   * is unset, the stored random seed is zero, and coordinate, charge, velocity,
-   * and inverse-mass storage is empty. Scalar energy and tensor bookkeeping
-   * containers are allocated with their implementation-defined initial sizes.
+   * is unset, the crystal type is `CRYSTAL::UNSET`, the stored random seed is
+   * zero, and coordinate, charge, velocity, and inverse-mass storage is empty.
+   * Scalar energy and tensor bookkeeping containers are allocated with their
+   * implementation-defined initial sizes.
    *
    * @post The context cannot perform force calculations until a PSF,
    * parameters, force manager, valid box, and coordinates have been supplied.
@@ -157,6 +160,9 @@ public:
    */
   CharmmContext(const CharmmContext &other);
 
+  /** @brief Performs memberwise assignment, including shared collaborators. */
+  CharmmContext &operator=(const CharmmContext &other) = default;
+
 public: // Setters
   /**
    * @brief Sets the CHARMM parameter set used by the context.
@@ -215,7 +221,9 @@ public: // Setters
    * The context retains shared ownership of `fm`. Existing context PSF,
    * parameter, box, and periodic-boundary state take precedence and are pushed
    * into the manager. State absent from the context is imported from the
-   * manager. A complete uninitialized manager is initialized automatically.
+   * manager. Imported box lengths must respect any selected context crystal
+   * type; the manager never changes that type. A complete uninitialized manager
+   * is initialized automatically.
    *
    * When the context is owned by `std::shared_ptr`, the manager receives a weak
    * backlink to the context. No ownership cycle is created.
@@ -644,23 +652,49 @@ public: // Setters
   void setPeriodicBoundaryCondition(const PBC pbc);
 
   /**
+   * @brief Selects this context's orthogonal crystal symmetry.
+   *
+   * A supported type may be selected or changed between completed propagation
+   * calls. Repeating the current type leaves it unchanged after validating the
+   * box. Equal edge lengths never imply or change a crystal type.
+   *
+   * @param[in] crystalType `CRYSTAL::CUBIC`, `CRYSTAL::TETRAGONAL`, or
+   * `CRYSTAL::ORTHORHOMBIC`.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * the value is unsupported or an established box is non-finite, non-positive,
+   * or incompatible with the requested type. Cubic boxes require X == Y == Z;
+   * tetragonal boxes require X == Y. Orthorhombic boxes may have equal or
+   * unequal positive edges.
+   * @post The type is retained only after all validation succeeds.
+   * @post Coordinates, atomic velocities, and random seeds are unchanged.
+   * @pre No propagation call or concurrent operation may be using this context.
+   * Do not change the type from a subscriber callback during propagation.
+   * @note Type selection is allowed before box dimensions are supplied. After a
+   * type change, explicitly initialize any attached piston before using its
+   * state again, then configure its masses and friction for the new phase. The
+   * setter does not reconfigure integrators or reseed atoms.
+   */
+  void setCrystalType(const CRYSTAL crystalType);
+
+  /**
    * @brief Sets the orthorhombic box dimensions.
    *
    * `boxDimensions` must contain `[x, y, z]` lengths in angstroms. The context
-   * requires exactly three positive values. An attached force manager
-   * additionally rejects non-finite dimensions and can reject a configuration
-   * whose direct-space cutoff exceeds half the X dimension.
+   * requires exactly three finite positive values compatible with any selected
+   * crystal type. An attached force manager can also reject a configuration
+   * whose direct-space cutoff exceeds half the X dimension. With
+   * `CRYSTAL::UNSET`, lengths can be staged without inferring a crystal type.
    *
    * Supplying the final missing setup state can initialize the force manager.
-   * If it was already initialized and coordinates are present, a successful
-   * update image-centers coordinates and rebuilds the neighbor list.
+   * An update of an initialized context does not rebuild the neighbor list;
+   * the integrators rebuild it on their own schedule.
    *
    * @param[in] boxDimensions Three host values in X, Y, Z order. The input is
    * copied and is not retained.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if the vector does not contain
-   * exactly three positive values or attached force-manager validation rejects
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * the vector does not contain exactly three positive values, conflicts with
+   * the selected crystal symmetry, or attached force-manager validation rejects
    * the dimensions or cutoff.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if triggered
    * initialization, image centering, synchronization, or neighbor-list
@@ -892,6 +926,15 @@ public: // Getters
   PBC getPeriodicBoundaryCondition(void) const;
 
   /**
+   * @brief Returns the context's authoratative crystal symmetry.
+   *
+   * @return The selected `CRYSTAL` value, or `CRYSTAL::UNSET` before explicit
+   * selection. This query does not infer a type from box lengths or validate
+   * whether a runnable box has been supplied.
+   */
+  CRYSTAL getCrystalType(void) const;
+
+  /**
    * @brief Returns the stored box dimensions.
    *
    * @return Borrowed const alias to the context-owned X, Y, Z vector in
@@ -1104,7 +1147,9 @@ public: // Getters
    *
    * @warning Mutations through this alias bypass validation, do not update the
    * internal box-present flag, are not forwarded to the force manager, and do
-   * not rebuild the neighbor list.
+   * not rebuild the neighbor list. They can also violate the selected crystal
+   * symmetry. Use @ref setBoxDimensions for supported updates; piston and
+   * restart operations revalidate the crystal box before consuming it.
    */
   std::vector<double> &getBoxDimensions(void);
 
@@ -1458,6 +1503,19 @@ public: // Specialized functions
    */
   void linkBackForceManager(void);
 
+  /**
+   * @brief Validates a configured crystal and its current orthogonal box.
+   *
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * supported type is selected or exactly three finite positive dimensions are
+   * unavailable.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * current lengths violate the selected cubic or tetragonal equality rules.
+   * @note Piston and restart operations use this check before consuming state.
+   * It also detects invalid changes through the legacy mutable box alias.
+   */
+  void requireCrystalBox(void) const;
+
 protected:
   /**
    * @brief Formats and prints the current CHARMM-style energy table.
@@ -1478,8 +1536,10 @@ protected:
    * changes. Parameters, box dimensions, and periodic-boundary state are then
    * copied into the context.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if no force manager is attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * force manager is attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * import valid box lengths conflict with the selected crystal type.
    */
   void syncStateFromForceManager(void);
 
@@ -1489,8 +1549,10 @@ protected:
    * Context PSF, parameters, box, and periodic-boundary state take precedence
    * when present. Missing context state is imported from the manager.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if no force manager is attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * force manager is attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * box syncrhonization conflicts with the selected crystal type.
    */
   void syncForceManagerFromState(void);
 
@@ -1498,7 +1560,7 @@ protected:
    * @brief Reports whether force-manager initialization prerequisites exist.
    *
    * @return `true` only when a force manager, PSF, parameters, and exactly
-   * three positive box dimensions are present.
+   * three finite positive box dimensions are present.
    */
   bool hasCompleteForceManagerState(void) const;
 
@@ -1558,6 +1620,8 @@ protected:
   std::vector<double> m_BoxDimensions;
   /** Records whether valid positive box dimensions were established. */
   bool m_HasBoxDimensions;
+  /** Authoritative crystal symmetry, explicitly selected between phases. */
+  CRYSTAL m_CrystalType;
 
   /**
    * Shared force-manager owner. The reverse manager-to-context association is

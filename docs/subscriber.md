@@ -103,7 +103,10 @@ construction. [DcdSubscriber](@ref DcdSubscriber) opens binary output, while
 
 Establish state in this order:
 
-1. Construct and initialize the [CharmmContext](@ref CharmmContext).
+1. Construct and initialize the [CharmmContext](@ref CharmmContext). For restart
+   import or export, explicitly select its crystal type with
+   [setCrystalType()](@ref CharmmContext::setCrystalType). Choose the same type
+   in the receiving simulation; equal box lengths do not change the selection.
 2. Construct the concrete integrator and attach the context.
 3. Construct the subscriber with its final path and report frequency.
 4. Subscribe it to the integrator.
@@ -119,10 +122,16 @@ and a later context setter does not update the already attached subscriber.
 
 The scheduling interval is a snapshot. Changing a subscriber's native
 frequency after subscription changes the property read by some file metadata,
-but it does not change the integrator's cached callback interval. Each separate
-`propagate(num_steps)` call numbers steps locally from one. A subscriber with
-frequency 100 is therefore called at local steps 100, 200, and so on in every
-call, rather than from an absolute lifetime-step modulus.
+but it does not change the integrator's cached callback interval. Scheduling
+follows CHARMM's `MOD(ISTEP,NSAVC)` rule with `ISTEP` counted from the run
+origin: the completed-step count at the first `propagate()` call after
+subscription. Successive `propagate(num_steps)` calls continue that run, so a
+subscriber with frequency 100 is called at steps 100, 200, and so on relative
+to its origin no matter how the steps are split across calls. Subscribing
+again, reopening a DCD file, or importing a restart with
+`initializeFromRestartFile()` starts a new run at the next propagation. A DCD
+file that already holds frames rejects such a new run; open it under a new path
+first, as CHARMM opens a new trajectory unit for a restarted run.
 
 [DcdSubscriber](@ref DcdSubscriber) requires a live binary stream, a context
 with a positive atom count, exactly three positive box lengths, and a valid
@@ -130,7 +139,11 @@ single-precision coordinate/charge device container.
 [RestartSubscriber](@ref RestartSubscriber) additionally requires the subscriber
 and integrator to retain the same context and supports only
 `CudaNoseHooverIntegrator`, `CudaLangevinPistonIntegrator`, and
-`CudaLangevinThermostatIntegrator`.
+`CudaLangevinThermostatIntegrator`. Restart import and export require a context
+configured as `CRYSTAL::CUBIC`, `CRYSTAL::TETRAGONAL`, or
+`CRYSTAL::ORTHORHOMBIC`, with box dimensions consistent with that selection.
+The type comes exclusively from the context. DCD output requires valid box
+dimensions but does not require a configured crystal label.
 
 ## Ownership and Lifetime
 
@@ -175,7 +188,7 @@ destruction involving shared objects.
 
 The reporting interval and frame counters are dimensionless step counts.
 Integrator constructor time steps and public `getTimeStep()` values use
-picoseconds.
+picoseconds. The DCD header converts that value to AKMA time units.
 
 [DcdSubscriber](@ref DcdSubscriber) writes:
 
@@ -187,24 +200,50 @@ picoseconds.
 - coordinates and box lengths in angstroms;
 - no charge, velocity, mass, force, or energy values.
 
-The current DCD implementation writes native integer and floating-point
-representations and does not perform byte-order conversion.
+DCD record markers and integer fields use signed 32-bit integers; coordinates
+use IEEE binary32 and cell entries use IEEE binary64. Output uses native byte
+order. The first saved step is the completed integration step, frame count is
+the number successfully written, and planned duration is the latest announced
+endpoint minus the run origin, including unsaved trailing steps, exactly as a
+CHARMM run of that length records `NSTEP`. The native integrator announces each
+request through `onPropagationStart(startStep, numSteps)`; DCD owns the output
+plan and can update its duration even when a request produces no new frame.
 
-[RestartSubscriber](@ref RestartSubscriber) writes a version-50 CHARMM-style
-text restart. Verified quantities include:
+[RestartSubscriber](@ref RestartSubscriber) writes a version-52 CHARMM formatted
+restart core and a trailing apoCHARMM RNG extension. The header line carries
+the marker `APO` in columns 32-34, past every field CHARMM's `READYN` reads, so
+CHARMM ignores the marker and never reaches the extension, while apoCHARMM
+readers require the extension whenever the marker is present. Quantities
+include:
 
 | Section or value | Shape and order | Unit |
 | --- | --- | --- |
 | Box lengths | Three diagonal lengths in X, Y, Z order | Angstrom |
 | `XOLD, YOLD, ZOLD` | One double-precision XYZ row per atom | Angstrom |
 | `VX, VY, VZ` | One double-precision velocity row per atom | Angstrom per AKMA time unit |
-| `X, Y, Z` | One previous coordinate-delta XYZ row per atom | Stored integrator representation |
+| `X, Y, Z` | One previous leapfrog-displacement XYZ row per atom | Angstrom |
 | Average temperature | One scalar | Kelvin |
-| Atom, step, degree-of-freedom, and seed fields | Scalar integer fields | Dimensionless |
+| Atom, step, and degree-of-freedom fields | Scalar integer fields | Dimensionless |
+| Standard scalar seed | D22.15 real field | Dimensionless |
+| Native RNG seed and state | Exact integer/state text in the extension | Dimensionless |
 
-Restart Nose-Hoover and Langevin-piston state is serialized directly from the
-integrator. The current repository does not establish every one of those
-field-specific units clearly enough to make them a stable subscriber contract.
+Restart Nose-Hoover and Langevin-piston velocity/force state retains the
+integrators' native CHARMM-compatible AKMA units. Numeric fields use D22.15
+precision. Unavailable diagnostic histories are reset explicitly, including
+the thermal-piston reference-energy origin. Matching atom order, potential,
+constraints, timestep, and thermostat/piston settings remain the caller's
+responsibility. Native stochastic imports restore the RNG extension; CHARMM
+imports start a fresh stream from the caller's configured apoCHARMM seed. A
+CHARMM restart written with `JHSTRT=0` (for example at the end of an
+equilibration run whose last step rescaled velocities) is resumed as CHARMM
+resumes it, through the two-step start that regenerates the previous
+displacement from velocities and forces (`IGVOPT=2`). CHARMM's `NDEGF` is not
+required to match the context, because CHARMM itself recomputes it after
+reading a restart; files written by apoCHARMM must still match. The shared
+reader `apo::ReadRestartFile` returns a `RestartSnapshot` that retains every
+record of the supported layout except CHARMM's own random-number fields,
+including the statistics apoCHARMM does not use, so a file can be inspected
+or carried forward without reparsing.
 
 ## Errors
 
@@ -232,9 +271,10 @@ also raises `TypeError` for wrapper/type or `ctypes` conversion failures,
 closed wrappers or impossible successful-null-handle results.
 
 A propagation failure is not transactional at any interface. The integrator
-increments its total requested-step count before the loop. Completed dynamics
-steps, changed host/device state, and file bytes written before a later callback
-failure remain observable.
+increments its completed-step count after each concrete step returns and before
+reporting. The latest request length is independent metadata. A start hook can
+update planned output metadata before a later hook or step fails; completed
+dynamics, changed host/device state, and written bytes remain observable.
 
 ## Important Behavior and Limitations
 
@@ -245,12 +285,17 @@ failure remain observable.
   subscriber-specific CUDA stream.
 - `Subscriber::setFilePath()` changes only the stored logical path. It does not
   reopen the stream. Mutable `getFilePath()` access bypasses all validation.
-- DCD files are native-endian and frame writes can be partial. DCD `NSTEP` is
-  derived from frame count times the subscriber's current frequency, not the
-  integrator's absolute step.
-- Restart updates truncate before writing and currently fill many CHARMM energy
-  and statistics fields with zero. The recorded `NSAVC` and `NSAVV` values do
-  not represent independent DCD coordinate and velocity saving frequencies.
+- DCD writes are not atomic. For scheduled output, `NSTEP` is the announced
+  endpoint minus the run origin fixed at the first propagation after
+  subscription, reopening, or restart import. Without a propagation
+  announcement, manual snapshots record the observed span from the first
+  snapshot.
+- Restart formatting and device transfers finish before update truncation,
+  but construction truncates immediately and output is not atomic. Unavailable
+  diagnostic histories reset; previous-energy initialization fields use the
+  CHARMM sentinel. `NSAVC` comes from attached DCD subscribers, or is zero when
+  none is attached. Different simultaneous DCD frequencies are rejected;
+  `NSAVV` remains zero because velocity trajectories are not written.
 
 ## Related Subsystems
 

@@ -4,7 +4,7 @@
 // license, as described in the LICENSE file in the top level directory of this
 // project.
 //
-// Author:  James E. Gonzales II, Samarjeet Prasad
+// Author: James E. Gonzales II, Samarjeet Prasad
 //
 // ENDLICENSE
 
@@ -15,29 +15,44 @@
 #include <filesystem>
 
 /**
- * @brief Replaces a CHARMM-style restart file with the latest simulation state.
+ * @brief Writes supported leapfrog state in CHARMM's formatted restart layout.
  *
- * Each successful @ref update writes version-50 text containing periodic-box
- * state, integrator counters and random state, energy/statistics placeholders,
- * double-precision coordinates, velocities, and the integrator's previous
- * coordinate-delta state. The file is intended for
- * `CudaIntegrator::initializeFromRestartFile()` on supported integrators.
+ * Each successful @ref update writes a version-52 standard restart core with 96
+ * property, 192 energy-term, and 50 pressure-statistic entries, followed by an
+ * apoCHARMM RNG extension. Supported modes are the ordinary leapfrog paths
+ * corresponding to the three integrators listed below, with CUBI, TETR, or ORTH
+ * cells and default CHARMM energy-selection flags.
  *
- * Box lengths and coordinates use angstroms. Context velocities use angstroms
- * per AKMA time unit. Average temperature uses kelvin. Arrays are written in
- * atom order with X, Y, and Z components on each line. Several CHARMM energy
- * and statistics fields are currently emitted as zeros.
+ * Coordinates and box lengths use angstroms; velocities use angstroms per AKMA
+ * time unit. HDOT, PNHV, and PNHF retain the integrators' native
+ * CHARMM-compatible units. The X/Y/Z section contains leapfrog displacements.
+ * Numeric fields use CHARMM D22.15 precision, so restart serialization is not
+ * bitwise lossless.
  *
- * Updating transfers all required CUDA containers to host memory. Each transfer
- * synchronizes all previously requested work on the current CUDA device; no
- * subscriber-specific stream is used.
+ * Unavailable diagnostic histories are reset. A nonzero completed-step count
+ * starts a one-sample temperature window while retaining continuation state.
+ * PNH is reset to zero as a thermal-piston reference-energy reset. The standard
+ * record advertises no CHARMM RNG state; native Philox data is preserved only
+ * in the trailing extension. The header carries the marker `APO` at character
+ * offsets 32-34 (Fortran columns 33-35), beyond every field CHARMM's READYN
+ * consumes, so CHARMM ignores both the marker and the extension, while
+ * apoCHARMM readers require the extension whenever the marker is present.
+ * Foreign imports start a new configured RNG stream.
  *
- * @warning Updates support only `CudaNoseHooverIntegrator`,
- * `CudaLangevinPistonIntegrator`, and
- * `CudaLangevinThermostatIntegrator`.
- * @warning Each update truncates the target before all sections are generated.
- * A later failure can destroy a previously usable restart and leave a partial
- * replacement.
+ * Coordinate saving frequency comes from attached DCD subscribers, or is zero
+ * if none is attached. Different simultaneous DCD saving frequencies cannot be
+ * represented by one CHARMM NSAVC and are rejected. The crystal type comes
+ * exclusively from CharmmContext::getCrystalType(). Set the context's crystal
+ * type explicitly before writing or loading a restart. Loading requires that
+ * the configured type match the file, including an equal-sided ORTH cell.
+ *
+ * @warning Updates support only CudaNoseHooverIntegrator,
+ * CudaLangevinPistonIntegrator, and CudaLangevinThermostatIntegrator.
+ * @warning Match topology, potential, constraints, timestep, thermostat and
+ * piston settings in the receiving program. A restart does not supply them.
+ * @warning Formatting and transfers finish before the update truncates the
+ * target, but output is not atomic. A write failure can leave a partial file.
+ * Construction also creates or truncates the target immediately.
  *
  * @see Subscriber
  * @see subscriber
@@ -104,31 +119,30 @@ public:
   ~RestartSubscriber(void) noexcept override = default;
 
   /**
-   * @brief Replaces the output with one restart snapshot.
+   * @brief Replaces the output with one supported restart snapshot.
    *
-   * The method validates the attached collaborators and box before reopening
-   * the path in truncating text mode. It writes one complete restart and closes
-   * the stream before checking the final stream state.
+   * Required state is transferred, validated, and formatted in memory before
+   * the path is reopened for writing. The completed-step counter supplies
+   * NPRIV; the requested run length supplies NSTEP.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if the logical file path is empty, no
-   * context or integrator is attached, the integrator has no context, or the
-   * context does not contain exactly three positive box lengths.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotImplemented` if the attached integrator is not a
-   * supported Nose-Hoover, Langevin-piston, or Langevin-thermostat integrator.
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if the
-   * subscriber and integrator retain different context objects, the file cannot
-   * be reopened, or closing detects failed output.
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if any required
-   * device-to-host transfer or device-wide synchronization fails.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if a
+   * collaborator, atom state, positive degrees of freedom, an explicit context
+   * crystal type, or a finite positive box is absent.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotImplemented` for
+   * unsupported integrators or crystal types, or multiple distinct
+   * coordinate-saving frequencies.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` for
+   * inconsistent crystal lengths, nonfinite numeric state, or values outside
+   * the supported CHARMM integer or D22.15 round-trip ranges.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` for
+   * mismatched collaborator state, inconsistent subscriber lists, formatting
+   * failures, or output failures.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` for device
+   * transfer or calculation failures.
+   * @throws std::bad_alloc If snapshot formatting cannot allocate memory.
    *
-   * @pre Context per-atom arrays and every integrator-specific state container
-   * required by the selected integrator have valid lengths and device storage.
-   * @post On success, the stream is closed and the path contains one complete
-   * restart representing the state observed during this call.
-   * @warning The operation is not transactional. Output and host mirrors
-   * updated before a failure remain observable.
+   * @post On success, the file is complete and its stream is closed.
+   * @warning Output is not atomic; an I/O failure can leave a partial file.
    */
   void update(void) override;
 };

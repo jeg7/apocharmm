@@ -12,19 +12,42 @@
 
 #include "ApoCharmmError.h"
 #include "CharmmContext.h"
+#include "Constants.h"
 #include "CudaIntegrator.h"
 
+#include <algorithm>
 #include <array>
-#include <cstddef>
+#include <climits>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <vector>
 
+static_assert(CHAR_BIT == 8 && sizeof(std::int32_t) == 4,
+              "DCD output requires 8-bit bytes and 32-bit integers");
+static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559,
+              "DCD output requires IEEE 754 binary32 coordinates");
+static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559,
+              "DCD output requires IEEE 754 binary64 cell values");
+
+// Every count in a DCD control record is a signed 32-bit integer
+static constexpr unsigned long long int MAX_DCD_INTEGER =
+    static_cast<unsigned long long int>(
+        std::numeric_limits<std::int32_t>::max());
+
 DcdSubscriber::DcdSubscriber(const std::filesystem::path &filePath)
     : Subscriber() {
   m_NumFramesWritten = 0;
   m_IsHeaderWritten = false;
+  m_HeaderReportFrequency = 0;
+  m_HeaderNumAtoms = 0;
+  m_HeaderNumDegreesOfFreedom = 0;
+  m_HeaderTimeStep = 0.0;
+  m_LastStepWritten = 0;
+  m_PlannedEndStep = 0;
   this->setFilePath(filePath);
   this->openFile();
 }
@@ -34,9 +57,77 @@ DcdSubscriber::DcdSubscriber(const std::filesystem::path &filePath,
     : Subscriber() {
   m_NumFramesWritten = 0;
   m_IsHeaderWritten = false;
+  m_HeaderReportFrequency = 0;
+  m_HeaderNumAtoms = 0;
+  m_HeaderNumDegreesOfFreedom = 0;
+  m_HeaderTimeStep = 0.0;
+  m_LastStepWritten = 0;
+  m_PlannedEndStep = 0;
   this->setReportFrequency(reportFrequency);
   this->setFilePath(filePath);
   this->openFile();
+}
+
+void DcdSubscriber::onPropagationStart(const unsigned long long int startStep,
+                                       const int numSteps) {
+  APOCHARMM_REQUIRE(numSteps > 0, ApoCharmmErrorCode::InvalidArgument,
+                    "DcdSubscriber propagation request must be positive");
+
+  const unsigned long long int requestedSteps =
+      static_cast<unsigned long long int>(numSteps);
+  APOCHARMM_REQUIRE(
+      requestedSteps <=
+          std::numeric_limits<unsigned long long int>::max() - startStep,
+      ApoCharmmErrorCode::InvalidArgument,
+      "DcdSubscriber propagation request exceeds the step counter range");
+
+  // An empty origin means a new run: the first announcement after subscription
+  // or after reopening. Once frames exist, a new run (for example after a
+  // restart load) needs a new file, as CHARMM opens a new trajectory unit.
+  APOCHARMM_REQUIRE(m_StartStep.has_value() || !m_IsHeaderWritten,
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "DcdSubscriber run origin was reset; open a new DCD file");
+
+  if (!m_StartStep.has_value())
+    m_StartStep = startStep;
+
+  const unsigned long long int runStart = *m_StartStep;
+  APOCHARMM_REQUIRE(startStep >= runStart && startStep >= m_LastStepWritten,
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "DcdSubscriber integration step metadata is inconsistent");
+
+  const unsigned long long int plannedEnd = startStep + requestedSteps;
+  const unsigned long long int plannedSpan = plannedEnd - runStart;
+  APOCHARMM_REQUIRE(plannedSpan <= MAX_DCD_INTEGER, ApoCharmmErrorCode::Runtime,
+                    "DcdSubscriber frame metadata exceeds DCD integer range");
+
+  if (m_IsHeaderWritten) {
+    APOCHARMM_REQUIRE(
+        m_ReportFrequency == m_HeaderReportFrequency,
+        ApoCharmmErrorCode::InvalidArgument,
+        "DcdSubscriber trajectory metadata changed; open a new DCD file");
+    APOCHARMM_REQUIRE(m_FileStream.is_open(),
+                      ApoCharmmErrorCode::NotInitialized,
+                      "DcdSubscriber output file is not open for writing: " +
+                          m_FilePath.string());
+
+    // CHARMM records NSTEP as the planned run length; extend it to the newly
+    // announced endpoint even when this request produces no frame.
+    const std::int32_t numStepsWritten = static_cast<std::int32_t>(plannedSpan);
+
+    m_FileStream.seekp(20);
+    m_FileStream.write(reinterpret_cast<const char *>(&numStepsWritten),
+                       sizeof(std::int32_t));
+    m_FileStream.seekp(0, std::ofstream::end);
+    m_FileStream.flush();
+    APOCHARMM_REQUIRE(m_FileStream.good(), ApoCharmmErrorCode::Runtime,
+                      "Failed to update DCD run metadata: " +
+                          m_FilePath.string());
+  }
+
+  m_PlannedEndStep = plannedEnd;
+
+  return;
 }
 
 void DcdSubscriber::update(void) {
@@ -54,11 +145,14 @@ void DcdSubscriber::update(void) {
                     "DcdSubscriber output file is not open for writing: " +
                         m_FilePath.string());
 
-  const std::vector<double> boxDimensions = m_CharmmContext->getBoxDimensions();
+  const std::vector<double> &boxDimensions =
+      m_CharmmContext->getBoxDimensions();
 
   APOCHARMM_REQUIRE(
-      (boxDimensions.size() == 3) && (boxDimensions[0] > 0.0) &&
-          (boxDimensions[1] > 0.0) && (boxDimensions[2] > 0.0),
+      boxDimensions.size() == 3 && std::isfinite(boxDimensions[0]) &&
+          std::isfinite(boxDimensions[1]) && std::isfinite(boxDimensions[2]) &&
+          boxDimensions[0] > 0.0 && boxDimensions[1] > 0.0 &&
+          boxDimensions[2] > 0.0,
       ApoCharmmErrorCode::NotInitialized,
       "DcdSubscriber requires three positive box dimensions before update");
 
@@ -67,41 +161,76 @@ void DcdSubscriber::update(void) {
   APOCHARMM_REQUIRE(numAtoms > 0, ApoCharmmErrorCode::NotInitialized,
                     "DcdSubscriber requires at least one atom before update");
 
+  APOCHARMM_REQUIRE(
+      numAtoms <= std::numeric_limits<std::int32_t>::max() / 4,
+      ApoCharmmErrorCode::Runtime,
+      "DcdSubscriber coordinate record exceeds DCD integer range");
+
+  const unsigned long long int currentStep = m_Integrator->getTotNumSteps();
+
+  // A manual snapshot without an announced run starts the run at this step
+  APOCHARMM_REQUIRE(m_StartStep.has_value() || !m_IsHeaderWritten,
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "DcdSubscriber run origin was reset; open a new DCD file");
+
+  if (!m_StartStep.has_value())
+    m_StartStep = currentStep;
+
+  const unsigned long long int fileStart = *m_StartStep;
+  const unsigned long long int plannedEnd =
+      std::max(m_PlannedEndStep, currentStep);
+  APOCHARMM_REQUIRE(fileStart <= currentStep,
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "DcdSubscriber integration step metadata is inconsistent");
+
+  if (m_IsHeaderWritten) {
+    APOCHARMM_REQUIRE(
+        m_ReportFrequency == m_HeaderReportFrequency &&
+            m_Integrator->getTimeStep() == m_HeaderTimeStep &&
+            numAtoms == m_HeaderNumAtoms &&
+            m_CharmmContext->getNumDegreesOfFreedom() ==
+                m_HeaderNumDegreesOfFreedom,
+        ApoCharmmErrorCode::InvalidArgument,
+        "DcdSubscriber trajectory metadata changed; open a new DCD file");
+    APOCHARMM_REQUIRE(
+        currentStep >= m_LastStepWritten &&
+            currentStep - m_LastStepWritten ==
+                static_cast<unsigned long long int>(m_HeaderReportFrequency),
+        ApoCharmmErrorCode::InvalidArgument,
+        "DcdSubscriber frames must be separated by the reporting frequency");
+  }
+
   const unsigned long long int nextNumFramesWritten =
       static_cast<unsigned long long int>(m_NumFramesWritten) + 1ULL;
-  const unsigned long long int nextNumStepsWritten =
-      nextNumFramesWritten *
-      static_cast<unsigned long long int>(m_ReportFrequency);
+  const unsigned long long int nextNumStepsWritten = plannedEnd - fileStart;
 
-  APOCHARMM_REQUIRE(
-      (nextNumFramesWritten <=
-       static_cast<unsigned long long int>(std::numeric_limits<int>::max())) &&
-          (nextNumStepsWritten <= static_cast<unsigned long long int>(
-                                      std::numeric_limits<int>::max())),
-      ApoCharmmErrorCode::Runtime,
-      "DcdSubscriber frame metadata exceeds DCD integer range");
+  APOCHARMM_REQUIRE(nextNumFramesWritten <= MAX_DCD_INTEGER &&
+                        nextNumStepsWritten <= MAX_DCD_INTEGER,
+                    ApoCharmmErrorCode::Runtime,
+                    "DcdSubscriber frame metadata exceeds DCD integer range");
 
   // Write header if needed
   if (!m_IsHeaderWritten)
     this->writeHeader();
 
-  // JEG250610: Add conditional statement for this
   this->writeXtalData();
 
   // Write coordinate data
   this->writeCoordData();
 
   // Update header to account for new data that was written
-  const int numFramesWritten = static_cast<int>(nextNumFramesWritten);
-  const int numStepsWritten = static_cast<int>(nextNumStepsWritten);
+  const std::int32_t numFramesWritten =
+      static_cast<std::int32_t>(nextNumFramesWritten);
+  const std::int32_t numStepsWritten =
+      static_cast<std::int32_t>(nextNumStepsWritten);
 
   m_FileStream.seekp(8);
   m_FileStream.write(reinterpret_cast<const char *>(&numFramesWritten),
-                     sizeof(int));
+                     sizeof(std::int32_t));
 
   m_FileStream.seekp(20);
   m_FileStream.write(reinterpret_cast<const char *>(&numStepsWritten),
-                     sizeof(int));
+                     sizeof(std::int32_t));
 
   m_FileStream.seekp(0, std::ofstream::end);
   m_FileStream.flush();
@@ -110,6 +239,7 @@ void DcdSubscriber::update(void) {
                     "Failed to write DCD frame: " + m_FilePath.string());
 
   m_NumFramesWritten = numFramesWritten;
+  m_LastStepWritten = currentStep;
 
   return;
 }
@@ -133,132 +263,104 @@ void DcdSubscriber::openFile(void) {
 
   m_NumFramesWritten = 0;
   m_IsHeaderWritten = false;
+  m_HeaderReportFrequency = 0;
+  m_HeaderNumAtoms = 0;
+  m_HeaderNumDegreesOfFreedom = 0;
+  m_HeaderTimeStep = 0.0;
+  m_LastStepWritten = 0;
+  m_PlannedEndStep = 0;
+  // A new file is a new CHARMM-style run; the next propagation sets its origin.
+  m_StartStep.reset();
 
   return;
 }
 
 void DcdSubscriber::writeHeader(void) {
-  std::array<char, 1024> buffer;
-  int *iPtr = reinterpret_cast<int *>(buffer.data());
-  float *fPtr = reinterpret_cast<float *>(buffer.data());
-  int blockSizeBytes = 0;
+  // START is the completed step of this first frame; DELTA is the time step in
+  // AKMA units stored as the bits of an IEEE binary32 value.
+  const unsigned long long int startStep = m_Integrator->getTotNumSteps();
+  APOCHARMM_REQUIRE(startStep <= MAX_DCD_INTEGER, ApoCharmmErrorCode::Runtime,
+                    "DcdSubscriber frame metadata exceeds DCD integer range");
 
-  int start = 0; // JEG250610: Get this from integrator
-  int nstep = 0; // This is updated as it is written
-  int nsavv = 0;
-  int ndegf = m_CharmmContext->getNumDegreesOfFreedom();
-  int namnf = 0;
-  float delta = m_Integrator->getTimeStep();
-  bool hasXtalData = true;
-  bool has4dData = false;
-  bool hasCheqData = false;
-  bool hasContData = false;
-  int version = 49;
+  const float delta = static_cast<float>(m_Integrator->getTimeStep() /
+                                         charmm::constants::timfac);
+  APOCHARMM_REQUIRE(
+      std::isfinite(delta) && delta > 0.0f, ApoCharmmErrorCode::InvalidArgument,
+      "DcdSubscriber time step is not representable in DCD format");
 
-  // Fill input control block
-  blockSizeBytes = 84;
-  buffer.fill(0);
-  iPtr[0] = 1146244931;        // 'C','O','R','D'
-  iPtr[1] = 0;                 // Number of frames written (NFILE)
-  iPtr[2] = start;             // Starting step (START)
-  iPtr[3] = m_ReportFrequency; // Reporting frequency (NSAVC)
-  iPtr[4] = nstep;  // Report frequency * number of frames written (NSTEP)
-  iPtr[5] = nsavv;  // Velocity saving frequency (NSAVV)
-  iPtr[6] = 0;      // UNUSED OPTION
-  iPtr[7] = 0;      // UNUSED OPTION
-  iPtr[8] = ndegf;  // Number of degrees of freedom (NDEGF)
-  iPtr[9] = namnf;  // Number of fixed atoms (NAMNF)
-  fPtr[10] = delta; // Time step (DELTA)
-  iPtr[11] = (hasXtalData) ? 1 : 0;
-  iPtr[12] = (has4dData) ? 1 : 0;
-  iPtr[13] = (hasCheqData) ? 1 : 0;
-  iPtr[14] = (hasContData) ? 1 : 0;
-  iPtr[15] = 0;       // UNUSED OPTION
-  iPtr[16] = 0;       // UNUSED OPTION
-  iPtr[17] = 0;       // UNUSED OPTION
-  iPtr[18] = 0;       // UNUSED OPTION
-  iPtr[19] = 0;       // UNUSED OPTION
-  iPtr[20] = version; // CHARMM version, should always be >= 22
+  std::array<std::int32_t, 20> control{};
+  control[1] = static_cast<std::int32_t>(startStep);
+  control[2] = static_cast<std::int32_t>(m_ReportFrequency);
+  control[7] =
+      static_cast<std::int32_t>(m_CharmmContext->getNumDegreesOfFreedom());
+  std::memcpy(&control[9], &delta, sizeof(float));
+  control[10] = 1; // One symmetric unit-cell matrix record per frame
+  control[19] = charmm::constants::vernum;
 
-  // Write start size of input control block
-  m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
+  const std::int32_t controlSize = 84;
+  m_FileStream.write(reinterpret_cast<const char *>(&controlSize),
+                     sizeof(std::int32_t));
+  m_FileStream.write("CORD", 4);
+  m_FileStream.write(
+      reinterpret_cast<const char *>(control.data()),
+      static_cast<std::streamsize>(control.size() * sizeof(std::int32_t)));
+  m_FileStream.write(reinterpret_cast<const char *>(&controlSize),
+                     sizeof(std::int32_t));
 
-  // Write input control block
-  m_FileStream.write(buffer.data(), blockSizeBytes);
+  std::array<char, 160> titles;
+  titles.fill(' ');
 
-  // Write end size of input control block
-  m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
+  const std::string title = "* GENERATED BY APOCHARMM";
+  std::memcpy(titles.data(), title.data(), title.size());
+  titles[80] = '*';
 
-  // Fill title block
-  blockSizeBytes = 164;
-  buffer.fill(' ');
-  iPtr[0] = 2;
-  std::string title = "* GENERATED BY APOCHARMM";
-  for (std::size_t i = 0; i < title.size(); i++)
-    buffer[4 + i] = title[i];
-  buffer[84] = '*';
+  const std::int32_t titleSize = 164;
+  const std::int32_t numTitles = 2;
+  m_FileStream.write(reinterpret_cast<const char *>(&titleSize),
+                     sizeof(std::int32_t));
+  m_FileStream.write(reinterpret_cast<const char *>(&numTitles),
+                     sizeof(std::int32_t));
+  m_FileStream.write(titles.data(),
+                     static_cast<std::streamsize>(titles.size()));
+  m_FileStream.write(reinterpret_cast<const char *>(&titleSize),
+                     sizeof(std::int32_t));
 
-  // Write start size of title block
-  m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
-
-  // Write title block
-  m_FileStream.write(buffer.data(), blockSizeBytes);
-
-  // Write end size of title block
-  m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
-
-  // Fill atom block
-  blockSizeBytes = 4;
-  buffer.fill(0);
-  iPtr[0] = m_CharmmContext->getNumAtoms();
-
-  // Write start size of atom block
-  m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
-
-  // Write atom block
-  m_FileStream.write(buffer.data(), blockSizeBytes);
-
-  // Write end size of atom block
-  m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
+  const std::int32_t atomSize = 4;
+  const std::int32_t numAtoms =
+      static_cast<std::int32_t>(m_CharmmContext->getNumAtoms());
+  m_FileStream.write(reinterpret_cast<const char *>(&atomSize),
+                     sizeof(std::int32_t));
+  m_FileStream.write(reinterpret_cast<const char *>(&numAtoms),
+                     sizeof(std::int32_t));
+  m_FileStream.write(reinterpret_cast<const char *>(&atomSize),
+                     sizeof(std::int32_t));
 
   m_FileStream.flush();
 
   APOCHARMM_REQUIRE(m_FileStream.good(), ApoCharmmErrorCode::Runtime,
                     "Failed to write DCD header: " + m_FilePath.string());
 
+  m_HeaderReportFrequency = m_ReportFrequency;
+  m_HeaderNumAtoms = m_CharmmContext->getNumAtoms();
+  m_HeaderNumDegreesOfFreedom = m_CharmmContext->getNumDegreesOfFreedom();
+  m_HeaderTimeStep = m_Integrator->getTimeStep();
   m_IsHeaderWritten = true;
 
   return;
 }
 
 void DcdSubscriber::writeXtalData(void) {
-  std::array<char, 1024> buffer;
-  double *dPtr = reinterpret_cast<double *>(buffer.data());
-  int blockSizeBytes = 6 * static_cast<int>(sizeof(double));
-  std::vector<double> boxDims = m_CharmmContext->getBoxDimensions();
+  const std::vector<double> &boxDims = m_CharmmContext->getBoxDimensions();
+  const std::array<double, 6> cell = {boxDims[0], 0.0, boxDims[1],
+                                      0.0,        0.0, boxDims[2]};
+  const std::int32_t blockSizeBytes = 48;
 
-  // Fille XTAL block
-  buffer.fill(0);
-  dPtr[0] = boxDims[0];
-  dPtr[2] = boxDims[1];
-  dPtr[5] = boxDims[2];
-
-  // Write start size of XTAL block
   m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
-
-  // Write XTAL block
-  m_FileStream.write(buffer.data(), blockSizeBytes);
-
-  // Write end size of XTAL block
+                     sizeof(std::int32_t));
+  m_FileStream.write(reinterpret_cast<const char *>(cell.data()),
+                     blockSizeBytes);
   m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
+                     sizeof(std::int32_t));
 
   return;
 }
@@ -268,34 +370,35 @@ void DcdSubscriber::writeCoordData(void) {
   const float4 *xyzq =
       m_CharmmContext->getCoordinatesChargesSP().getHostArray().data();
   const int numAtoms = m_CharmmContext->getNumAtoms();
-  const int blockSizeBytes = numAtoms * static_cast<int>(sizeof(float));
+  const std::int32_t blockSizeBytes = static_cast<std::int32_t>(numAtoms) *
+                                      static_cast<std::int32_t>(sizeof(float));
 
   // Write X coordinate block
   m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
+                     sizeof(std::int32_t));
   for (int i = 0; i < numAtoms; i++)
     m_FileStream.write(reinterpret_cast<const char *>(&xyzq[i].x),
                        sizeof(float));
   m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
+                     sizeof(std::int32_t));
 
   // Write Y coordinate block
   m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
+                     sizeof(std::int32_t));
   for (int i = 0; i < numAtoms; i++)
     m_FileStream.write(reinterpret_cast<const char *>(&xyzq[i].y),
                        sizeof(float));
   m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
+                     sizeof(std::int32_t));
 
   // Write Z coordinate block
   m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
+                     sizeof(std::int32_t));
   for (int i = 0; i < numAtoms; i++)
     m_FileStream.write(reinterpret_cast<const char *>(&xyzq[i].z),
                        sizeof(float));
   m_FileStream.write(reinterpret_cast<const char *>(&blockSizeBytes),
-                     sizeof(int));
+                     sizeof(std::int32_t));
 
   return;
 }

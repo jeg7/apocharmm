@@ -13,18 +13,25 @@
 #include "CharmmCrd.h"
 #include "CharmmPSF.h"
 #include "CharmmParameters.h"
+#include "Crystal.h"
 #include "CudaIntegrator.h"
 #include "CudaLangevinPistonIntegrator.h"
 #include "CudaLangevinThermostatIntegrator.h"
 #include "CudaNoseHooverIntegrator.h"
+#include "DcdSubscriber.h"
 #include "ForceManager.h"
+#include "RestartIO.h"
 #include "RestartSubscriber.h"
 #include "apo_test_helpers.h"
 #include "catch.hpp"
+#include "str_utils.h"
 
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -49,7 +56,9 @@ const std::vector<double> BOX_DIMENSIONS = {50.0, 50.0, 50.0};
 const std::vector<double> REFERENCE_PRESSURE_TENSOR = {1.0, 0.0, 0.0, 0.0, 1.0,
                                                        0.0, 0.0, 0.0, 1.0};
 
-std::shared_ptr<CharmmContext> CreateContext(const bool assignVelocities) {
+std::shared_ptr<CharmmContext>
+CreateContext(const bool assignVelocities,
+              const CRYSTAL crystalType = CRYSTAL::CUBIC) {
   auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
                                                 "toppar_water_ions.str");
   auto psf =
@@ -59,6 +68,8 @@ std::shared_ptr<CharmmContext> CreateContext(const bool assignVelocities) {
 
   auto ctx = std::make_shared<CharmmContext>(psf, prm);
   ctx->setBoxDimensions(BOX_DIMENSIONS);
+  if (crystalType != CRYSTAL::UNSET)
+    ctx->setCrystalType(crystalType);
   ctx->setCoordinates(crd);
   ctx->useHolonomicConstraints(false);
 
@@ -101,12 +112,12 @@ CreateLangevinPistonIntegrator(std::shared_ptr<CharmmContext> ctx) {
   integrator->useOldTemperature(false);
   integrator->setReferencePressure(REFERENCE_PRESSURE_TENSOR);
   integrator->setConstantSurfaceTension(false);
-  integrator->setCrystalType(CRYSTAL::CUBIC);
-  integrator->setLangevinPistonMass({LANGEVIN_PISTON_MASS});
   integrator->setLangevinPistonFrictionSeed(LANGEVIN_RNG_SEED);
   integrator->setRngSequencePos(0ULL);
-  integrator->setLangevinPistonFriction(LANGEVIN_PISTON_FRICTION); // *
   integrator->setCharmmContext(ctx);
+  integrator->setLangevinPistonMass(std::vector<double>(
+      integrator->getLangevinPistonMass().size(), LANGEVIN_PISTON_MASS));
+  integrator->setLangevinPistonFriction(LANGEVIN_PISTON_FRICTION);
   return integrator;
 }
 
@@ -122,14 +133,11 @@ void WriteRestartFile(const std::filesystem::path &filePath,
 
 void CheckRestartFileContainsRequiredSections(
     const std::filesystem::path &filePath) {
-  std::ifstream fin(filePath);
-  REQUIRE(fin.good());
+  const std::string contents = apo_test::ReadTextFile(filePath);
 
-  const std::string contents((std::istreambuf_iterator<char>(fin)),
-                             std::istreambuf_iterator<char>());
-
-  CHECK(contents.find("REST") != std::string::npos);
-  CHECK(contents.find("APO") != std::string::npos);
+  REQUIRE(contents.size() >= 36);
+  CHECK(contents.compare(0, 4, "REST") == 0);
+  CHECK(contents.compare(32, 3, "APO") == 0);
   CHECK(contents.find("!CRYSTAL PARAMETERS") != std::string::npos);
   CHECK(
       contents.find("!NATOM,NPRIV,NSTEP,NSAVC,NSAVV,JHSTRT,NDEGF,SEED,NSAVL") !=
@@ -490,10 +498,9 @@ TEST_CASE("RestartSubscriberUpdateValidatesRequiredState") {
     rst.setCharmmContext(ctx);
     rst.setIntegrator(integrator);
 
-    apo_test::CheckApoCharmmError([&]() { rst.update(); },
-                                  ApoCharmmErrorCode::NotInitialized,
-                                  "RestartSubscriber requires three positive "
-                                  "box dimensions before update");
+    apo_test::CheckApoCharmmError(
+        [&]() { rst.update(); }, ApoCharmmErrorCode::NotInitialized,
+        "Crystal box requires exactly 3 finite positive dimensions");
 
     apo_test::RemoveIfExists(fileName);
   }
@@ -509,9 +516,9 @@ TEST_CASE("RestartSubscriberUpdateReportsOutputOpenFailure") {
   rst.setCharmmContext(ctx);
   rst.setIntegrator(integrator);
 
-  apo_test::CheckApoCharmmError([&]() { rst.update(); },
-                                ApoCharmmErrorCode::Runtime,
-                                "Failed to open restart file for writing: .");
+  apo_test::CheckApoCharmmError(
+      [&]() { rst.update(); }, ApoCharmmErrorCode::Runtime,
+      "Failed to open subscriber output file for writing: .");
 }
 
 #if defined(__linux__)
@@ -629,6 +636,380 @@ TEST_CASE("RestartSubscriberNoseHooverTrajectoryEquivalence") {
   CheckNoseHooverStateMatches(*integrator2, *integrator3);
 
   apo_test::RemoveIfExists(fileName);
+}
+
+TEST_CASE("RestartSubscriberWritesCurrentCHARMMStructure") {
+  const std::filesystem::path path = "tmpRestartCHARMMStructure.rst";
+  const std::filesystem::path dcdPath = "tmpRestartCHARMMStructure.dcd";
+  auto ctx = CreateContext(true);
+  auto integrator = CreateLangevinThermostatIntegrator(ctx);
+  integrator->setThermostatRngSeed(std::numeric_limits<std::uint64_t>::max());
+  auto dcd = std::make_shared<DcdSubscriber>(dcdPath, 7);
+  integrator->subscribe(dcd);
+  integrator->propagate(NUM_STEPS);
+  WriteRestartFile(path, ctx, integrator);
+  const std::string contents = apo_test::ReadTextFile(path);
+  const auto lineAfter = [&contents](const std::string &marker) {
+    const std::size_t markerPosition = contents.find(marker);
+    REQUIRE(markerPosition != std::string::npos);
+    const std::size_t first = contents.find('\n', markerPosition) + 1;
+    const std::size_t last = contents.find('\n', first);
+    REQUIRE(last != std::string::npos);
+    return contents.substr(first, last - first);
+  };
+  REQUIRE(contents.substr(0, 4) == "REST");
+  CHECK(std::stoi(contents.substr(4, 6)) == 52);
+  CHECK(std::stoi(contents.substr(10, 6)) == 1);
+  CHECK(contents.substr(24, 4) == "    ");
+  CHECK(contents.substr(28, 4) == "    "); // DHDGB field stays blank
+  CHECK(contents.substr(32, 3) == "APO");  // marker past READYN's fields
+  CHECK(contents.substr(35, 1) == "\n");
+  const std::string metadata = lineAfter(" !NATOM,NPRIV,NSTEP");
+  REQUIRE(metadata.size() == 162);
+  CHECK(std::stoi(metadata.substr(0, 12)) == ctx->getNumAtoms());
+  CHECK(std::stoull(metadata.substr(12, 12)) ==
+        static_cast<unsigned long long int>(NUM_STEPS));
+  CHECK(std::stoi(metadata.substr(36, 12)) == 7);
+  CHECK(std::stoi(metadata.substr(106, 12)) == 0);
+  CHECK(std::stoll(metadata.substr(118, 22)) == 0);
+  CHECK(std::stoll(metadata.substr(140, 22)) == 0);
+  CHECK(metadata.substr(84, 22).find('D') != std::string::npos);
+  const std::string propertyFlags = lineAfter(" !ENERGIES and STATISTICS");
+  REQUIRE(propertyFlags.size() == 96);
+  const std::string termFlags = lineAfter(propertyFlags);
+  REQUIRE(termFlags.size() == 192);
+  const auto snapshot = apo::ReadRestartFile(path, ctx->getNumAtoms());
+  CHECK(snapshot.hasNativeRng);
+  CHECK(snapshot.rngSeed == std::numeric_limits<std::uint64_t>::max());
+  CHECK(snapshot.rngState == integrator->getRngStates());
+  CHECK(snapshot.requestedSteps == NUM_STEPS);
+  CHECK(snapshot.heatingSteps == 1);
+  CHECK(snapshot.degreesOfFreedom == ctx->getNumDegreesOfFreedom());
+  CHECK(snapshot.averageTemperature ==
+        Approx(ctx->computeTemperature()).margin(1.0e-12));
+  // Every non-RNG record is retained, including fields apoCHARMM does not use.
+  CHECK(snapshot.version == 52);
+  CHECK(snapshot.dynamicsType == 1);
+  CHECK(snapshot.crystalLabel == "CUBI");
+  CHECK(snapshot.titles.size() == 2);
+  CHECK((snapshot.xtlabc ==
+         std::array<double, 6>{50.0, 0.0, 50.0, 0.0, 0.0, 50.0}));
+  CHECK((snapshot.uc1a == std::array<double, 6>{}));
+  CHECK((snapshot.uc2b == std::array<double, 6>{}));
+  CHECK((snapshot.cellGradients == std::array<double, 4>{}));
+  CHECK(snapshot.numAtoms == ctx->getNumAtoms());
+  CHECK(snapshot.coordinateSaveFrequency == 7);
+  CHECK(snapshot.velocitySaveFrequency == 0);
+  CHECK(snapshot.seed == 1.0);
+  CHECK(snapshot.lambdaSaveFrequency == 0);
+  CHECK(snapshot.propertyFlags == std::string(96, 'T'));
+  CHECK(snapshot.termFlags == std::string(192, 'T'));
+  CHECK(snapshot.averagingSteps == 0);
+  CHECK(snapshot.fitA == 0.0);
+  CHECK(snapshot.fitP == 0.0);
+  REQUIRE(snapshot.propertyHistory.size() == 96);
+  CHECK(snapshot.propertyHistory[0][0] == 0.0);
+  CHECK(snapshot.propertyHistory[21][0] == -999.0); // PEPR carries FMARK
+  CHECK(snapshot.propertyHistory[32][0] == -999.0); // XTLKP2 carries FMARK
+  CHECK(snapshot.propertyAverages.size() == 96);
+  CHECK(snapshot.termHistory.size() == 192);
+  CHECK(snapshot.termAverages.size() == 192);
+  CHECK(snapshot.pressureHistory.size() == 50);
+  CHECK(snapshot.pressureAverages.size() == 50);
+  integrator->unsubscribe(dcd);
+  dcd.reset();
+  apo_test::RemoveIfExists(path);
+  apo_test::RemoveIfExists(dcdPath);
+}
+
+TEST_CASE("RestartSubscriberForeignRNGKeepsConfiguredSeed") {
+  const std::filesystem::path path = "tmpRestartForeignRNG.rst";
+  auto sourceContext = CreateContext(true);
+  auto source = CreateLangevinThermostatIntegrator(sourceContext);
+  source->propagate(NUM_STEPS);
+  WriteRestartFile(path, sourceContext, source);
+  std::string contents = apo_test::ReadTextFile(path);
+  const std::size_t footer = contents.find("\n !APOCHARMM RNG STATE\n");
+  REQUIRE(footer != std::string::npos);
+  contents.erase(footer);
+  // A CHARMM-written header has no marker at offsets 32-34.
+  REQUIRE(contents.substr(32, 3) == "APO");
+  contents.replace(32, 3, "   ");
+  apo_test::WriteTextFile(path, contents);
+  auto destinationContext = CreateContext(false);
+  auto destination = CreateLangevinThermostatIntegrator(destinationContext);
+  constexpr std::uint64_t configuredSeed = 123456789ULL;
+  destination->setThermostatRngSeed(configuredSeed);
+  destination->initializeFromRestartFile(path);
+  CHECK(destination->getThermostatRngSeed() == configuredSeed);
+  CHECK(destination->getRngSequencePos() == 0);
+  CHECK(destination->getTotNumSteps() ==
+        static_cast<unsigned long long int>(NUM_STEPS));
+  CheckCharmmContextStateMatches(sourceContext, destinationContext);
+  CHECK(destination->getAverageWindowSize() == 0);
+  apo_test::RemoveIfExists(path);
+}
+
+TEST_CASE("ForeignRestartWithJhstrtZeroRegeneratesDisplacementHistory") {
+  const std::filesystem::path path = "tmpRestartForeignHeating.rst";
+  auto sourceContext = CreateContext(true);
+  auto source = CreateLangevinThermostatIntegrator(sourceContext);
+  // A step-0 snapshot records JHSTRT=0. Without the marker and the footer it
+  // is the file CHARMM writes at the end of an equilibration run whose last
+  // step rescaled velocities.
+  WriteRestartFile(path, sourceContext, source);
+  std::string contents = apo_test::ReadTextFile(path);
+  const std::size_t footer = contents.find("\n !APOCHARMM RNG STATE\n");
+  REQUIRE(footer != std::string::npos);
+  contents.erase(footer);
+  REQUIRE(contents.substr(32, 3) == "APO");
+  contents.replace(32, 3, "   ");
+  // Poison the !X, Y, Z block: only CHARMM's two-step start (IGVOPT=2), which
+  // regenerates the previous displacement from velocities and forces, ignores
+  // it.
+  const std::size_t deltas = contents.find(" !X, Y, Z\n");
+  REQUIRE(deltas != std::string::npos);
+  contents.erase(contents.find('\n', deltas) + 1);
+  const std::string poison = apo::format_fortran_double(1.0e3, 22, 15);
+  for (int atom = 0; atom < sourceContext->getNumAtoms(); ++atom)
+    contents += poison + poison + poison + '\n';
+  apo_test::WriteTextFile(path, contents);
+  const auto snapshot =
+      apo::ReadRestartFile(path, sourceContext->getNumAtoms());
+  REQUIRE(snapshot.heatingSteps == 0);
+  REQUIRE(snapshot.nativeKind.empty());
+  REQUIRE(snapshot.deltas[0][0] == 1.0e3);
+
+  auto destinationContext = CreateContext(false);
+  auto destination = CreateLangevinThermostatIntegrator(destinationContext);
+  destination->initializeFromRestartFile(path);
+  CHECK(destination->getTotNumSteps() == 0ULL);
+  CheckCharmmContextStateMatches(sourceContext, destinationContext);
+  // Both integrators regenerate the displacement from the same coordinates
+  // and velocities, so the poisoned block must not be visible.
+  apo_test::CheckVectorsClose<double4>(
+      "Regenerated coordinate delta previous",
+      apo_test::CopyToHost<double4>(destination->getCoordsDeltaPrevious()),
+      apo_test::CopyToHost<double4>(source->getCoordsDeltaPrevious()),
+      TOLERANCE);
+  apo_test::RemoveIfExists(path);
+}
+
+TEST_CASE("RestartSubscriberRejectsInvalidFilesBeforeStateMutation") {
+  const std::filesystem::path path = "tmpRestartInvalidState.rst";
+  auto sourceContext = CreateContext(true);
+  auto source = CreateLangevinThermostatIntegrator(sourceContext);
+  source->propagate(NUM_STEPS);
+  WriteRestartFile(path, sourceContext, source);
+  std::string contents = apo_test::ReadTextFile(path);
+  const std::string fileContext = "restart file \"" + path.string() + "\"";
+  ApoCharmmErrorCode expectedCode = ApoCharmmErrorCode::Runtime;
+  std::string expectedMessage;
+  SECTION("UnsupportedDynamics") {
+    contents.replace(10, 6, "    -1");
+    expectedCode = ApoCharmmErrorCode::NotImplemented;
+    expectedMessage =
+        "Only ordinary leapfrog (LDYNA=1) restarts are supported in " +
+        fileContext;
+  }
+  SECTION("MissingNativeFooter") {
+    const std::size_t footer = contents.find("\n !APOCHARMM RNG STATE\n");
+    REQUIRE(footer != std::string::npos);
+    contents.erase(footer);
+    expectedMessage =
+        "APOCHARMM restart is missing its RNG footer in " + fileContext;
+  }
+  SECTION("TruncatedCoordinateField") {
+    const std::size_t section = contents.find(" !XOLD, YOLD, ZOLD\n");
+    REQUIRE(section != std::string::npos);
+    const std::size_t first = contents.find('\n', section) + 1;
+    const std::size_t last = contents.find('\n', first);
+    REQUIRE(last != std::string::npos);
+    contents.erase(first + 21, last - first - 21);
+    expectedMessage = "Field \"XOLD,YOLD,ZOLD\" is truncated in " + fileContext;
+  }
+  apo_test::WriteTextFile(path, contents);
+  auto destinationContext = CreateContext(true);
+  auto destination = CreateLangevinThermostatIntegrator(destinationContext);
+  destination->propagate(1);
+  const auto coordinates = apo_test::CopyToHost<double4>(
+      destinationContext->getCoordinatesChargesDP());
+  const auto velocities = apo_test::CopyToHost<double4>(
+      destinationContext->getVelocitiesInverseMasses());
+  const auto box = destinationContext->getBoxDimensions();
+  const auto rng = destination->getRngStates();
+  const auto seed = destination->getThermostatRngSeed();
+  const auto steps = destination->getTotNumSteps();
+  apo_test::CheckApoCharmmError(
+      [&]() { destination->initializeFromRestartFile(path); }, expectedCode,
+      expectedMessage);
+  apo_test::CheckVectorsEqual<double4>(
+      "Coordinates/charges",
+      apo_test::CopyToHost<double4>(
+          destinationContext->getCoordinatesChargesDP()),
+      coordinates);
+  apo_test::CheckVectorsEqual<double4>(
+      "Velocities/inverse masses",
+      apo_test::CopyToHost<double4>(
+          destinationContext->getVelocitiesInverseMasses()),
+      velocities);
+  CHECK(destinationContext->getBoxDimensions() == box);
+  CHECK(destination->getRngStates() == rng);
+  CHECK(destination->getThermostatRngSeed() == seed);
+  CHECK(destination->getTotNumSteps() == steps);
+  apo_test::RemoveIfExists(path);
+}
+
+namespace {
+
+std::shared_ptr<CudaIntegrator> CreateCrystalRestartTestIntegrator(
+    const std::shared_ptr<CharmmContext> &context, const int kind) {
+  if (kind == 0)
+    return CreateNoseHooverIntegrator(context);
+  if (kind == 1)
+    return CreateLangevinThermostatIntegrator(context);
+  return CreateLangevinPistonIntegrator(context);
+}
+
+} // namespace
+
+TEST_CASE("RestartSubscriberRequiresExplicitCrystalBeforeReplacingFile") {
+  const std::filesystem::path path = "tmpRestartRequiresCrystal.rst";
+  auto context = CreateContext(true, CRYSTAL::UNSET);
+  auto integrator = CreateLangevinThermostatIntegrator(context);
+  RestartSubscriber writer(path, REPORT_FREQUENCY);
+  writer.setCharmmContext(context);
+  writer.setIntegrator(integrator);
+  // Construction itself can truncate the path; this checks update's validation
+  // boundary and does not claim that construction preserves an existing file.
+  const std::string previous = "previous usable restart marker\n";
+  apo_test::WriteTextFile(path, previous);
+  apo_test::CheckApoCharmmError(
+      [&]() { writer.update(); }, ApoCharmmErrorCode::NotInitialized,
+      "Crystal type must be configured before this operation");
+  CHECK(apo_test::ReadTextFile(path) == previous);
+  CHECK(context->getCrystalType() == CRYSTAL::UNSET);
+  apo_test::RemoveIfExists(path);
+}
+
+TEST_CASE("RestartSubscriberPreservesEqualEdgedOrthorhombicIdentity") {
+  for (const int kind : {0, 1, 2}) {
+    INFO("integrator kind=" << kind);
+    const std::filesystem::path path =
+        "tmpRestartExplicitOrth" + std::to_string(kind) + ".rst";
+    auto sourceContext = CreateContext(true, CRYSTAL::ORTHORHOMBIC);
+    auto source = CreateCrystalRestartTestIntegrator(sourceContext, kind);
+    // Save the initialized equal-edge cell before any anisotropic piston step.
+    WriteRestartFile(path, sourceContext, source);
+    const auto snapshot =
+        apo::ReadRestartFile(path, sourceContext->getNumAtoms());
+    CHECK(snapshot.crystal == CRYSTAL::ORTHORHOMBIC);
+    CHECK(snapshot.box[0] == snapshot.box[1]);
+    CHECK(snapshot.box[1] == snapshot.box[2]);
+    std::ifstream input(path);
+    std::string header;
+    REQUIRE(static_cast<bool>(std::getline(input, header)));
+    REQUIRE(header.size() >= 22);
+    CHECK(header.substr(18, 4) == "ORTH");
+    input.close();
+
+    auto destinationContext = CreateContext(false, CRYSTAL::ORTHORHOMBIC);
+    auto destination =
+        CreateCrystalRestartTestIntegrator(destinationContext, kind);
+    destination->initializeFromRestartFile(path);
+    CHECK(destinationContext->getCrystalType() == CRYSTAL::ORTHORHOMBIC);
+    CheckCharmmContextStateMatches(sourceContext, destinationContext);
+    CHECK(destination->getTotNumSteps() == source->getTotNumSteps());
+    CHECK(destination->getNumSteps() == source->getNumSteps());
+    if (kind == 2) {
+      const auto piston =
+          std::dynamic_pointer_cast<CudaLangevinPistonIntegrator>(destination);
+      REQUIRE(piston != nullptr);
+      CHECK(piston->getCrystalType() == CRYSTAL::ORTHORHOMBIC);
+      CHECK(piston->getLangevinPistonDeltaPosition().size() == 3);
+    }
+    apo_test::RemoveIfExists(path);
+  }
+}
+
+TEST_CASE("RestartCrystalMismatchIsRejectedBeforeStateMutation") {
+  for (const int kind : {0, 1, 2}) {
+    INFO("integrator kind=" << kind);
+    const std::filesystem::path path =
+        "tmpRestartCrystalMismatch" + std::to_string(kind) + ".rst";
+    auto sourceContext = CreateContext(true, CRYSTAL::ORTHORHOMBIC);
+    auto source = CreateCrystalRestartTestIntegrator(sourceContext, kind);
+    WriteRestartFile(path, sourceContext, source);
+
+    auto context = CreateContext(true, CRYSTAL::CUBIC);
+    auto destination = CreateCrystalRestartTestIntegrator(context, kind);
+    destination->propagate(1);
+    const auto coordinates =
+        apo_test::CopyToHost<double4>(context->getCoordinatesChargesDP());
+    const auto velocities =
+        apo_test::CopyToHost<double4>(context->getVelocitiesInverseMasses());
+    const auto deltas =
+        apo_test::CopyToHost<double4>(destination->getCoordsDeltaPrevious());
+    const auto box = context->getBoxDimensions();
+    const auto completed = destination->getTotNumSteps();
+    const auto requested = destination->getNumSteps();
+    const auto thermostat =
+        std::dynamic_pointer_cast<CudaLangevinThermostatIntegrator>(
+            destination);
+    const auto piston =
+        std::dynamic_pointer_cast<CudaLangevinPistonIntegrator>(destination);
+    const std::string rng = thermostat ? thermostat->getRngStates()
+                            : piston   ? piston->getRngStates()
+                                       : std::string();
+    apo_test::CheckApoCharmmError(
+        [&]() { destination->initializeFromRestartFile(path); },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Restart crystal type does not match the configured CharmmContext");
+    apo_test::CheckVectorsEqual<double4>(
+        "Coordinates/charges",
+        apo_test::CopyToHost<double4>(context->getCoordinatesChargesDP()),
+        coordinates);
+    apo_test::CheckVectorsEqual<double4>(
+        "Velocities/inverse masses",
+        apo_test::CopyToHost<double4>(context->getVelocitiesInverseMasses()),
+        velocities);
+    apo_test::CheckVectorsEqual<double4>(
+        "Coordinate delta previous",
+        apo_test::CopyToHost<double4>(destination->getCoordsDeltaPrevious()),
+        deltas);
+    CHECK(context->getBoxDimensions() == box);
+    CHECK(context->getCrystalType() == CRYSTAL::CUBIC);
+    CHECK(destination->getTotNumSteps() == completed);
+    CHECK(destination->getNumSteps() == requested);
+    if (thermostat)
+      CHECK(thermostat->getRngStates() == rng);
+    if (piston)
+      CHECK(piston->getRngStates() == rng);
+    apo_test::RemoveIfExists(path);
+  }
+}
+
+TEST_CASE("FixedCellRestartReaderRequiresExplicitCrystal") {
+  for (const int kind : {0, 1}) {
+    INFO("integrator kind=" << kind);
+    const std::filesystem::path path =
+        "tmpRestartUnsetCrystal" + std::to_string(kind) + ".rst";
+    auto sourceContext = CreateContext(true, CRYSTAL::CUBIC);
+    auto source = CreateCrystalRestartTestIntegrator(sourceContext, kind);
+    WriteRestartFile(path, sourceContext, source);
+    auto context = CreateContext(true, CRYSTAL::UNSET);
+    auto destination = CreateCrystalRestartTestIntegrator(context, kind);
+    const auto completed = destination->getTotNumSteps();
+    const auto requested = destination->getNumSteps();
+    apo_test::CheckApoCharmmError(
+        [&]() { destination->initializeFromRestartFile(path); },
+        ApoCharmmErrorCode::NotInitialized,
+        "Crystal type must be configured before this operation");
+    CHECK(context->getCrystalType() == CRYSTAL::UNSET);
+    CHECK(destination->getTotNumSteps() == completed);
+    CHECK(destination->getNumSteps() == requested);
+    apo_test::RemoveIfExists(path);
+  }
 }
 
 TEST_CASE("RestartSubscriberLangevinThermostatTrajectoryEquivalence") {

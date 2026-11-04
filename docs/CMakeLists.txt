@@ -48,6 +48,7 @@ set(APOCHARMM_DOCUMENTATION_CPP_API
   "${apoCHARMM_SOURCE_DIR}/include/CharmmPSF.h"
   "${apoCHARMM_SOURCE_DIR}/include/CharmmParameters.h"
   "${apoCHARMM_SOURCE_DIR}/include/Coordinates.h"
+  "${apoCHARMM_SOURCE_DIR}/include/Crystal.h"
   "${apoCHARMM_SOURCE_DIR}/include/CudaContainer.h"
   "${apoCHARMM_SOURCE_DIR}/include/CudaIntegrator.h"
   "${apoCHARMM_SOURCE_DIR}/include/CudaLangevinPistonIntegrator.h"
@@ -65,6 +66,7 @@ set(APOCHARMM_DOCUMENTATION_CPP_API
   "${apoCHARMM_SOURCE_DIR}/include/SelectionTokenizer.h"
   "${apoCHARMM_SOURCE_DIR}/include/Subscriber.h"
   "${apoCHARMM_SOURCE_DIR}/include/DcdSubscriber.h"
+  "${apoCHARMM_SOURCE_DIR}/include/RestartIO.h"
   "${apoCHARMM_SOURCE_DIR}/include/RestartSubscriber.h"
 )
 

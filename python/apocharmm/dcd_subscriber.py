@@ -67,7 +67,14 @@ class DcdSubscriber(Subscriber):
     propagation, each scheduled native update writes single-precision X, Y, and
     Z coordinates in atom order and box lengths in angstroms. Charges are not
     written. Coordinate output copies device data to host and synchronizes the
-    current CUDA device.
+    current CUDA device. The header records the first frame's completed step,
+    the reporting interval, and the integration time step in AKMA time units.
+    Coordinates and box lengths remain in angstroms. After the first frame,
+    changes to header metadata or irregular frame spacing require a new file.
+    Scheduled output retains the planned duration, including unsaved trailing
+    steps. A later propagation request updates that duration before its first
+    step, even when the request will produce no new frame. Such metadata updates
+    are not rolled back if a later subscriber or propagation step fails.
 
     The wrapper owns the concrete C handle. Its `subscriber_handle` property is
     a borrowed view into that handle. Use the object as a context manager or

@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 
 class CharmmContext;
@@ -201,9 +202,11 @@ public:
    * @brief Writes one subscriber-specific report.
    *
    * `CudaIntegrator` invokes this virtual operation synchronously after a
-   * propagated step whose local step index is divisible by the frequency
-   * cached at subscription. Direct callers are responsible for establishing
-   * every state precondition of the concrete subscriber.
+   * propagated step whose offset from the subscriber's run origin is
+   * divisible by the frequency cached at subscription, matching CHARMM's
+   * `MOD(ISTEP,NSAVC)` schedule across successive `propagate()` calls. Direct
+   * callers are responsible for establishing every state precondition of the
+   * concrete subscriber.
    *
    * @pre The concrete subscriber's required file, context, integrator, and
    * force-manager state has been initialized.
@@ -212,6 +215,52 @@ public:
    * Exceptions do not roll back an already propagated step or partial output.
    */
   virtual void update(void) = 0;
+
+  /**
+   * @brief Receives an accepted propagation request before its first step.
+   *
+   * The base implementation does nothing. Subscribers that describe a whole
+   * run, such as DCD writers, may retain the supplied plan or update metadata.
+   * `CudaIntegrator::propagate()` invokes this hook before assigning the run
+   * origin (see @ref getStartStep), so an empty origin marks the first request
+   * of a run.
+   *
+   * @param[in] startStep Number of completed steps before propagation.
+   * @param[in] numSteps Positive number of steps requested for the call.
+   * @pre The integrator has validated that `startStep + numSteps` is
+   * representable.
+   * @warning An override may throw or perform file I/O. Earlier subscriber
+   * announcements are not rolled back if a later announcement fails.
+   */
+  virtual void onPropagationStart(const unsigned long long int startStep,
+                                  const int numSteps);
+
+  /**
+   * @brief Returns the completed step at which the current run began.
+   *
+   * The run origin is the completed-step count observed by the first
+   * `CudaIntegrator::propagate()` call after subscription, after a restart
+   * load, or after the subscriber cleared it. Scheduled updates occur when the
+   * number of steps completed since this origin is divisible by the cached
+   * reporting frequency, which reproduces CHARMM's run-relative
+   * `MOD(ISTEP,NSAVC)` schedule across successive `propagate()` calls. The
+   * value is empty until a run begins.
+   *
+   * @return Borrowed reference to the optional run origin.
+   */
+  const std::optional<unsigned long long int> &getStartStep(void) const;
+
+  /**
+   * @brief Sets or clears the run origin used for scheduling.
+   *
+   * `CudaIntegrator::subscribe()` clears the origin and `propagate()` assigns
+   * the completed-step count while the origin is empty, so a restart loaded
+   * between subscription and propagation is honored. Subscribers that begin a
+   * new output file clear it so the next propagation starts a new run.
+   *
+   * @param[in] startStep Completed-step origin, or `std::nullopt` to clear it.
+   */
+  void setStartStep(const std::optional<unsigned long long int> startStep);
 
   /**
    * @brief Checks whether the parent portion of an output path exists.
@@ -283,6 +332,14 @@ protected:
    * scheduling array during subscription.
    */
   int m_ReportFrequency;
+
+  /**
+   * @brief Stores the completed step at which the current run began.
+   *
+   * Empty until the first propagation after subscription or after a reset. See
+   * @ref getStartStep.
+   */
+  std::optional<unsigned long long int> m_StartStep;
 
   /**
    * @brief Stores the logical output path owned by the subscriber.

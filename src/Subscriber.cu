@@ -18,7 +18,7 @@
 #include <system_error>
 
 Subscriber::Subscriber(void)
-    : m_ReportFrequency(1000), m_FilePath(), m_FileStream(),
+    : m_ReportFrequency(1000), m_StartStep(), m_FilePath(), m_FileStream(),
       m_CharmmContext(nullptr), m_Integrator(nullptr) {}
 
 Subscriber::Subscriber(const std::filesystem::path &filePath) : Subscriber() {
@@ -82,6 +82,24 @@ const std::filesystem::path &Subscriber::getFilePath(void) const {
 }
 
 std::filesystem::path &Subscriber::getFilePath(void) { return m_FilePath; }
+
+void Subscriber::onPropagationStart(const unsigned long long int startStep,
+                                    const int numSteps) {
+  static_cast<void>(startStep);
+  static_cast<void>(numSteps);
+  return;
+}
+
+const std::optional<unsigned long long int> &
+Subscriber::getStartStep(void) const {
+  return m_StartStep;
+}
+
+void Subscriber::setStartStep(
+    const std::optional<unsigned long long int> startStep) {
+  m_StartStep = startStep;
+  return;
+}
 
 void Subscriber::checkPath(const std::filesystem::path &filePath) {
   const std::filesystem::path parentPath = filePath.parent_path();

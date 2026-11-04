@@ -41,6 +41,12 @@ def _initialize_prototypes() -> None:
     )
 
     configure_status_function(
+        lib().apo_cuda_integrator_initialize,
+        [ctypes.c_void_p],
+        "CudaIntegrator.initialize()",
+    )
+
+    configure_status_function(
         lib().apo_cuda_integrator_subscribe,
         [ctypes.c_void_p, ctypes.c_void_p],
         "CudaIntegrator.subscribe(subscriber)",
@@ -200,6 +206,37 @@ class CudaIntegrator(_ApoObject):
 
         return
 
+    def initialize(self) -> None:
+        """
+        @brief Reinitializes concrete state using the attached context.
+
+        @return `None`.
+        @throws RuntimeError If the wrapper has been closed.
+        @throws ApoCharmmError With native status `APO_STATUS_NOT_INITIALIZED`
+        when no context is attached or a concrete prerequisite such as the
+        crystal type is absent, `APO_STATUS_INVALID_ARGUMENT` when the
+        configured context fails concrete validation,
+        `APO_STATUS_NOT_IMPLEMENTED` for the direct base hook,
+        `APO_STATUS_CUDA_ERROR` for CUDA initialization failure, or
+        `APO_STATUS_RUNTIME_ERROR` for another native failure.
+        @note Call between completed propagation calls after changing the
+        context's crystal type. Integration history and RNG state are rebuilt;
+        the completed-step counter, friction, RNG seed/sequence, reference
+        temperature/pressure, Nose-Hoover mass, and atomic velocities are
+        retained. When the piston layout changes, piston storage is rebuilt with
+        default masses and piston/Nose-Hoover dynamic history and phase averages
+        are reset; configure custom new-layout masses afterward if needed.
+        Reinitializing an unchanged type preserves the selected masses and
+        friction. Use `initializeFromRestartFile()` to resume an exact restart.
+        @warning Initialization is not transactional. Serialize it with other
+        operations on this integrator and its context.
+        """
+        _initialize_prototypes()
+
+        lib().apo_cuda_integrator_initialize(self.integrator_handle)
+
+        return
+
     def subscribe(self, subscriber: Subscriber) -> None:
         """
         @brief Subscribes one output wrapper.
@@ -283,12 +320,13 @@ class CudaIntegrator(_ApoObject):
         @throws ValueError If the value is outside the signed 32-bit C `int`
         range.
         @throws RuntimeError If the wrapper has been closed.
-        @throws ApoCharmmError With native status
-        `APO_STATUS_INVALID_ARGUMENT`, `APO_STATUS_NOT_INITIALIZED`,
-        `APO_STATUS_NOT_IMPLEMENTED`, `APO_STATUS_CUDA_ERROR`, or
-        `APO_STATUS_RUNTIME_ERROR` according to the documented native failure.
-        @warning Propagation is not transactional and native requested-step
-        counters advance before the first concrete step.
+        @throws ApoCharmmError With native status `APO_STATUS_INVALID_ARGUMENT`,
+        `APO_STATUS_NOT_INITIALIZED`, `APO_STATUS_NOT_IMPLEMENTED`,
+        `APO_STATUS_CUDA_ERROR`, or `APO_STATUS_RUNTIME_ERROR` according to the
+        documented native failure.
+        @warning Propagation is not transactional. The native completed-step
+        counter advances after each successful concrete step. Earlier state and
+        output remain after failure; the failing step may partly modify state.
         """
         _initialize_prototypes()
 

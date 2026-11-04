@@ -13,6 +13,7 @@
 #include "CharmmCrd.h"
 #include "CharmmPSF.h"
 #include "CharmmParameters.h"
+#include "Crystal.h"
 #include "CudaNoseHooverIntegrator.h"
 #include "ForceManager.h"
 #include "apo_test_helpers.h"
@@ -399,6 +400,7 @@ TEST_CASE("CudaNoseHooverIntegratorRestartValidation") {
 
   auto ctx = std::make_shared<CharmmContext>(psf, prm);
   ctx->setBoxDimensions(BOX_DIMENSIONS);
+  ctx->setCrystalType(CRYSTAL::CUBIC);
   ctx->setCoordinates(crd);
   ctx->useHolonomicConstraints(false);
   ctx->setRandomSeed(RANDOM_SEED);
@@ -415,25 +417,29 @@ TEST_CASE("CudaNoseHooverIntegratorRestartValidation") {
 
     CHECK(error.getCode() == ApoCharmmErrorCode::Runtime);
     CHECK(error.getMessage() ==
-          "Could not open file \"" + missingFilePath.string() + "\"");
+          "Could not open restart file: " + missingFilePath.string());
   }
 
   CHECK(caughtMissingFile == true);
 
   const std::filesystem::path truncatedFilePath =
       "cudaNoseHooverIntegrator-truncated.rst";
-  std::string truncatedHeader(34, ' ');
+  std::string truncatedHeader(28, ' ');
   truncatedHeader.replace(0, 4, "REST");
+  truncatedHeader.replace(4, 6, "    52");
+  truncatedHeader.replace(10, 6, "     1");
   truncatedHeader.replace(18, 4, "CUBI");
 
   apo_test::RemoveIfExists(truncatedFilePath);
   apo_test::WriteTextFile(truncatedFilePath,
-                          truncatedHeader + "\n !CRYSTAL PARAMETERS\n");
+                          truncatedHeader +
+                              "\n\n       0 !NTITLE followed by title\n"
+                              "\n !CRYSTAL PARAMETERS\n");
 
   apo_test::CheckApoCharmmError(
       [&]() { integrator.initializeFromRestartFile(truncatedFilePath); },
       ApoCharmmErrorCode::Runtime,
-      "Unexpected end of file while reading first XTLABC record in restart "
+      "Unexpected end of file while reading XTLABC in restart "
       "file \"" +
           truncatedFilePath.string() + "\"");
 

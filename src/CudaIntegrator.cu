@@ -11,6 +11,7 @@
 #include "CudaIntegrator.h"
 
 #include "ApoCharmmError.h"
+#include "Constants.h"
 #include "Subscriber.h"
 #include "cuda_utils.h"
 
@@ -23,9 +24,8 @@
 #include <limits>
 
 CudaIntegrator::CudaIntegrator(void)
-    : m_TimeStep(0.0), m_Timfac(0.0488882129), m_DebugPrintFrequency(0),
-      m_Context(nullptr), m_StepsSinceNeighborListUpdate(1),
-      m_CurrentPropagatedStep(0), m_TotNumSteps(0), m_NumSteps(0),
+    : m_TimeStep(0.0), m_DebugPrintFrequency(0), m_Context(nullptr),
+      m_StepsSinceNeighborListUpdate(1), m_TotNumSteps(0), m_NumSteps(0),
       m_HolonomicConstraint(nullptr), m_CoordsRef(), m_CoordsDelta(),
       m_CoordsDeltaPrevious(), m_IntegratorStream(nullptr),
       m_IntegratorMemcpyStream(nullptr), m_UsingHolonomicConstraints(false),
@@ -68,7 +68,7 @@ CudaIntegrator::~CudaIntegrator(void) noexcept {
 }
 
 double CudaIntegrator::getTimeStep(void) const {
-  return (m_TimeStep * m_Timfac);
+  return (m_TimeStep * charmm::constants::timfac);
 }
 
 void CudaIntegrator::setTimeStep(const double timeStep) {
@@ -81,7 +81,7 @@ void CudaIntegrator::setTimeStep(const double timeStep) {
                         std::to_string(timeStep));
 
   // Converting from ps to AKMA units ltm/consta_ltm
-  m_TimeStep = timeStep / 0.0488882129;
+  m_TimeStep = timeStep / charmm::constants::timfac;
 
   return;
 }
@@ -154,7 +154,13 @@ void CudaIntegrator::initializeFromRestartFile(
       m_Context != nullptr, ApoCharmmErrorCode::NotInitialized,
       "CharmmContext must be set before initializing from a restart file");
 
+  this->requireCurrentState();
   this->initializeFromRestartFileImpl(rstFilePath);
+
+  // Continuing from a restart begins a new CHARMM-style run for every attached
+  // subscriber; the next propagate() fixes the new origin at the imported step.
+  for (const auto &subscriber : m_Subscribers)
+    subscriber->setStartStep(std::nullopt);
 
   return;
 }
@@ -194,8 +200,12 @@ void CudaIntegrator::requirePropagationReady(void) const {
                     ApoCharmmErrorCode::NotInitialized,
                     "ForceManager must be initialized before propagation");
 
+  this->requireCurrentState();
+
   return;
 }
+
+void CudaIntegrator::requireCurrentState(void) const { return; }
 
 void CudaIntegrator::propagate(const int numSteps) {
   APOCHARMM_REQUIRE(numSteps > 0, ApoCharmmErrorCode::InvalidArgument,
@@ -203,6 +213,14 @@ void CudaIntegrator::propagate(const int numSteps) {
                         std::to_string(numSteps));
 
   this->requirePropagationReady();
+
+  const unsigned long long int requestedSteps =
+      static_cast<unsigned long long int>(numSteps);
+  APOCHARMM_REQUIRE(
+      requestedSteps <=
+          std::numeric_limits<unsigned long long int>::max() - m_TotNumSteps,
+      ApoCharmmErrorCode::InvalidArgument,
+      "Requested propagation exceeds the completed-step counter range");
 
   m_Context->resetNeighborList();
 
@@ -220,25 +238,30 @@ void CudaIntegrator::propagate(const int numSteps) {
   }
 
   m_NumSteps = numSteps;
-  m_TotNumSteps += static_cast<unsigned long long int>(numSteps);
+  const unsigned long long int startStep = m_TotNumSteps;
+  for (const auto &subscriber : m_Subscribers) {
+    // Announce before fixing the origin so a subscriber can tell a fresh run
+    // (empty origin) from a continuing one. CHARMM numbers ISTEP from the start
+    // of a run; the first propagation after subscription (or after a subscriber
+    // reset) fixes that origin.
+    subscriber->onPropagationStart(startStep, numSteps);
+    if (!subscriber->getStartStep().has_value())
+      subscriber->setStartStep(startStep);
+  }
 
-  for (int step = 1; step <= numSteps; step++) {
-    // std::cout << "step = " << step << std::endl;
-    // m_CurrentPropagatedStep = step;
-    // std::cout << "---\nStep " << step << " of " << numSteps << "\n";
+  for (int completedInCall = 0; completedInCall < numSteps; completedInCall++) {
+    const int step = completedInCall + 1;
 
     if (step % 10000 == 0) {
       std::chrono::steady_clock::time_point end =
           std::chrono::steady_clock::now();
       std::chrono::steady_clock::duration duration = end - start;
 
-      std::cout
-          << "Step = " << step << " "
-          << std::chrono::duration_cast<std::chrono::milliseconds>(
-                 //<< std::chrono::duration_cast<std::chrono::microseconds>(
-                 duration)
-                 .count()
-          << "ms" << std::endl;
+      std::cout << "Step = " << step << " "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(
+                       duration)
+                       .count()
+                << "ms" << std::endl;
       start = std::chrono::steady_clock::now();
     }
 
@@ -247,15 +270,15 @@ void CudaIntegrator::propagate(const int numSteps) {
     // }
     this->propagateOneStepImpl();
 
+    m_TotNumSteps++;
     m_StepsSinceNeighborListUpdate++;
-    this->incrementCurrentPropagatedStep();
 
     // Check if we have nan-esque energy.
     if (step % minReportFreq == 0)
       this->checkForNanEnergy();
 
     // Check if report is needed for one or more of the subscribers
-    this->reportIfNeeded(step);
+    this->reportIfNeeded();
   }
 
   return;
@@ -301,10 +324,14 @@ void CudaIntegrator::subscribe(std::shared_ptr<Subscriber> sub) {
 
   // JEG250610: Subscribers can query integrator for time step. We don't need
   // N copies floating around sub->setTimeStepFromIntegrator(m_TimeStep *
-  // m_Timfac);
+  // charmm::constants::timfac);
 
   sub->setIntegrator(integrator);
 
+  // A new subscription starts a new CHARMM-style run whose origin is fixed by
+  // the next propagate() call, so a restart loaded after subscribing is
+  // honored.
+  sub->setStartStep(std::nullopt);
   m_Subscribers.push_back(sub);
   m_ReportFreqList.push_back(sub->getReportFrequency());
 
@@ -373,19 +400,23 @@ void CudaIntegrator::setRemoveCenterOfMassFrequency(const int freq) {
 }
 
 const CudaContainer<double4> &CudaIntegrator::getCoordsDelta(void) const {
+  this->requireCurrentState();
   return m_CoordsDelta;
 }
 
 CudaContainer<double4> &CudaIntegrator::getCoordsDelta(void) {
+  this->requireCurrentState();
   return m_CoordsDelta;
 }
 
 const CudaContainer<double4> &
 CudaIntegrator::getCoordsDeltaPrevious(void) const {
+  this->requireCurrentState();
   return m_CoordsDeltaPrevious;
 }
 
 CudaContainer<double4> &CudaIntegrator::getCoordsDeltaPrevious(void) {
+  this->requireCurrentState();
   return m_CoordsDeltaPrevious;
 }
 
@@ -398,7 +429,7 @@ CudaIntegrator::getIntegratorDescriptors(void) {
 }
 
 int CudaIntegrator::getCurrentPropagatedStep(void) const {
-  return m_CurrentPropagatedStep;
+  return CudaIntegrator::wrapCurrentPropagatedStep(m_TotNumSteps);
 }
 
 unsigned long long int CudaIntegrator::getTotNumSteps(void) const {
@@ -407,13 +438,26 @@ unsigned long long int CudaIntegrator::getTotNumSteps(void) const {
 
 int CudaIntegrator::getNumSteps(void) const { return m_NumSteps; }
 
-void CudaIntegrator::reportIfNeeded(const int istep) {
-  // Loop over each report frequency. If modulo is 0, then update the
-  // corresponding Subscriber
+void CudaIntegrator::reportIfNeeded(void) {
+  // Mirror CHARMM's MOD(ISTEP,NSAVC) test, where ISTEP counts the steps
+  // completed since the run began rather than since this propagate() call.
   for (std::size_t i = 0; i < m_ReportFreqList.size(); i++) {
-    if (istep % m_ReportFreqList[i] == 0)
+    const std::optional<unsigned long long int> &runStart =
+        m_Subscribers[i]->getStartStep();
+
+    APOCHARMM_REQUIRE(runStart.has_value() && *runStart <= m_TotNumSteps,
+                      ApoCharmmErrorCode::NotInitialized,
+                      "Subscriber run origin is missing or later than the "
+                      "completed step count");
+
+    const unsigned long long int stepsSinceRunStart = m_TotNumSteps - *runStart;
+    if (stepsSinceRunStart %
+            static_cast<unsigned long long int>(m_ReportFreqList[i]) ==
+        0ULL) {
       m_Subscribers[i]->update();
+    }
   }
+
   return;
 }
 
@@ -438,18 +482,4 @@ int CudaIntegrator::wrapCurrentPropagatedStep(
       static_cast<unsigned long long int>(std::numeric_limits<int>::max()) +
       1ULL;
   return static_cast<int>(propagatedStep % WRAP_MODULUS);
-}
-
-void CudaIntegrator::incrementCurrentPropagatedStep(void) {
-  constexpr unsigned long long int WRAP_MODULUS =
-      static_cast<unsigned long long int>(std::numeric_limits<int>::max()) +
-      1ULL;
-
-  const unsigned long long int currentStep =
-      static_cast<unsigned long long int>(m_CurrentPropagatedStep);
-
-  m_CurrentPropagatedStep =
-      static_cast<int>((currentStep + 1ULL) % WRAP_MODULUS);
-
-  return;
 }

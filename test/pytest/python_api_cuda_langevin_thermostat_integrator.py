@@ -189,7 +189,7 @@ def check_validation() -> None:
         "CudaLangevinThermostatIntegrator.initializeFromRestartFile rejects missing restart file",
         lambda: integrator.initializeFromRestartFile("missing.rst"),
         apo.APO_STATUS_RUNTIME_ERROR,
-        'Could not open file "missing.rst"',
+        "Could not open restart file: missing.rst",
         "CudaIntegrator.initializeFromRestartFile(path)",
     )
 

@@ -54,7 +54,7 @@ void DynaSubscriber::update(void) {
       std::dynamic_pointer_cast<CudaVMMSVelocityVerletIntegrator>(m_Integrator);
 
   if (lp != nullptr) { // CudaLangevinPistonIntegrator
-    int iStep = lp->getCurrentPropagatedStep() + 1;
+    const unsigned long long int iStep = lp->getTotNumSteps();
     double iTime =
         static_cast<double>(iStep) * static_cast<double>(lp->getTimeStep());
     double totke = m_CharmmContext->getKineticEnergy();
@@ -66,23 +66,7 @@ void DynaSubscriber::update(void) {
     double pressi = 0.0;
 
     // Calculate volume
-    std::vector<double> boxDims = m_CharmmContext->getBoxDimensions();
-    double volu = -9999.9999;
-    // switch (lp->getCrystalType()) {
-    CRYSTAL c = CRYSTAL::CUBIC;
-    switch (c) {
-    case CRYSTAL::CUBIC:
-      volu = boxDims[0] * boxDims[0] * boxDims[0];
-      break;
-    case CRYSTAL::TETRAGONAL:
-      volu = boxDims[0] * boxDims[0] * boxDims[1];
-      break;
-    case CRYSTAL::ORTHORHOMBIC:
-      volu = boxDims[0] * boxDims[1] * boxDims[2];
-      break;
-    default:
-      break;
-    }
+    const double volu = m_CharmmContext->getVolume();
 
     std::shared_ptr<ForceManager> fm = m_CharmmContext->getForceManager();
     std::map<std::string, double> energyDecompositionMap =

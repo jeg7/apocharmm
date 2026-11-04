@@ -33,7 +33,8 @@ REFERENCE_PRESSURE_TENSOR: list[list[float]] = [
     [0.0, 1.0, 0.0],
     [0.0, 0.0, 1.0],
 ]
-TOLERANCE: float = 1.0e-15
+# Covers CHARMM's fifteen significant digits and one resumed step in this fixture
+TOLERANCE: float = 1.0e-10
 
 IntegratorFactory = Callable[[apo.CharmmContext], apo.CudaIntegrator]
 
@@ -41,9 +42,14 @@ IntegratorFactory = Callable[[apo.CharmmContext], apo.CudaIntegrator]
 def assert_restart_file_has_required_section(path: Path) -> None:
     text: str = path.read_text(encoding="utf-8")
 
+    # CHARMM's (A4,2I6,2X,A4,2X,A4) header occupies offsets 0-27; apoCHARMM adds
+    # its marker at offsets 32-34, past the DHDGB field READYN may read.
+    header: str = text.splitlines()[0]
+    apo_test.assert_equal("restart header record type", header[:4], "REST")
+    apo_test.assert_equal("restart header NSED/DHDGB fields", header[24:32], " " * 8)
+    apo_test.assert_equal("restart header APO marker", header[32:35], "APO")
+
     for section in (
-        "REST",
-        "APO",
         "!CRYSTAL PARAMETERS",
         "!NATOM,NPRIV,NSTEP,NSAVC,NSAVV,JHSTRT,NDEGF,SEED,NSAVL",
         "!ENERGIES and STATISTICS",
@@ -70,6 +76,7 @@ def create_context(assign_velocities: bool) -> apo.CharmmContext:
 
     ctx = apo.CharmmContext(psf, prm)
     ctx.setBoxDimensions(BOX_DIMENSIONS)
+    ctx.setCrystalType(apo.CrystalType.CUBIC)
     ctx.setCoordinates(crd)
     ctx.useHolonomicConstraints(False)
 
@@ -112,11 +119,10 @@ def create_langevin_piston_integrator(
     integrator.useOldTemperature(False)
     integrator.setReferencePressure(REFERENCE_PRESSURE_TENSOR)
     integrator.setConstantSurfaceTension(False)
-    integrator.setCrystalType(apo.CrystalType.CUBIC)
-    integrator.setLangevinPistonMass(LANGEVIN_PISTON_MASS)
     integrator.setLangevinPistonFrictionSeed(LANGEVIN_RNG_SEED)
-    integrator.setLangevinPistonFriction(LANGEVIN_PISTON_FRICTION)
     integrator.setCharmmContext(ctx)
+    integrator.setLangevinPistonMass(LANGEVIN_PISTON_MASS)
+    integrator.setLangevinPistonFriction(LANGEVIN_PISTON_FRICTION)
     return integrator
 
 
@@ -139,6 +145,7 @@ def check_restart_equivalence(
     integrator2.subscribe(rst)
     integrator2.propagate(NUM_STEPS)
     integrator2.unsubscribe(rst)
+    assert_restart_file_has_required_section(rst_path)
     integrator2.propagate(1)
 
     integrator3.initializeFromRestartFile(rst_path)

@@ -26,6 +26,7 @@ void CudaVMMSVelocityVerletIntegrator::setCharmmContexts(
   m_Contexts = ctxs;
   return;
 }
+
 /*
 __global__ void firstHalfKickAndDrift(const int numAtoms, const int stride,
                                       const ts_t timeStep, float4 *xyzq,

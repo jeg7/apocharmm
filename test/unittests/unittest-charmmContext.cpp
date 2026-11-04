@@ -12,6 +12,7 @@
 #include "CharmmCrd.h"
 #include "CharmmPSF.h"
 #include "CharmmParameters.h"
+#include "Crystal.h"
 #include "ForceManager.h"
 #include "PBC.h"
 #include "apo_test_helpers.h"
@@ -22,11 +23,13 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <sstream>
 #include <streambuf>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -185,19 +188,159 @@ TEST_CASE("CharmmContextRejectsInvalidStagedBoxDimensions") {
   apo_test::CheckApoCharmmError(
       [&ctx](void) { ctx.setBoxDimensions({40.0, 40.0}); },
       ApoCharmmErrorCode::InvalidArgument,
-      "Box dimensions must contain exactly 3 positive values");
+      "Box dimensions must contain exactly 3 finite positive values");
   apo_test::CheckApoCharmmError(
       [&ctx](void) { ctx.setBoxDimensions({40.0, 40.0, 40.0, 40.0}); },
       ApoCharmmErrorCode::InvalidArgument,
-      "Box dimensions must contain exactly 3 positive values");
+      "Box dimensions must contain exactly 3 finite positive values");
   apo_test::CheckApoCharmmError(
       [&ctx](void) { ctx.setBoxDimensions({40.0, 0.0, 40.0}); },
       ApoCharmmErrorCode::InvalidArgument,
-      "Box dimensions must contain exactly 3 positive values");
+      "Box dimensions must contain exactly 3 finite positive values");
   apo_test::CheckApoCharmmError(
       [&ctx](void) { ctx.setBoxDimensions({40.0, -1.0, 40.0}); },
       ApoCharmmErrorCode::InvalidArgument,
-      "Box dimensions must contain exactly 3 positive values");
+      "Box dimensions must contain exactly 3 finite positive values");
+
+  for (const double value : {std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::quiet_NaN()}) {
+    apo_test::CheckApoCharmmError(
+        [&ctx, value](void) { ctx.setBoxDimensions({40.0, value, 40.0}); },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions must contain exactly 3 finite positive values");
+  }
+}
+
+TEST_CASE("CharmmContextOwnsExplicitCrystalType") {
+  static_assert(std::is_copy_assignable<CharmmContext>::value,
+                "Context retains memberwise copy assignment");
+
+  CharmmContext context;
+  CHECK(context.getCrystalType() == CRYSTAL::UNSET);
+  apo_test::CheckApoCharmmError(
+      [&context](void) { context.requireCrystalBox(); },
+      ApoCharmmErrorCode::NotInitialized,
+      "Crystal type must be configured before this operation");
+  for (const CRYSTAL type : {CRYSTAL::UNSET, static_cast<CRYSTAL>(99)}) {
+    apo_test::CheckApoCharmmError(
+        [&context, type](void) { context.setCrystalType(type); },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Crystal type must be CRYSTAL::CUBIC, CRYSTAL::TETRAGONAL, or "
+        "CRYSTAL::ORTHORHOMBIC; observed " +
+            std::to_string(static_cast<int>(type)));
+  }
+
+  context.setCrystalType(CRYSTAL::CUBIC);
+  CHECK(context.getCrystalType() == CRYSTAL::CUBIC);
+  apo_test::CheckApoCharmmError(
+      [&context](void) { context.requireCrystalBox(); },
+      ApoCharmmErrorCode::NotInitialized,
+      "Crystal box requires exactly 3 finite positive dimensions");
+
+  context.setBoxDimensions({40.0, 40.0, 40.0});
+  CHECK_NOTHROW(context.requireCrystalBox());
+  CHECK_NOTHROW(context.setCrystalType(CRYSTAL::CUBIC));
+  CHECK_NOTHROW(context.setCrystalType(CRYSTAL::ORTHORHOMBIC));
+  CHECK(context.getCrystalType() == CRYSTAL::ORTHORHOMBIC);
+  CHECK((context.getBoxDimensions() == std::vector<double>{40.0, 40.0, 40.0}));
+  CHECK_NOTHROW(context.setCrystalType(CRYSTAL::ORTHORHOMBIC));
+  context.setBoxDimensions({40.0, 41.0, 42.0});
+  apo_test::CheckApoCharmmError(
+      [&context](void) { context.setCrystalType(CRYSTAL::CUBIC); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Box dimensions are incompatible with the crystal type");
+  CHECK(context.getCrystalType() == CRYSTAL::ORTHORHOMBIC);
+  CHECK((context.getBoxDimensions() == std::vector<double>{40.0, 41.0, 42.0}));
+  apo_test::CheckApoCharmmError(
+      [&context](void) { context.setCrystalType(CRYSTAL::UNSET); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Crystal type must be CRYSTAL::CUBIC, CRYSTAL::TETRAGONAL, or "
+      "CRYSTAL::ORTHORHOMBIC; observed 0");
+  CHECK(context.getCrystalType() == CRYSTAL::ORTHORHOMBIC);
+
+  CharmmContext copied(context);
+  CHECK(copied.getCrystalType() == CRYSTAL::ORTHORHOMBIC);
+  CHECK_NOTHROW(copied.requireCrystalBox());
+  CharmmContext assigned;
+  assigned = context;
+  CHECK(assigned.getCrystalType() == CRYSTAL::ORTHORHOMBIC);
+  CHECK_NOTHROW(assigned.requireCrystalBox());
+}
+
+TEST_CASE("CharmmContextValidatesCrystalBoxCompatibility") {
+  SECTION("SelectionAfterLengthsDoesNotInferType") {
+    CharmmContext context;
+    context.setBoxDimensions({40.0, 41.0, 42.0});
+    CHECK(context.getCrystalType() == CRYSTAL::UNSET);
+    apo_test::CheckApoCharmmError(
+        [&context](void) { context.setCrystalType(CRYSTAL::CUBIC); },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions are incompatible with the crystal type");
+    CHECK(context.getCrystalType() == CRYSTAL::UNSET);
+    context.setCrystalType(CRYSTAL::ORTHORHOMBIC);
+    CHECK_NOTHROW(context.requireCrystalBox());
+  }
+
+  SECTION("CubicAndTetragonalLengthUpdates") {
+    for (const CRYSTAL type : {CRYSTAL::CUBIC, CRYSTAL::TETRAGONAL}) {
+      CharmmContext context;
+      context.setCrystalType(type);
+      context.setBoxDimensions({40.0, 40.0, 40.0});
+      apo_test::CheckApoCharmmError(
+          [&context]() { context.setBoxDimensions({40.0, 41.0, 40.0}); },
+          ApoCharmmErrorCode::InvalidArgument,
+          "Box dimensions are incompatible with the crystal type");
+      CHECK((context.getBoxDimensions() ==
+             std::vector<double>{40.0, 40.0, 40.0}));
+      if (type == CRYSTAL::CUBIC) {
+        apo_test::CheckApoCharmmError(
+            [&context]() { context.setBoxDimensions({40.0, 40.0, 42.0}); },
+            ApoCharmmErrorCode::InvalidArgument,
+            "Box dimensions are incompatible with the crystal type");
+      } else {
+        context.setBoxDimensions({40.0, 40.0, 42.0});
+        CHECK_NOTHROW(context.requireCrystalBox());
+      }
+    }
+  }
+
+  SECTION("MutableAliasIsRevalidated") {
+    CharmmContext context;
+    context.setCrystalType(CRYSTAL::CUBIC);
+    context.setBoxDimensions({40.0, 40.0, 40.0});
+    context.getBoxDimensions()[1] = 41.0;
+    apo_test::CheckApoCharmmError(
+        [&context]() { context.requireCrystalBox(); },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions are incompatible with the crystal type");
+    context.getBoxDimensions()[1] = std::numeric_limits<double>::infinity();
+    apo_test::CheckApoCharmmError(
+        [&context]() { context.requireCrystalBox(); },
+        ApoCharmmErrorCode::NotInitialized,
+        "Crystal box requires exactly 3 finite positive dimensions");
+  }
+
+  SECTION("UnconfiguredManagerCanBeStaged") {
+    auto manager = std::make_shared<ForceManager>();
+    CharmmContext context;
+    context.setCrystalType(CRYSTAL::CUBIC);
+    CHECK_NOTHROW(context.setForceManager(manager));
+    CHECK(context.getForceManager() == manager);
+    CHECK(context.getCrystalType() == CRYSTAL::CUBIC);
+  }
+
+  SECTION("ManagerImportCannotOverrideSelectedType") {
+    auto manager = std::make_shared<ForceManager>();
+    manager->setBoxDimensions({40.0, 41.0, 42.0});
+    CharmmContext context;
+    context.setCrystalType(CRYSTAL::CUBIC);
+    apo_test::CheckApoCharmmError(
+        [&context, &manager]() { context.setForceManager(manager); },
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions are incompatible with the crystal type");
+    CHECK(context.getForceManager() == nullptr);
+    CHECK(context.getCrystalType() == CRYSTAL::CUBIC);
+  }
 }
 
 TEST_CASE("ForceManagerContextBackPointerDoesNotOwnCharmmContext") {

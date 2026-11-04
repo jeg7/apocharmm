@@ -7,6 +7,11 @@
 //
 // ENDLICENSE
 
+/**
+ * @file
+ * @brief Declares the C ABI Langevin-piston integrator interface.
+ */
+
 #ifndef __APOCHARMM_C_CUDA_LANGEVIN_PISTON_INTEGRATOR_H__
 #define __APOCHARMM_C_CUDA_LANGEVIN_PISTON_INTEGRATOR_H__
 
@@ -29,10 +34,20 @@ extern "C" {
 /**
  * @brief Owns a native Langevin-piston CUDA integrator.
  *
- * Destroy the handle with
- * @ref apo_cuda_langevin_piston_integrator_destroy. Its embedded
- * @ref apo_cuda_integrator view is borrowed and valid only while this concrete
- * handle remains alive.
+ * Destroy the handle with @ref apo_cuda_langevin_piston_integrator_destroy. Its
+ * embedded @ref apo_cuda_integrator view is borrowed and valid only while this
+ * concrete handle remains alive.
+ *
+ * Configure the context's crystal type before attachment. Compatible changes
+ * are allowed between completed propagation calls. After a type change, call
+ * @ref apo_cuda_integrator_initialize, then configure custom new-layout masses
+ * if needed. Friction and scalar settings are retained; piston/Nose-Hoover
+ * dynamic history and phase averages are reset. Until initialization succeeds,
+ * piston state getters/setters, propagation, and restart operations return
+ * `APO_STATUS_NOT_INITIALIZED`. The crystal getter remains readable and
+ * forwards the context's selection. Reinitializing an unchanged type preserves
+ * masses and friction but rebuilds integration history and RNG state; the
+ * completed-step counter is retained.
  *
  * Status calls clear the current thread's diagnostic at entry. On failure,
  * call @ref apo_last_error immediately on the same thread.
@@ -80,6 +95,8 @@ APOCHARMM_C_API void apo_cuda_langevin_piston_integrator_destroy(
  *
  * @retval APO_STATUS_OK The flag was updated.
  * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  */
 APOCHARMM_C_API apo_status
@@ -97,7 +114,8 @@ apo_cuda_langevin_piston_integrator_use_nose_hoover_thermostat(
  * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`, or
  * `temperature` is non-finite or negative.
  * @retval APO_STATUS_NOT_INITIALIZED Selected-crystal piston state is
- * inconsistent while factors are recomputed.
+ * inconsistent while factors are recomputed, or a context crystal change
+ * requires reinitialization.
  * @retval APO_STATUS_CUDA_ERROR Updated factors could not be transferred.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  */
@@ -116,6 +134,8 @@ apo_cuda_langevin_piston_integrator_set_reference_temperature(
  * `mass` is non-finite or negative.
  * @retval APO_STATUS_CUDA_ERROR The scalar could not be copied to device
  * storage.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  *
  * @warning Zero is accepted, but propagation divides by this value while
@@ -134,6 +154,8 @@ apo_cuda_langevin_piston_integrator_set_nose_hoover_piston_mass(
  *
  * @retval APO_STATUS_OK The selector was updated.
  * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  */
 APOCHARMM_C_API apo_status
@@ -154,6 +176,8 @@ apo_cuda_langevin_piston_integrator_use_old_temperature(
  * `NULL`; the length is not nine; or a value is non-finite.
  * @retval APO_STATUS_CUDA_ERROR The tensor could not be transferred to device
  * storage.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR Host allocation or another unexpected C++
  * exception occurred.
  *
@@ -173,6 +197,8 @@ apo_cuda_langevin_piston_integrator_set_reference_pressure(
  *
  * @retval APO_STATUS_OK The flag was updated.
  * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  *
  * @warning The current API exposes no target-surface-tension setter and the
@@ -182,29 +208,6 @@ apo_cuda_langevin_piston_integrator_set_reference_pressure(
 APOCHARMM_C_API apo_status
 apo_cuda_langevin_piston_integrator_set_constant_surface_tension(
     apo_cuda_langevin_piston_integrator *integrator, const bool flag);
-
-/**
- * @brief Selects crystal symmetry and allocates crystal-sized state.
- *
- * @param[in] integrator Borrowed live handle.
- * @param[in] crystal_type `APO_CRYSTAL_TYPE_CUBIC`,
- * `APO_CRYSTAL_TYPE_TETRAGONAL`, or
- * `APO_CRYSTAL_TYPE_ORTHORHOMBIC`.
- *
- * @retval APO_STATUS_OK Crystal-dependent state was allocated and reset.
- * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`, or
- * `crystal_type` is `APO_CRYSTAL_TYPE_NONE` or an unknown value.
- * @retval APO_STATUS_CUDA_ERROR Allocation, initialization, or transfer of
- * crystal-dependent state failed.
- * @retval APO_STATUS_RUNTIME_ERROR Host allocation or another unexpected C++
- * exception occurred.
- *
- * @warning Previously borrowed piston-container references are invalidated by
- * reallocation.
- */
-APOCHARMM_C_API apo_status apo_cuda_langevin_piston_integrator_set_crystal_type(
-    apo_cuda_langevin_piston_integrator *integrator,
-    const apo_crystal_type crystal_type);
 
 /**
  * @brief Sets crystal-sized Langevin-piston masses.
@@ -219,7 +222,8 @@ APOCHARMM_C_API apo_status apo_cuda_langevin_piston_integrator_set_crystal_type(
  * @retval APO_STATUS_INVALID_ARGUMENT The handle, native object, or buffer is
  * `NULL`; `mass_len` is outside one through three; the length does not match
  * the crystal; or a value is non-finite or negative.
- * @retval APO_STATUS_NOT_INITIALIZED No crystal type has been selected.
+ * @retval APO_STATUS_NOT_INITIALIZED No configured context has been attached,
+ * or the context crystal type changed and requires reinitialization.
  * @retval APO_STATUS_CUDA_ERROR Device updates failed.
  * @retval APO_STATUS_RUNTIME_ERROR Host allocation or another unexpected C++
  * exception occurred.
@@ -242,6 +246,8 @@ apo_cuda_langevin_piston_integrator_set_langevin_piston_mass(
  * were regenerated.
  * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`.
  * @retval APO_STATUS_CUDA_ERROR RNG allocation or initialization failed.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  */
 APOCHARMM_C_API apo_status
@@ -257,7 +263,8 @@ apo_cuda_langevin_piston_integrator_set_langevin_piston_friction_seed(
  * @retval APO_STATUS_OK Damping and random-force factors were updated.
  * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`, or
  * `friction` is non-finite or negative.
- * @retval APO_STATUS_NOT_INITIALIZED No crystal type has been selected.
+ * @retval APO_STATUS_NOT_INITIALIZED No configured context has been attached,
+ * or the context crystal type changed and requires reinitialization.
  * @retval APO_STATUS_CUDA_ERROR Random-force factors could not be transferred.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  */
@@ -273,6 +280,8 @@ apo_cuda_langevin_piston_integrator_set_langevin_piston_friction(
  * @retval APO_STATUS_OK All average state was reset.
  * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`.
  * @retval APO_STATUS_CUDA_ERROR A device array could not be reset.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  */
 APOCHARMM_C_API apo_status apo_cuda_langevin_piston_integrator_reset_averages(
@@ -287,6 +296,8 @@ APOCHARMM_C_API apo_status apo_cuda_langevin_piston_integrator_reset_averages(
  * @retval APO_STATUS_OK `*temperature` was written.
  * @retval APO_STATUS_INVALID_ARGUMENT The handle, native object, or output is
  * `NULL`.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  * @post On failure, a valid output retains its previous contents.
  */
@@ -304,6 +315,8 @@ apo_cuda_langevin_piston_integrator_get_reference_temperature(
  * @retval APO_STATUS_INVALID_ARGUMENT The handle, native object, or output is
  * `NULL`.
  * @retval APO_STATUS_CUDA_ERROR The scalar container could not be transferred.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR The native container does not contain
  * exactly one element, or another unexpected exception occurred.
  * @post On failure, a valid output retains its previous contents.
@@ -322,6 +335,8 @@ apo_cuda_langevin_piston_integrator_get_nose_hoover_piston_mass(
  * @retval APO_STATUS_INVALID_ARGUMENT The handle, native object, or output is
  * `NULL`.
  * @retval APO_STATUS_CUDA_ERROR The average container could not be transferred.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR The average container does not contain two
  * elements, or another unexpected exception occurred.
  * @post On failure, a valid output retains its previous contents.
@@ -345,6 +360,8 @@ apo_cuda_langevin_piston_integrator_get_average_temperature(
  * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`,
  * the buffer is `NULL`, or its capacity is smaller than nine.
  * @retval APO_STATUS_CUDA_ERROR The native tensor could not be transferred.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR The native tensor does not contain nine
  * elements, or another unexpected exception occurred.
  * @post On failure, the caller buffer retains its previous contents.
@@ -355,13 +372,14 @@ apo_cuda_langevin_piston_integrator_get_reference_pressure_tensor(
     const apo_cuda_langevin_piston_integrator *integrator);
 
 /**
- * @brief Returns the selected crystal type.
+ * @brief Returns the attached context's crystal type.
  *
  * @param[out] crystal_type Non-`NULL` output receiving the C enum value.
  * @param[in] integrator Borrowed live handle.
  *
  * @retval APO_STATUS_OK `*crystal_type` was written, including
- * `APO_CRYSTAL_TYPE_NONE` before configuration.
+ * `APO_CRYSTAL_TYPE_UNSET` before context attachment. The current context
+ * selection is returned even while piston state awaits reinitialization.
  * @retval APO_STATUS_INVALID_ARGUMENT The handle, native object, or output is
  * `NULL`, or the native enum cannot be represented.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
@@ -385,6 +403,8 @@ APOCHARMM_C_API apo_status apo_cuda_langevin_piston_integrator_get_crystal_type(
  * native object is `NULL`; or a nonempty output buffer is `NULL` or too small.
  * @retval APO_STATUS_CUDA_ERROR A nonempty native mass array could not be
  * transferred.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR The native mass count exceeds three, or
  * another unexpected exception occurred.
  *
@@ -411,6 +431,8 @@ apo_cuda_langevin_piston_integrator_get_langevin_piston_mass(
  * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`,
  * the buffer is `NULL`, or capacity is smaller than nine.
  * @retval APO_STATUS_CUDA_ERROR The tensor could not be transferred.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR The native tensor does not contain nine
  * elements, or another unexpected exception occurred.
  * @post On failure, the buffer retains its previous contents.
@@ -430,6 +452,8 @@ apo_cuda_langevin_piston_integrator_get_instantaneous_pressure_tensor(
  * @retval APO_STATUS_INVALID_ARGUMENT The handle, native object, or output is
  * `NULL`.
  * @retval APO_STATUS_CUDA_ERROR The scalar container could not be transferred.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR The native container does not contain one
  * element, or another unexpected exception occurred.
  * @post On failure, a valid output retains its previous contents.
@@ -452,6 +476,8 @@ apo_cuda_langevin_piston_integrator_get_instantaneous_pressure_scalar(
  * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`,
  * the buffer is `NULL`, or capacity is smaller than nine.
  * @retval APO_STATUS_CUDA_ERROR The tensor could not be transferred.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR The native tensor does not contain nine
  * elements, or another unexpected exception occurred.
  * @post On failure, the buffer retains its previous contents.
@@ -471,6 +497,8 @@ apo_cuda_langevin_piston_integrator_get_average_pressure_tensor(
  * @retval APO_STATUS_INVALID_ARGUMENT The handle, native object, or output is
  * `NULL`.
  * @retval APO_STATUS_CUDA_ERROR The scalar container could not be transferred.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR The native container does not contain one
  * element, or another unexpected exception occurred.
  * @post On failure, a valid output retains its previous contents.
@@ -489,6 +517,8 @@ apo_cuda_langevin_piston_integrator_get_average_pressure_scalar(
  * @retval APO_STATUS_OK `*seed` was written.
  * @retval APO_STATUS_INVALID_ARGUMENT The handle, native object, or output is
  * `NULL`.
+ * @retval APO_STATUS_NOT_INITIALIZED The context crystal type changed and
+ * piston state requires reinitialization.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  * @post On failure, a valid output retains its previous contents.
  */
@@ -505,7 +535,8 @@ apo_cuda_langevin_piston_integrator_get_langevin_piston_friction_seed(
  * @retval APO_STATUS_OK `*temperature` was written.
  * @retval APO_STATUS_INVALID_ARGUMENT The handle, native object, or output is
  * `NULL`.
- * @retval APO_STATUS_NOT_INITIALIZED No context is attached.
+ * @retval APO_STATUS_NOT_INITIALIZED No context is attached, or a context
+ * crystal change requires reinitialization.
  * @retval APO_STATUS_CUDA_ERROR Kinetic energy could not be transferred.
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  * @post On failure, a valid output retains its previous contents.

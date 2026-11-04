@@ -71,6 +71,7 @@ add_library(apoCHARMMlib
   ${apoCHARMM_SOURCE_DIR}/src/PDB.cu
   ${apoCHARMM_SOURCE_DIR}/src/PertForceManager.cu
   # ${apoCHARMM_SOURCE_DIR}/src/PrintEnergiesGraph.cu
+  ${apoCHARMM_SOURCE_DIR}/src/RestartIO.cpp
   ${apoCHARMM_SOURCE_DIR}/src/RestartSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/ReplicaExchange.cu
   # ${apoCHARMM_SOURCE_DIR}/src/CudaIntegratorGraph.cu

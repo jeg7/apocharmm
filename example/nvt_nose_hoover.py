@@ -29,6 +29,7 @@ def main(argc, argv):
 
     # Setup the CharmmContext
     ctx = apo.CharmmContext(psf, prm)
+    ctx.setCrystalType(apo.CrystalType.CUBIC)
     ctx.setBoxDimensions(box_dims)
     ctx.setCoordinates(crd)
     ctx.setRandomSeed(random_seed)

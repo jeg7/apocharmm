@@ -12,6 +12,7 @@
 #include "CharmmCrd.h"
 #include "CharmmPSF.h"
 #include "CharmmParameters.h"
+#include "Crystal.h"
 #include "CudaLangevinPistonIntegrator.h"
 #include "CurandStateString.h"
 #include "ForceManager.h"
@@ -45,6 +46,35 @@ const std::vector<double> BOX_DIMENSIONS = {50.0, 50.0, 50.0};
 const std::vector<double> REFERENCE_PRESSURE_TENSOR = {1.0, 0.0, 0.0, 0.0, 1.0,
                                                        0.0, 0.0, 0.0, 1.0};
 
+class PistonLifecycleProbe : public CudaLangevinPistonIntegrator {
+public:
+  using CudaLangevinPistonIntegrator::CudaLangevinPistonIntegrator;
+  using CudaLangevinPistonIntegrator::m_LangevinPistonDegreesOfFreedom;
+  using CudaLangevinPistonIntegrator::m_Pgamma;
+  using CudaLangevinPistonIntegrator::m_ReferenceTemperature;
+  using CudaLangevinPistonIntegrator::m_RngSequencePos;
+  using CudaLangevinPistonIntegrator::m_Seed;
+};
+
+std::shared_ptr<CharmmContext> CreatePistonContext(const CRYSTAL crystalType) {
+  auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
+                                                "toppar_water_ions.str");
+  auto psf =
+      std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
+  auto crd =
+      std::make_shared<CharmmCrd>(apo_test::GetDataDir() / "nacl_pair.cor");
+
+  auto ctx = std::make_shared<CharmmContext>(psf, prm);
+  ctx->setBoxDimensions(BOX_DIMENSIONS);
+  ctx->setCrystalType(crystalType);
+  ctx->setCoordinates(crd);
+  ctx->useHolonomicConstraints(false);
+  ctx->setRandomSeed(RANDOM_SEED);
+  ctx->assignVelocitiesAtTemperature(TEMPERATURE);
+
+  return ctx;
+}
+
 void ConfigureIntegrator(
     std::shared_ptr<CudaLangevinPistonIntegrator> integrator) {
   integrator->useNoseHooverThermostat(true);
@@ -56,7 +86,6 @@ void ConfigureIntegrator(
 
   integrator->setReferencePressure(REFERENCE_PRESSURE_TENSOR);
   integrator->setConstantSurfaceTension(false);
-  integrator->setCrystalType(CRYSTAL::CUBIC);
   integrator->setLangevinPistonMass({LANGEVIN_PISTON_MASS});
   integrator->setLangevinPistonFrictionSeed(LANGEVIN_PISTON_SEED);
   integrator->setRngSequencePos(0ULL);
@@ -184,7 +213,7 @@ TEST_CASE("CudaLangevinPistonIntegratorConstructorDefaults") {
   CHECK(integrator->getReferenceTemperature() == Approx(300.0));
   CHECK(integrator->usingOldTemperature() == false);
   CHECK(integrator->getMaxPredictorCorrectorIterations() == 3);
-  CHECK(integrator->getCrystalType() == CRYSTAL::NONE);
+  CHECK(integrator->getCrystalType() == CRYSTAL::UNSET);
   CHECK(integrator->getRngSequencePos() == 0ULL);
 
   CHECK(apo_test::CopyScalarToHost<double>(
@@ -223,23 +252,20 @@ TEST_CASE("CudaLangevinPistonIntegratorSettersAndCrystalType") {
     apo_test::CheckApoCharmmError(
         [&]() { integrator->setLangevinPistonMass({1.0}); },
         ApoCharmmErrorCode::NotInitialized,
-        "Crystal type must be set before Langevin piston mass");
+        "Attach a CharmmContext with a crystal type before setting the "
+        "Langevin piston mass");
 
     apo_test::CheckApoCharmmError(
         [&]() { integrator->setLangevinPistonFriction(1.0); },
         ApoCharmmErrorCode::NotInitialized,
-        "Crystal type must be set before Langevin piston friction");
+        "Attach a CharmmContext with a crystal type before setting the "
+        "Langevin piston friction");
 
     apo_test::CheckApoCharmmError(
         [&]() { integrator->setReferencePressure({1.0, 0.0}); },
         ApoCharmmErrorCode::InvalidArgument,
         "Reference pressure tensor must contain exactly 9 elements; observed "
         "2");
-
-    apo_test::CheckApoCharmmError(
-        [&]() { integrator->setCrystalType(CRYSTAL::NONE); },
-        ApoCharmmErrorCode::InvalidArgument,
-        "Crystal type must be CUBIC, TETRAGONAL, or ORTHORHOMBIC");
   }
 
   SECTION("CubicCrystal") {
@@ -254,7 +280,7 @@ TEST_CASE("CudaLangevinPistonIntegratorSettersAndCrystalType") {
     integrator->useOldTemperature(true);
     integrator->setReferencePressure(REFERENCE_PRESSURE_TENSOR);
     integrator->setConstantSurfaceTension(false);
-    integrator->setCrystalType(CRYSTAL::CUBIC);
+    integrator->setCharmmContext(CreatePistonContext(CRYSTAL::CUBIC));
     integrator->setLangevinPistonMass({LANGEVIN_PISTON_MASS});
     integrator->setLangevinPistonFrictionSeed(LANGEVIN_PISTON_SEED);
     integrator->setRngSequencePos(4ULL);
@@ -286,7 +312,7 @@ TEST_CASE("CudaLangevinPistonIntegratorSettersAndCrystalType") {
   }
 
   SECTION("TetragonalCrystal") {
-    integrator->setCrystalType(CRYSTAL::TETRAGONAL);
+    integrator->setCharmmContext(CreatePistonContext(CRYSTAL::TETRAGONAL));
     integrator->setLangevinPistonMass({1.0, 2.0});
 
     CHECK(integrator->getCrystalType() == CRYSTAL::TETRAGONAL);
@@ -299,7 +325,7 @@ TEST_CASE("CudaLangevinPistonIntegratorSettersAndCrystalType") {
   }
 
   SECTION("OrthorhombicCrystal") {
-    integrator->setCrystalType(CRYSTAL::ORTHORHOMBIC);
+    integrator->setCharmmContext(CreatePistonContext(CRYSTAL::ORTHORHOMBIC));
     integrator->setLangevinPistonMass({1.0, 2.0, 3.0});
 
     CHECK(integrator->getCrystalType() == CRYSTAL::ORTHORHOMBIC);
@@ -390,14 +416,16 @@ TEST_CASE("CudaLangevinPistonIntegratorRejectsInvalidValues") {
     apo_test::CheckApoCharmmError(
         [&]() { integrator->setLangevinPistonMass({1.0}); },
         ApoCharmmErrorCode::NotInitialized,
-        "Crystal type must be set before Langevin piston mass");
+        "Attach a CharmmContext with a crystal type before setting the "
+        "Langevin piston mass");
 
     apo_test::CheckApoCharmmError(
         [&]() { integrator->setLangevinPistonFriction(1.0); },
         ApoCharmmErrorCode::NotInitialized,
-        "Crystal type must be set before Langevin piston friction");
+        "Attach a CharmmContext with a crystal type before setting the "
+        "Langevin piston friction");
 
-    integrator->setCrystalType(CRYSTAL::CUBIC);
+    integrator->setCharmmContext(CreatePistonContext(CRYSTAL::CUBIC));
 
     apo_test::CheckApoCharmmError(
         [&]() { integrator->setLangevinPistonMass({1.0, 2.0}); },
@@ -432,18 +460,17 @@ TEST_CASE("CudaLangevinPistonIntegratorRejectsInvalidValues") {
     apo_test::CheckApoCharmmError(
         [&]() { integrator->setRngStates("INVALID"); },
         ApoCharmmErrorCode::NotInitialized,
-        "Crystal type must be set before RNG states");
+        "Attach a CharmmContext with a crystal type before setting RNG states");
 
     apo_test::CheckApoCharmmError(
         [&]() { static_cast<void>(integrator->getRngStates()); },
         ApoCharmmErrorCode::NotInitialized,
-        "Crystal type must be set before retrieving RNG states");
+        "Attach a CharmmContext with a crystal type before retrieving RNG "
+        "states");
 
-    integrator->setCrystalType(CRYSTAL::CUBIC);
+    integrator->setCharmmContext(CreatePistonContext(CRYSTAL::CUBIC));
 
-    apo_test::CheckApoCharmmError(
-        [&]() { static_cast<void>(integrator->getRngStates()); },
-        ApoCharmmErrorCode::NotInitialized, "RNG states are not initialized");
+    CHECK_NOTHROW(integrator->getRngStates());
 
     apo_test::CheckApoCharmmError(
         [&]() { integrator->setRngStates("INVALID"); },
@@ -581,7 +608,7 @@ TEST_CASE("CudaLangevinPistonIntegratorRequireCrystalTypeBeforeContext") {
   apo_test::CheckApoCharmmError(
       [&]() { integrator->setCharmmContext(ctx); },
       ApoCharmmErrorCode::NotInitialized,
-      "Crystal type must be set before initialization");
+      "Crystal type must be configured before this operation");
 
   CHECK(integrator->getCharmmContext() == nullptr);
 }
@@ -596,15 +623,15 @@ TEST_CASE("CudaLangevinPistonIntegratorContextInitialization") {
 
   auto ctx = std::make_shared<CharmmContext>(psf, prm);
   ctx->setBoxDimensions(BOX_DIMENSIONS);
+  ctx->setCrystalType(CRYSTAL::CUBIC);
   ctx->setCoordinates(crd);
   ctx->useHolonomicConstraints(false);
   ctx->setRandomSeed(RANDOM_SEED);
   ctx->assignVelocitiesAtTemperature(TEMPERATURE);
 
   auto integrator = std::make_shared<CudaLangevinPistonIntegrator>(TIME_STEP);
-  ConfigureIntegrator(integrator);
-
   integrator->setCharmmContext(ctx);
+  ConfigureIntegrator(integrator);
 
   CHECK(integrator->getCharmmContext() == ctx);
   CHECK(integrator->getCoordsDelta().size() == 2);
@@ -630,17 +657,17 @@ TEST_CASE("CudaLangevinPistonIntegratorAutoPistonMass") {
 
   auto ctx = std::make_shared<CharmmContext>(psf, prm);
   ctx->setBoxDimensions(BOX_DIMENSIONS);
+  ctx->setCrystalType(CRYSTAL::CUBIC);
   ctx->setCoordinates(crd);
   ctx->useHolonomicConstraints(false);
   ctx->setRandomSeed(RANDOM_SEED);
   ctx->assignVelocitiesAtTemperature(TEMPERATURE);
 
   auto integrator = std::make_shared<CudaLangevinPistonIntegrator>(TIME_STEP);
-  integrator->setCrystalType(CRYSTAL::CUBIC);
   integrator->setLangevinPistonFrictionSeed(LANGEVIN_PISTON_SEED);
   integrator->setRngSequencePos(0ULL);
-  integrator->setLangevinPistonFriction(0.0);
   integrator->setCharmmContext(ctx);
+  integrator->setLangevinPistonFriction(0.0);
 
   constexpr double expectedMass = 0.02 * (22.9898 + 35.45);
 
@@ -659,14 +686,15 @@ TEST_CASE("CudaLangevinPistonIntegratorShortPropagation") {
 
   auto ctx = std::make_shared<CharmmContext>(psf, prm);
   ctx->setBoxDimensions(BOX_DIMENSIONS);
+  ctx->setCrystalType(CRYSTAL::CUBIC);
   ctx->setCoordinates(crd);
   ctx->useHolonomicConstraints(false);
   ctx->setRandomSeed(RANDOM_SEED);
   ctx->assignVelocitiesAtTemperature(TEMPERATURE);
 
   auto integrator = std::make_shared<CudaLangevinPistonIntegrator>(TIME_STEP);
-  ConfigureIntegrator(integrator);
   integrator->setCharmmContext(ctx);
+  ConfigureIntegrator(integrator);
   integrator->resetAverages();
 
   const std::vector<double4> initialCoordinates =
@@ -733,6 +761,7 @@ TEST_CASE("CudaLangevinPistonIntegratorDeterministicTrajectory") {
 
   auto ctx1 = std::make_shared<CharmmContext>(psf1, prm1);
   ctx1->setBoxDimensions(BOX_DIMENSIONS);
+  ctx1->setCrystalType(CRYSTAL::CUBIC);
   ctx1->setCoordinates(crd1);
   ctx1->useHolonomicConstraints(false);
   ctx1->setRandomSeed(RANDOM_SEED);
@@ -740,6 +769,7 @@ TEST_CASE("CudaLangevinPistonIntegratorDeterministicTrajectory") {
 
   auto ctx2 = std::make_shared<CharmmContext>(psf2, prm2);
   ctx2->setBoxDimensions(BOX_DIMENSIONS);
+  ctx2->setCrystalType(CRYSTAL::CUBIC);
   ctx2->setCoordinates(crd2);
   ctx2->useHolonomicConstraints(false);
   ctx2->setRandomSeed(RANDOM_SEED);
@@ -755,12 +785,12 @@ TEST_CASE("CudaLangevinPistonIntegratorDeterministicTrajectory") {
       DETERMINISTIC_TOLERANCE);
 
   auto integrator1 = std::make_shared<CudaLangevinPistonIntegrator>(TIME_STEP);
-  ConfigureIntegrator(integrator1);
   integrator1->setCharmmContext(ctx1);
+  ConfigureIntegrator(integrator1);
 
   auto integrator2 = std::make_shared<CudaLangevinPistonIntegrator>(TIME_STEP);
-  ConfigureIntegrator(integrator2);
   integrator2->setCharmmContext(ctx2);
+  ConfigureIntegrator(integrator2);
 
   CheckIntegratorStateMatches(integrator1, integrator2,
                               DETERMINISTIC_TOLERANCE);
@@ -806,6 +836,135 @@ TEST_CASE("CudaLangevinPistonIntegratorDeterministicTrajectory") {
          (finalCoordinates2[0].z != initialCoordinates2[0].z)));
 }
 
+TEST_CASE("CudaLangevinPistonIntegratorUsesContextCrystalAndPreservesMass") {
+  auto ctx = CreatePistonContext(CRYSTAL::ORTHORHOMBIC);
+  auto integrator = std::make_shared<PistonLifecycleProbe>(TIME_STEP);
+  integrator->setCharmmContext(ctx);
+  CHECK(integrator->getCrystalType() == ctx->getCrystalType());
+  CHECK(integrator->getCrystalType() == CRYSTAL::ORTHORHOMBIC);
+  REQUIRE(integrator->getLangevinPistonMass().size() == 3);
+  integrator->setLangevinPistonMass({1.0, 2.0, 3.0});
+  integrator->setLangevinPistonFriction(LANGEVIN_PISTON_FRICTION);
+  integrator->initialize();
+  apo_test::CheckVectorsClose<double>(
+      apo_test::CopyToHost<double>(integrator->getLangevinPistonMass()),
+      std::vector<double>{1.0, 2.0, 3.0}, 0.0);
+  CHECK(integrator->m_Pgamma == LANGEVIN_PISTON_FRICTION);
+}
+
+TEST_CASE("CudaLangevinPistonIntegratorReinitializesChangedCrystalPhase") {
+  auto ctx = CreatePistonContext(CRYSTAL::CUBIC);
+  auto integrator = std::make_shared<PistonLifecycleProbe>(TIME_STEP);
+  integrator->setCharmmContext(ctx);
+  ConfigureIntegrator(integrator);
+  integrator->propagate(2);
+  integrator->setNoseHooverPistonVelocity(2.0);
+  integrator->setNoseHooverPistonVelocityPrevious(3.0);
+  integrator->setNoseHooverPistonForce(4.0);
+  integrator->setNoseHooverPistonForcePrevious(5.0);
+  const auto velocities =
+      apo_test::CopyToHost<double4>(ctx->getVelocitiesInverseMasses());
+  const auto completedSteps = integrator->getTotNumSteps();
+  const auto sequence = integrator->getRngSequencePos();
+  const auto seed = integrator->getLangevinPistonFrictionSeed();
+  const std::string oldRng = integrator->getRngStates();
+  const CudaIntegrator &base = *integrator;
+  const CudaLangevinPistonIntegrator &constant = *integrator;
+
+  ctx->setCrystalType(CRYSTAL::ORTHORHOMBIC);
+  CHECK(integrator->getCrystalType() == CRYSTAL::ORTHORHOMBIC);
+  const auto stale = [&](auto operation) {
+    apo_test::CheckApoCharmmError(
+        operation, ApoCharmmErrorCode::NotInitialized,
+        "Langevin piston state does not match the context crystal type; "
+        "reinitialize the integrator");
+  };
+  stale([&]() { integrator->setLangevinPistonMass({1.0, 2.0, 3.0}); });
+  stale([&]() { integrator->setLangevinPistonFriction(9.0); });
+  stale([&]() { integrator->setReferenceTemperature(400.0); });
+  stale([&]() { integrator->setNoseHooverPistonVelocity(8.0); });
+  stale([&]() { integrator->setLangevinPistonFrictionSeed(12); });
+  stale([&]() { integrator->setRngSequencePos(99); });
+  stale([&]() { integrator->setRngStates(oldRng); });
+  stale([&]() { static_cast<void>(integrator->getRngStates()); });
+  stale([&]() { static_cast<void>(integrator->getLangevinPistonMass()); });
+  stale(
+      [&]() { static_cast<void>(constant.getLangevinPistonOnStepVelocity()); });
+  stale([&]() {
+    static_cast<void>(integrator->getLangevinPistonDeltaPosition());
+  });
+  stale([&]() { static_cast<void>(base.getCoordsDeltaPrevious()); });
+  stale([&]() { static_cast<void>(integrator->getCoordsDelta()); });
+  stale([&]() { integrator->initializeFromRestartFile("missing.rst"); });
+  stale([&]() { integrator->propagateOneStep(); });
+  stale([&]() { integrator->propagate(1); });
+  CHECK(integrator->m_Pgamma == LANGEVIN_PISTON_FRICTION);
+  CHECK(integrator->m_ReferenceTemperature == REFERENCE_TEMPERATURE);
+  CHECK(integrator->m_Seed == seed);
+  CHECK(integrator->m_RngSequencePos == sequence);
+  CHECK(integrator->getTotNumSteps() == completedSteps);
+
+  integrator->initialize();
+  CHECK(integrator->m_LangevinPistonDegreesOfFreedom == 3);
+  REQUIRE(integrator->getLangevinPistonMass().size() == 3);
+  double expectedMass = 0.0;
+  for (const auto &velocity : velocities)
+    expectedMass += 0.02 / velocity.w;
+  apo_test::CheckVectorsClose<double>(
+      apo_test::CopyToHost<double>(integrator->getLangevinPistonMass()),
+      std::vector<double>(3, expectedMass), FLOAT_TOLERANCE);
+  apo_test::CheckVectorsClose<double4>(
+      apo_test::CopyToHost<double4>(ctx->getVelocitiesInverseMasses()),
+      velocities, 0.0);
+  CHECK(integrator->getTotNumSteps() == completedSteps);
+  CHECK(integrator->getRngSequencePos() == sequence);
+  CHECK(integrator->getLangevinPistonFrictionSeed() == seed);
+  CHECK(integrator->m_Pgamma == LANGEVIN_PISTON_FRICTION);
+  CHECK(apo_test::CopyScalarToHost<double>(
+            integrator->getNoseHooverPistonMass()) == NOSE_HOOVER_PISTON_MASS);
+  CHECK(apo_test::CopyScalarToHost<double>(
+            integrator->getNoseHooverPistonVelocity()) == 0.0);
+  CHECK(apo_test::CopyScalarToHost<double>(
+            integrator->getNoseHooverPistonVelocityPrevious()) == 0.0);
+  CHECK(apo_test::CopyScalarToHost<double>(
+            integrator->getNoseHooverPistonForce()) == 0.0);
+  CHECK(apo_test::CopyScalarToHost<double>(
+            integrator->getNoseHooverPistonForcePrevious()) == 0.0);
+  apo_test::CheckVectorsClose<double>(
+      apo_test::CopyToHost<double>(
+          integrator->getLangevinPistonDeltaPosition()),
+      std::vector<double>(3, 0.0), 0.0);
+  apo_test::CheckVectorsClose<double>(
+      apo_test::CopyToHost<double>(integrator->getAveragePressureTensor()),
+      std::vector<double>(9, 0.0), 0.0);
+  apo_test::CheckVectorsClose<double>(
+      apo_test::CopyToHost<double>(integrator->getAverageTemperature()),
+      std::vector<double>(2, 0.0), 0.0);
+  unsigned long long parsedSequence = 0;
+  std::vector<curandStatePhilox4_32_10_t> parsedStates;
+  apo::curand_states_from_string(parsedSequence, parsedStates,
+                                 integrator->getRngStates());
+  CHECK(parsedSequence == sequence);
+  CHECK(parsedStates.size() == 3);
+  integrator->setLangevinPistonMass({1.0, 2.0, 3.0});
+  CHECK_NOTHROW(integrator->propagate(1));
+  CHECK(integrator->getTotNumSteps() == completedSteps + 1);
+}
+
+TEST_CASE("CudaLangevinPistonIntegratorRejectsMutatedCrystalBox") {
+  auto ctx = CreatePistonContext(CRYSTAL::CUBIC);
+  auto integrator = std::make_shared<CudaLangevinPistonIntegrator>(TIME_STEP);
+  integrator->setCharmmContext(ctx);
+  ctx->getBoxDimensions()[1] = 51.0;
+  apo_test::CheckApoCharmmError(
+      [&]() { integrator->initialize(); }, ApoCharmmErrorCode::InvalidArgument,
+      "Box dimensions are incompatible with the crystal type");
+  apo_test::CheckApoCharmmError(
+      [&]() { integrator->propagateOneStep(); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Box dimensions are incompatible with the crystal type");
+}
+
 TEST_CASE("CudaLangevinPistonIntegratorRestartValidation") {
   const std::filesystem::path missingFilePath = "missing.rst";
 
@@ -825,32 +984,38 @@ TEST_CASE("CudaLangevinPistonIntegratorRestartValidation") {
 
   auto ctx = std::make_shared<CharmmContext>(psf, prm);
   ctx->setBoxDimensions(BOX_DIMENSIONS);
+  ctx->setCrystalType(CRYSTAL::CUBIC);
   ctx->setCoordinates(crd);
   ctx->useHolonomicConstraints(false);
   ctx->setRandomSeed(RANDOM_SEED);
   ctx->assignVelocitiesAtTemperature(TEMPERATURE);
 
-  ConfigureIntegrator(integrator);
   integrator->setCharmmContext(ctx);
+  ConfigureIntegrator(integrator);
 
   apo_test::CheckApoCharmmError(
       [&]() { integrator->initializeFromRestartFile(missingFilePath); },
       ApoCharmmErrorCode::Runtime,
-      "Could not open file \"" + missingFilePath.string() + "\"");
+      "Could not open restart file: " + missingFilePath.string());
 
   const std::filesystem::path truncatedFilePath =
       "cudaLangevinPistonIntegrator-truncated.rst";
-  std::string truncatedHeader(34, ' ');
+  std::string truncatedHeader(28, ' ');
+  truncatedHeader.replace(0, 4, "REST");
+  truncatedHeader.replace(4, 6, "    52");
+  truncatedHeader.replace(10, 6, "     1");
   truncatedHeader.replace(18, 4, "CUBI");
 
   apo_test::RemoveIfExists(truncatedFilePath);
   apo_test::WriteTextFile(truncatedFilePath,
-                          truncatedHeader + "\n !CRYSTAL PARAMETERS\n");
+                          truncatedHeader +
+                              "\n\n       0 !NTITLE followed by title\n"
+                              "\n !CRYSTAL PARAMETERS\n");
 
   apo_test::CheckApoCharmmError(
       [&]() { integrator->initializeFromRestartFile(truncatedFilePath); },
       ApoCharmmErrorCode::Runtime,
-      "Unexpected end of file while reading first XTLABC record in restart "
+      "Unexpected end of file while reading XTLABC in restart "
       "file \"" +
           truncatedFilePath.string() + "\"");
 

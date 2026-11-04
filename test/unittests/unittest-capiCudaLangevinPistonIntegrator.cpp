@@ -8,14 +8,21 @@
 //
 // ENDLICENSE
 
+#include "CharmmContext.h"
+#include "CharmmCrd.h"
+#include "CharmmPSF.h"
+#include "CharmmParameters.h"
+#include "Crystal.h"
 #include "apo_test_helpers.h"
 #include "apocharmm_c/CudaLangevinPistonIntegrator.h"
 #include "apocharmm_c/Error.h"
 #include "apocharmm_c/Status.h"
+#include "apocharmm_c/detail/CharmmContextHandle.h"
 #include "apocharmm_c/detail/CudaLangevinPistonIntegratorHandle.h"
 #include "catch.hpp"
 
 #include <limits>
+#include <memory>
 #include <string>
 
 namespace {
@@ -32,6 +39,27 @@ apo_cuda_langevin_piston_integrator *CreateIntegrator(void) {
   REQUIRE(integrator != nullptr);
 
   return integrator;
+}
+
+std::shared_ptr<CharmmContext>
+AttachCubicContext(apo_cuda_langevin_piston_integrator *integrator) {
+  auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
+                                                "toppar_water_ions.str");
+  auto psf =
+      std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
+  auto crd =
+      std::make_shared<CharmmCrd>(apo_test::GetDataDir() / "nacl_pair.cor");
+
+  auto ctx = std::make_shared<CharmmContext>(psf, prm);
+  ctx->setCrystalType(CRYSTAL::CUBIC);
+  ctx->setBoxDimensions({50.0, 50.0, 50.0});
+  ctx->setCoordinates(crd);
+  ctx->useHolonomicConstraints(false);
+  ctx->assignVelocitiesAtTemperature(300.0);
+
+  integrator->object->setCharmmContext(ctx);
+
+  return ctx;
 }
 
 } // namespace
@@ -139,12 +167,28 @@ TEST_CASE("CapiCudaLangevinPistonValidation") {
   apo_test::CheckNativeError(
       status, APO_STATUS_NOT_INITIALIZED, "NotInitialized",
       "apo_cuda_langevin_piston_integrator_set_langevin_piston_mass",
-      "Crystal type must be set before Langevin piston mass",
+      "Attach a CharmmContext with a crystal type before setting the Langevin "
+      "piston mass",
       "src/CudaLangevinPistonIntegrator.cu", "setLangevinPistonMass");
 
-  CHECK_NOTHROW(status = apo_cuda_langevin_piston_integrator_set_crystal_type(
-                    integrator, APO_CRYSTAL_TYPE_CUBIC));
-  REQUIRE(status == APO_STATUS_OK);
+  double temperature = 0.0;
+
+  CHECK_NOTHROW(
+      status =
+          apo_cuda_langevin_piston_integrator_get_instantaneous_temperature(
+              &temperature, integrator));
+
+  apo_test::CheckNativeError(
+      status, APO_STATUS_NOT_INITIALIZED, "NotInitialized",
+      "apo_cuda_langevin_piston_integrator_get_instantaneous_temperature",
+      "CharmmContext must be set before computing instantaneous temperature",
+      "src/CudaLangevinPistonIntegrator.cu", "getInstantaneousTemperature");
+
+  AttachCubicContext(integrator);
+  apo_crystal_type selected = APO_CRYSTAL_TYPE_UNSET;
+  REQUIRE(apo_cuda_langevin_piston_integrator_get_crystal_type(
+              &selected, integrator) == APO_STATUS_OK);
+  CHECK(selected == APO_CRYSTAL_TYPE_CUBIC);
 
   CHECK_NOTHROW(
       status = apo_cuda_langevin_piston_integrator_set_langevin_piston_mass(
@@ -178,19 +222,6 @@ TEST_CASE("CapiCudaLangevinPistonValidation") {
       "apo_cuda_langevin_piston_integrator_set_langevin_piston_friction",
       "Langevin piston friction must be non-negative; observed -1.000000",
       "src/CudaLangevinPistonIntegrator.cu", "setLangevinPistonFriction");
-
-  double temperature = 0.0;
-
-  CHECK_NOTHROW(
-      status =
-          apo_cuda_langevin_piston_integrator_get_instantaneous_temperature(
-              &temperature, integrator));
-
-  apo_test::CheckNativeError(
-      status, APO_STATUS_NOT_INITIALIZED, "NotInitialized",
-      "apo_cuda_langevin_piston_integrator_get_instantaneous_temperature",
-      "CharmmContext must be set before computing instantaneous temperature",
-      "src/CudaLangevinPistonIntegrator.cu", "getInstantaneousTemperature");
 
   CHECK_NOTHROW(apo_cuda_langevin_piston_integrator_destroy(integrator));
 }
@@ -260,5 +291,99 @@ TEST_CASE("CapiCudaLangevinPistonGetterInvariants") {
         "Average pressure scalar does not contain exactly 1 element");
   }
 
+  CHECK_NOTHROW(apo_cuda_langevin_piston_integrator_destroy(integrator));
+}
+
+TEST_CASE("CapiCudaLangevinPistonCrystalPhaseChange") {
+  apo_cuda_langevin_piston_integrator *integrator = CreateIntegrator();
+  apo_cuda_integrator *base = nullptr;
+  REQUIRE(apo_cuda_langevin_piston_integrator_as_cuda_integrator(
+              &base, integrator) == APO_STATUS_OK);
+  REQUIRE(base != nullptr);
+
+  apo_cuda_integrator empty;
+  CHECK(apo_cuda_integrator_initialize(nullptr) == APO_STATUS_INVALID_ARGUMENT);
+  CHECK(apo_cuda_integrator_initialize(&empty) == APO_STATUS_INVALID_ARGUMENT);
+  apo_test::CheckNativeError(apo_cuda_integrator_initialize(base),
+                             APO_STATUS_NOT_INITIALIZED, "NotInitialized",
+                             "apo_cuda_integrator_initialize",
+                             "CharmmContext must be set before initialization",
+                             "src/CudaIntegrator.cu", "initialize");
+
+  apo_charmm_context context;
+  context.object = AttachCubicContext(integrator);
+
+  const double cubicMass[1] = {5.0};
+  REQUIRE(apo_cuda_langevin_piston_integrator_set_langevin_piston_mass(
+              integrator, cubicMass, 1) == APO_STATUS_OK);
+  REQUIRE(apo_cuda_langevin_piston_integrator_set_langevin_piston_friction(
+              integrator, 5.0) == APO_STATUS_OK);
+  REQUIRE(apo_cuda_integrator_propagate(base, 1) == APO_STATUS_OK);
+  const auto completed = integrator->object->getTotNumSteps();
+
+  // An unchanged selection keeps the current piston layout usable.
+  REQUIRE(apo_charmm_context_set_crystal_type(
+              &context, APO_CRYSTAL_TYPE_CUBIC) == APO_STATUS_OK);
+  size_t numMass = 0;
+  double mass[3] = {0.0, 0.0, 0.0};
+  REQUIRE(apo_cuda_langevin_piston_integrator_get_langevin_piston_mass(
+              &numMass, mass, 3, integrator) == APO_STATUS_OK);
+  CHECK(numMass == 1);
+  CHECK(mass[0] == 5.0);
+
+  REQUIRE(apo_charmm_context_set_crystal_type(
+              &context, APO_CRYSTAL_TYPE_ORTHORHOMBIC) == APO_STATUS_OK);
+
+  apo_crystal_type selected = APO_CRYSTAL_TYPE_UNSET;
+  REQUIRE(apo_cuda_langevin_piston_integrator_get_crystal_type(
+              &selected, integrator) == APO_STATUS_OK);
+  CHECK(selected == APO_CRYSTAL_TYPE_ORTHORHOMBIC);
+
+  const std::string stale =
+      "Langevin piston state does not match the context crystal type; "
+      "reinitialize the integrator";
+  const auto checkStale = [&](apo_status status, const char *function) {
+    apo_test::CheckNativeError(
+        status, APO_STATUS_NOT_INITIALIZED, "NotInitialized", function, stale,
+        "src/CudaLangevinPistonIntegrator.cu", "requireCurrentState");
+  };
+  mass[0] = 123.0;
+  checkStale(apo_cuda_langevin_piston_integrator_get_langevin_piston_mass(
+                 &numMass, mass, 3, integrator),
+             "apo_cuda_langevin_piston_integrator_get_langevin_piston_mass");
+  CHECK(numMass == 0);
+  CHECK(mass[0] == 123.0);
+
+  const double orthMass[3] = {5.0, 6.0, 7.0};
+  checkStale(apo_cuda_langevin_piston_integrator_set_langevin_piston_mass(
+                 integrator, orthMass, 3),
+             "apo_cuda_langevin_piston_integrator_set_langevin_piston_mass");
+  checkStale(
+      apo_cuda_langevin_piston_integrator_set_langevin_piston_friction(
+          integrator, 6.0),
+      "apo_cuda_langevin_piston_integrator_set_langevin_piston_friction");
+  checkStale(apo_cuda_integrator_propagate(base, 1),
+             "apo_cuda_integrator_propagate");
+  checkStale(apo_cuda_integrator_initialize_from_restart_file(
+                 base, "unused_while_piston_state_is_stale.rst"),
+             "apo_cuda_integrator_initialize_from_restart_file");
+  CHECK(integrator->object->getTotNumSteps() == completed);
+
+  REQUIRE(apo_cuda_integrator_initialize(base) == APO_STATUS_OK);
+  CHECK(integrator->object->getTotNumSteps() == completed);
+  REQUIRE(apo_cuda_langevin_piston_integrator_get_langevin_piston_mass(
+              &numMass, mass, 3, integrator) == APO_STATUS_OK);
+  CHECK(numMass == 3);
+  REQUIRE(apo_cuda_langevin_piston_integrator_set_langevin_piston_mass(
+              integrator, orthMass, 3) == APO_STATUS_OK);
+  REQUIRE(apo_cuda_integrator_initialize(base) == APO_STATUS_OK);
+  REQUIRE(apo_cuda_langevin_piston_integrator_get_langevin_piston_mass(
+              &numMass, mass, 3, integrator) == APO_STATUS_OK);
+  REQUIRE(numMass == 3);
+  for (size_t i = 0; i < numMass; ++i)
+    CHECK(mass[i] == orthMass[i]);
+  CHECK(integrator->object->getTotNumSteps() == completed);
+  REQUIRE(apo_cuda_integrator_propagate(base, 1) == APO_STATUS_OK);
+  CHECK(integrator->object->getTotNumSteps() == completed + 1);
   CHECK_NOTHROW(apo_cuda_langevin_piston_integrator_destroy(integrator));
 }

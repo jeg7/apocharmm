@@ -67,12 +67,26 @@ class RestartSubscriber(Subscriber):
     propagation, each scheduled native update rewrites the complete file with
     current context state and supported-integrator state. Box lengths and
     coordinates use angstroms, velocities use angstroms per AKMA time unit, and
-    average temperature uses kelvin.
+    average temperature uses kelvin. The standard core uses CHARMM version-52
+    field sizes and D22.15 precision. A trailing apoCHARMM RNG extension retains
+    native Philox state. Decimal serialization is not bitwise lossless.
+
+    Energy/statistics history and the thermostat reference-energy origin are
+    explicitly reset. Supported imports use ordinary leapfrog state with CUBI,
+    TETR, or ORTH cells and default CHARMM energy-selection flags. Match
+    topology, timestep, constraints, potential, and thermostat/piston
+    configuration in both programs. Configure a new RNG seed before importing a
+    foreign restart; foreign RNG state is never interpreted as apoCHARMM Philox
+    state.
+
+    Call `CharmmContext.setCrystalType()` before writing or loading a restart.
+    The context's explicit crystal type supplies the output label and must
+    match the label on import. Box lengths do not select or change that type.
 
     Native updates support `CudaNoseHooverIntegrator`,
-    `CudaLangevinPistonIntegrator`, and
-    `CudaLangevinThermostatIntegrator`. Device-backed state is copied to host,
-    and each transfer synchronizes the current CUDA device.
+    `CudaLangevinPistonIntegrator`, and `CudaLangevinThermostatIntegrator`.
+    Device-backed state is copied to host, and each transfer synchronizes the
+    current CUDA device.
 
     The wrapper owns the concrete C handle. Its `subscriber_handle` property is
     a borrowed view into that handle. Use the object as a context manager or

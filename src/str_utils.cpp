@@ -22,6 +22,7 @@
 #include <istream>
 #include <limits>
 #include <locale>
+#include <ostream>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -451,6 +452,231 @@ double apo::fortSciStrToCDouble(const std::string_view str) {
   return apo::parse_double(str, "floating-point", "Fortran scientific value");
 }
 
+bool apo::try_parse_fortran_double(double &value,
+                                   const std::string_view token) {
+  std::string normalized_token = apo::trim(token);
+  std::size_t pos = 0;
+  const auto is_digit = [](const char c) -> bool {
+    return (c >= '0' && c <= '9');
+  };
+
+  if (!normalized_token.empty() &&
+      ((normalized_token.front() == '+') || (normalized_token.front() == '-')))
+    pos++;
+
+  bool has_mantissa_digit = false;
+  bool has_nonzero_mantissa = false;
+  const auto consume_mantissa_digits = [&](void) -> void {
+    while ((pos < normalized_token.size()) && is_digit(normalized_token[pos])) {
+      has_mantissa_digit = true;
+      has_nonzero_mantissa =
+          (has_nonzero_mantissa || (normalized_token[pos] != '0'));
+      pos++;
+    }
+    return;
+  };
+
+  consume_mantissa_digits();
+  if ((pos < normalized_token.size()) && (normalized_token[pos] == '.')) {
+    pos++;
+    consume_mantissa_digits();
+  }
+  if (!has_mantissa_digit)
+    return false;
+
+  if (pos < normalized_token.size()) {
+    if ((normalized_token[pos] == 'D') || (normalized_token[pos] == 'd') ||
+        (normalized_token[pos] == 'E') || (normalized_token[pos] == 'e')) {
+      normalized_token[pos++] = 'E';
+    } else if ((normalized_token[pos] == '+') || (normalized_token[pos] == '-'))
+      normalized_token.insert(pos++, "E");
+    else
+      return false;
+
+    if ((pos < normalized_token.size()) &&
+        ((normalized_token[pos] == '+') || (normalized_token[pos] == '-'))) {
+      pos++;
+    }
+
+    const std::size_t first_exponent_digit = pos;
+    while ((pos < normalized_token.size()) && is_digit(normalized_token[pos]))
+      pos++;
+    if ((pos == first_exponent_digit) || (pos != normalized_token.size()))
+      return false;
+  }
+
+  // JEG261029: std::stod may report ERANGE for a representable subnormal.
+  // Classic-locale stream extraction accepts that value without consulting the
+  // process locale.
+  double parsed_value = 0.0;
+  std::istringstream input(normalized_token);
+  input.imbue(std::locale::classic());
+  input >> parsed_value;
+  if (input.fail() || !std::isfinite(parsed_value) ||
+      ((parsed_value == 0.0) && has_nonzero_mantissa)) {
+    return false;
+  }
+  input >> std::ws;
+  if (!input.eof())
+    return false;
+
+  value = parsed_value;
+
+  return true;
+}
+
+double apo::parse_fortran_double(const std::string_view token,
+                                 const std::string_view field_name,
+                                 const std::string_view context) {
+  double value = 0.0;
+  APOCHARMM_REQUIRE(
+      apo::try_parse_fortran_double(value, token), ApoCharmmErrorCode::Runtime,
+      make_invalid_value_message(apo::trim(token), field_name, context));
+  return value;
+}
+
+std::string apo::format_fortran_double(const double value,
+                                       const std::size_t width,
+                                       const int precision) {
+  APOCHARMM_REQUIRE(std::isfinite(value), ApoCharmmErrorCode::InvalidArgument,
+                    "Fortran numeric fields must be finite");
+  APOCHARMM_REQUIRE(
+      (precision >= 1) && (width >= 6) &&
+          (static_cast<std::size_t>(precision) <= width - 6),
+      ApoCharmmErrorCode::InvalidArgument,
+      "Fortran field width must accommodate a positive precision");
+
+  const std::string scientific =
+      apo::cDoubleToFortSciStr(std::abs(value), precision - 1);
+  double roundtrip_value = 0.0;
+  APOCHARMM_REQUIRE(
+      apo::try_parse_fortran_double(roundtrip_value, scientific),
+      ApoCharmmErrorCode::InvalidArgument,
+      "Value is outside the finite Fortran field round-trip range");
+
+  const std::size_t exponent_position = scientific.find('D');
+  APOCHARMM_REQUIRE(exponent_position != std::string::npos,
+                    ApoCharmmErrorCode::Runtime,
+                    "Failed to format Fortran numeric field");
+
+  std::string digits = scientific.substr(0, exponent_position);
+  digits.erase(std::remove(digits.begin(), digits.end(), '.'), digits.end());
+
+  const int exponent =
+      (value == 0.0) ? 0
+                     : apo::parse_int(scientific.substr(exponent_position + 1),
+                                      "exponent", "Fortran numeric field") +
+                           1;
+
+  std::ostringstream output;
+  output.imbue(std::locale::classic());
+
+  if (std::signbit(value))
+    output << '-';
+
+  output << "0." << digits;
+
+  if (std::abs(exponent) < 100)
+    output << 'D';
+
+  output << ((exponent < 0) ? '-' : '+') << std::setfill('0')
+         << std::setw((std::abs(exponent) < 100) ? 2 : 3) << std::abs(exponent);
+
+  std::string field = output.str();
+  APOCHARMM_REQUIRE(field.size() <= width, ApoCharmmErrorCode::InvalidArgument,
+                    "Fortran numeric field exceeds its requested width");
+  field.insert(0, width - field.size(), ' ');
+
+  return field;
+}
+
+void apo::get_nonblank_line(std::string &line, std::size_t &line_number,
+                            std::istream &input,
+                            const std::string_view record_name,
+                            const std::string_view source_name) {
+  do {
+    apo::get_line(line, line_number, input, record_name, source_name);
+  } while (apo::trim(line).empty());
+  return;
+}
+
+void apo::get_expected_line(std::size_t &line_number, std::istream &input,
+                            const std::string_view expected,
+                            const std::string_view source_name) {
+  std::string line;
+  apo::get_nonblank_line(line, line_number, input,
+                         "line \"" + std::string(expected) + "\"", source_name);
+  APOCHARMM_REQUIRE(line == expected, ApoCharmmErrorCode::Runtime,
+                    "Expected line \"" + std::string(expected) + "\" in " +
+                        std::string(source_name) + " but found \"" + line +
+                        "\"");
+  return;
+}
+
+void apo::parse_fixed_width_fortran_doubles(
+    double *values, const std::size_t count, const std::string_view line,
+    const std::size_t offset, const std::size_t width,
+    const std::string_view field_name, const std::string_view context) {
+  APOCHARMM_REQUIRE((values != nullptr) || (count == 0),
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "Fortran field destination must not be null");
+
+  for (std::size_t i = 0; i < count; i++) {
+    values[i] = apo::parse_fixed_width_fortran_double(
+        line, offset + i * width, width, field_name, context);
+  }
+
+  const std::size_t end = offset + count * width;
+  APOCHARMM_REQUIRE((end >= line.size()) || apo::trim(line.substr(end)).empty(),
+                    ApoCharmmErrorCode::Runtime,
+                    "Unexpected data after \"" + std::string(field_name) +
+                        "\" in " + std::string(context));
+
+  return;
+}
+
+void apo::read_fixed_width_fortran_values(std::size_t &line_number,
+                                          std::istream &input, double *values,
+                                          const std::size_t count,
+                                          const std::size_t values_per_record,
+                                          const std::size_t width,
+                                          const std::string_view record_name,
+                                          const std::string_view source_name) {
+  APOCHARMM_REQUIRE(values_per_record > 0, ApoCharmmErrorCode::InvalidArgument,
+                    "Fortran record must hold at least one value");
+
+  for (std::size_t first = 0; first < count; first += values_per_record) {
+    std::string line;
+    apo::get_line(line, line_number, input, record_name, source_name);
+    apo::parse_fixed_width_fortran_doubles(
+        values + first, std::min(values_per_record, count - first), line, 0,
+        width, record_name, source_name);
+  }
+
+  return;
+}
+
+void apo::write_fixed_width_fortran_values(std::ostream &output,
+                                           const double *values,
+                                           const std::size_t count,
+                                           const std::size_t values_per_record,
+                                           const std::size_t width,
+                                           const int precision) {
+  APOCHARMM_REQUIRE(values_per_record > 0, ApoCharmmErrorCode::InvalidArgument,
+                    "Fortran record must hold at least one value");
+  APOCHARMM_REQUIRE(values != nullptr || count == 0,
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "Fortran field source must not be null");
+
+  for (std::size_t i = 0; i < count; i++) {
+    output << apo::format_fortran_double(values[i], width, precision);
+    if ((i + 1) % values_per_record == 0 || i + 1 == count)
+      output << '\n';
+  }
+
+  return;
+}
+
 std::string apo::get_fixed_width_field(const std::string_view line,
                                        const std::size_t offset,
                                        const std::size_t width,
@@ -475,6 +701,16 @@ double apo::parse_fixed_width_double(const std::string_view line,
       apo::get_fixed_width_field(line, offset, width, field_name, context);
 
   return apo::parse_double(field, field_name, context);
+}
+
+double apo::parse_fixed_width_fortran_double(const std::string_view line,
+                                             const std::size_t offset,
+                                             const std::size_t width,
+                                             const std::string_view field_name,
+                                             const std::string_view context) {
+  const std::string field =
+      apo::get_fixed_width_field(line, offset, width, field_name, context);
+  return apo::parse_fortran_double(field, field_name, context);
 }
 
 int apo::parse_fixed_width_int(const std::string_view line,

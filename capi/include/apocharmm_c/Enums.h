@@ -40,18 +40,21 @@ typedef enum apo_pbc {
 } apo_pbc;
 
 /**
- * @brief Selects the C ABI crystal symmetry for Langevin-piston propagation.
+ * @brief Selects the C ABI crystal type owned by a CharmmContext.
  *
- * The values map directly to the native @ref CRYSTAL enum. The piston setter
+ * The values map directly to the native @ref CRYSTAL enum. The context setter
  * accepts `APO_CRYSTAL_TYPE_CUBIC`, `APO_CRYSTAL_TYPE_TETRAGONAL`, and
- * `APO_CRYSTAL_TYPE_ORTHORHOMBIC`. `APO_CRYSTAL_TYPE_NONE` represents the
- * initial unconfigured state and is rejected as a setter input.
+ * `APO_CRYSTAL_TYPE_ORTHORHOMBIC`. `APO_CRYSTAL_TYPE_UNSET` represents the
+ * initial unusable crystal configuration. It does not select an aperiodic
+ * system and is rejected as a setter input. Compatible type changes on the
+ * context are allowed between completed propagation calls; an attached piston
+ * integrator must then be reinitialized before its state is used.
  *
- * @see apo_cuda_langevin_piston_integrator_set_crystal_type
+ * @see apo_charmm_context_set_crystal_type
  */
 typedef enum apo_crystal_type {
-  /** Represents no configured piston degree of freedom. */
-  APO_CRYSTAL_TYPE_NONE = 0,
+  /** Represents an unusable crystal configuration, not an aperiodic system. */
+  APO_CRYSTAL_TYPE_UNSET = 0,
   /** Selects one isotropic X/Y/Z piston degree of freedom. */
   APO_CRYSTAL_TYPE_CUBIC = 1,
   /** Selects coupled X/Y and independent Z piston degrees of freedom. */

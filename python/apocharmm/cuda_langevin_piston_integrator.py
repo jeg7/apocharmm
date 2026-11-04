@@ -71,12 +71,6 @@ def _initialize_prototypes() -> None:
     )
 
     configure_status_function(
-        lib().apo_cuda_langevin_piston_integrator_set_crystal_type,
-        [ctypes.c_void_p, ctypes.c_int],
-        "CudaLangevinPistonIntegrator.setCrystalType(crystal_type)",
-    )
-
-    configure_status_function(
         lib().apo_cuda_langevin_piston_integrator_set_langevin_piston_mass,
         [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t],
         "CudaLangevinPistonIntegrator.setLangevinPistonMass(mass)",
@@ -192,9 +186,21 @@ class CudaLangevinPistonIntegrator(CudaIntegrator):
     """
     @brief Provides pressure-controlled Langevin-piston dynamics.
 
-    Select a supported `CrystalType` before attaching a context. The wrapper
-    owns the concrete piston C handle and inherits common context, propagation,
-    restart, subscriber, and closure operations.
+    Select a supported `CrystalType` on the `CharmmContext`, attach that
+    context, then configure piston masses and friction. The wrapper owns the
+    concrete piston C handle and inherits common context, propagation, restart,
+    subscriber, and closure operations.
+
+    A compatible context crystal change is allowed between completed propagation
+    calls. Then call `initialize()` before using piston state, propagating, or
+    reading/writing a restart, and configure the new phase's custom new-layout
+    masses if needed. Friction and scalar settings are retained;
+    piston/Nose-Hoover dynamic history and phase averages are reset. Until
+    reinitialization succeeds, piston state access raises `ApoCharmmError` with
+    native status `APO_STATUS_NOT_INITIALIZED`; `getCrystalType()` still returns
+    the context's current selection. Reinitialization preserves the
+    completed-step counter and, for an unchanged type, the configured masses and
+    friction, while rebuilding integration history and RNG state.
 
     @anchor python_cuda_langevin_piston_integrator
     @see cuda_integrators
@@ -209,12 +215,12 @@ class CudaLangevinPistonIntegrator(CudaIntegrator):
         @param[in] time_step Value converted to C `double`, interpreted as a
         finite positive time step in picoseconds.
         @throws TypeError If conversion fails.
-        @throws ApoCharmmError With native status
-        `APO_STATUS_INVALID_ARGUMENT`, `APO_STATUS_CUDA_ERROR`, or
-        `APO_STATUS_RUNTIME_ERROR`.
+        @throws ApoCharmmError With native status `APO_STATUS_INVALID_ARGUMENT`,
+        `APO_STATUS_CUDA_ERROR`, or `APO_STATUS_RUNTIME_ERROR`.
         @throws RuntimeError If a successful native call produces a `NULL`
         concrete or base-view handle.
-        @post The crystal type remains `CrystalType.NONE` until explicitly set.
+        @post The crystal getter returns `CrystalType.UNSET` until a configured
+        context is attached.
         """
         _initialize_prototypes()
         super().__init__()
@@ -399,36 +405,6 @@ class CudaLangevinPistonIntegrator(CudaIntegrator):
 
         return
 
-    def setCrystalType(self, crystal_type: CrystalType | int) -> None:
-        """
-        @brief Selects crystal symmetry and reallocates piston state.
-
-        @param[in] crystal_type `CrystalType.CUBIC`,
-        `CrystalType.TETRAGONAL`, `CrystalType.ORTHORHOMBIC`, or another object
-        accepted by `int()` whose resulting value names one of those enums.
-        @return `None`.
-        @throws TypeError If `int()` or `ctypes.c_int` rejects the value.
-        @throws ValueError If integer conversion fails or the native enum value
-        is unsupported, including `CrystalType.NONE`.
-        @throws OverflowError If the value cannot be represented by
-        `ctypes.c_int`.
-        @throws RuntimeError If the wrapper is closed.
-        @throws ApoCharmmError With native status
-        `APO_STATUS_INVALID_ARGUMENT`, `APO_STATUS_CUDA_ERROR`, or
-        `APO_STATUS_RUNTIME_ERROR`.
-        @warning Reconfiguration resets crystal-sized state and can invalidate
-        native aliases.
-        """
-        _initialize_prototypes()
-
-        c_crystal_type: ctypes.c_int = ctypes.c_int(int(crystal_type))
-
-        lib().apo_cuda_langevin_piston_integrator_set_crystal_type(
-            self.handle, c_crystal_type
-        )
-
-        return
-
     def setLangevinPistonMass(self, masses: Sequence[float]) -> None:
         """
         @brief Sets crystal-sized Langevin-piston masses.
@@ -444,10 +420,10 @@ class CudaLangevinPistonIntegrator(CudaIntegrator):
         converted to `float`.
         @throws ValueError If `float()` rejects a value.
         @throws RuntimeError If the wrapper is closed.
-        @throws ApoCharmmError With native status
-        `APO_STATUS_NOT_INITIALIZED` before crystal selection,
-        `APO_STATUS_INVALID_ARGUMENT` for length or value validation,
-        `APO_STATUS_CUDA_ERROR` for device update failure, or
+        @throws ApoCharmmError With native status `APO_STATUS_NOT_INITIALIZED`
+        before context attachment or while a context crystal change requires
+        reinitialization, `APO_STATUS_INVALID_ARGUMENT` for length or value
+        validation, `APO_STATUS_CUDA_ERROR` for device update failure, or
         `APO_STATUS_RUNTIME_ERROR` for another native failure.
         """
         _initialize_prototypes()
@@ -497,9 +473,9 @@ class CudaLangevinPistonIntegrator(CudaIntegrator):
         @return `None`.
         @throws TypeError If conversion fails.
         @throws RuntimeError If the wrapper is closed.
-        @throws ApoCharmmError With native status
-        `APO_STATUS_NOT_INITIALIZED` before crystal selection,
-        `APO_STATUS_INVALID_ARGUMENT` for an invalid value,
+        @throws ApoCharmmError With native status `APO_STATUS_NOT_INITIALIZED`
+        before context attachment or while a context crystal change requires
+        reinitialization, `APO_STATUS_INVALID_ARGUMENT` for an invalid value,
         `APO_STATUS_CUDA_ERROR` for factor transfer failure, or
         `APO_STATUS_RUNTIME_ERROR` for another native failure.
         """
@@ -621,10 +597,11 @@ class CudaLangevinPistonIntegrator(CudaIntegrator):
 
     def getCrystalType(self) -> CrystalType:
         """
-        @brief Returns the selected crystal type.
+        @brief Returns the attached context's crystal type.
 
-        @return A new `CrystalType`, including `CrystalType.NONE` before
-        configuration.
+        @return The attached context's `CrystalType`, or `CrystalType.UNSET`
+        before context attachment. This integrator has no separate selection;
+        the current value is readable even while piston state is stale.
         @throws RuntimeError If the wrapper is closed.
         @throws ApoCharmmError If native validation or enum conversion fails.
         @throws ValueError If the returned C integer is not a Python
@@ -643,6 +620,9 @@ class CudaLangevinPistonIntegrator(CudaIntegrator):
     def getLangevinPistonMass(self) -> list[float]:
         """
         @brief Returns the crystal-sized Langevin-piston masses.
+
+        A context crystal change makes this state unavailable until
+        `initialize()` succeeds (`APO_STATUS_NOT_INITIALIZED`).
 
         @return A newly allocated list containing zero, one, two, or three
         Python `float` values in active crystal-degree-of-freedom order.
@@ -796,10 +776,10 @@ class CudaLangevinPistonIntegrator(CudaIntegrator):
         kinetic-energy element 1 when old-temperature mode is enabled and
         element 0 otherwise.
         @throws RuntimeError If the wrapper is closed.
-        @throws ApoCharmmError With native status
-        `APO_STATUS_NOT_INITIALIZED` before context attachment,
-        `APO_STATUS_CUDA_ERROR` for transfer failure, or another documented
-        native status.
+        @throws ApoCharmmError With native status `APO_STATUS_NOT_INITIALIZED`
+        before context attachment or while a context crystal change requires
+        reinitialization, `APO_STATUS_CUDA_ERROR` for transfer failure, or
+        another documented native status.
         """
         _initialize_prototypes()
 

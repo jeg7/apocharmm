@@ -11,6 +11,7 @@
 #ifndef __APOCHARMM_C_DETAIL_ENUM_CONVERSION_H__
 #define __APOCHARMM_C_DETAIL_ENUM_CONVERSION_H__
 
+#include "Crystal.h"
 #include "PBC.h"
 #include "apocharmm_c/Enums.h"
 #include "apocharmm_c/Status.h"
@@ -65,8 +66,8 @@ inline apo_status to_crystal_type(CRYSTAL *out,
       require_pointer<CRYSTAL>(out, function_name, "out"));
 
   switch (crystal_type) {
-  case APO_CRYSTAL_TYPE_NONE:
-    *out = CRYSTAL::NONE;
+  case APO_CRYSTAL_TYPE_UNSET:
+    *out = CRYSTAL::UNSET;
     return APO_STATUS_OK;
   case APO_CRYSTAL_TYPE_CUBIC:
     *out = CRYSTAL::CUBIC;
@@ -89,8 +90,8 @@ inline apo_status from_crystal_type(apo_crystal_type *out,
       require_pointer<apo_crystal_type>(out, function_name, "out"));
 
   switch (crystal_type) {
-  case CRYSTAL::NONE:
-    *out = APO_CRYSTAL_TYPE_NONE;
+  case CRYSTAL::UNSET:
+    *out = APO_CRYSTAL_TYPE_UNSET;
     return APO_STATUS_OK;
   case CRYSTAL::CUBIC:
     *out = APO_CRYSTAL_TYPE_CUBIC;

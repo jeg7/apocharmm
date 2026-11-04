@@ -22,8 +22,8 @@ RANDOM_SEED: int = 314159
 TEMPERATURE: float = 300.0
 TIME_STEP: float = 0.001
 THERMOSTAT_FRICTION: float = 0.0
-REPORT_FREQUENCY: int = 1
-NUM_STEPS: int = 2
+REPORT_FREQUENCY: int = 3
+NUM_STEPS: int = 6
 TOLERANCE: float = 1.0e-6
 
 
@@ -332,7 +332,10 @@ def check_dcd_output(dcd_path: Path) -> None:
     dcd = apo.DcdSubscriber(dcd_path, REPORT_FREQUENCY)
     integrator.subscribe(dcd)
 
-    integrator.propagate(NUM_STEPS)
+    # Two calls form one CHARMM-style run: frames at steps 3 and 6, not at the
+    # third step of each call, and NSTEP covers the whole run.
+    integrator.propagate(1)
+    integrator.propagate(NUM_STEPS - 1)
     apo_test.assert_finite_temperature("post-DCD propagation", ctx.computeTemperature())
 
     final_coordinates_charges: list[list[float]] = ctx.getCoordinatesCharges()
@@ -345,19 +348,23 @@ def check_dcd_output(dcd_path: Path) -> None:
     dcd_file = read_dcd_file(dcd_path)
 
     apo_test.assert_equal("DCD CORD marker", dcd_file.cord, 1146244931)
-    apo_test.assert_equal("DCD num frames", dcd_file.num_frames, NUM_STEPS)
-    apo_test.assert_equal("DCD start", dcd_file.start, 0)
+    apo_test.assert_equal(
+        "DCD num frames", dcd_file.num_frames, NUM_STEPS // REPORT_FREQUENCY
+    )
+    apo_test.assert_equal("DCD start", dcd_file.start, REPORT_FREQUENCY)
     apo_test.assert_equal(
         "DCD report frequency", dcd_file.report_frequency, REPORT_FREQUENCY
     )
-    apo_test.assert_equal(
-        "DCD num steps", dcd_file.num_steps, NUM_STEPS * REPORT_FREQUENCY
+    apo_test.assert_equal("DCD num steps", dcd_file.num_steps, NUM_STEPS)
+    apo_test.assert_close(
+        "DCD time step", dcd_file.time_step, TIME_STEP / 0.0488882129, TOLERANCE
     )
-    apo_test.assert_close("DCD time step", dcd_file.time_step, TIME_STEP, TOLERANCE)
     apo_test.assert_equal("DCD has xtal data", dcd_file.has_xtal_data, 1)
-    apo_test.assert_equal("DCD version", dcd_file.version, 49)
+    apo_test.assert_equal("DCD version", dcd_file.version, 52)
     apo_test.assert_equal("DCD num atoms", dcd_file.num_atoms, 2)
-    apo_test.assert_equal("DCD parsed frame count", len(dcd_file.frames), NUM_STEPS)
+    apo_test.assert_equal(
+        "DCD parsed frame count", len(dcd_file.frames), NUM_STEPS // REPORT_FREQUENCY
+    )
 
     last_frame: DcdFrame = dcd_file.frames[-1]
 

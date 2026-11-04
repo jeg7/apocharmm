@@ -135,7 +135,9 @@ void CudaVelocityVerletIntegrator::propagateOneStepImpl(void) {
   myccvm.transferFromDevice();
 
   if (m_DebugPrintFrequency > 0 &&
-      m_CurrentPropagatedStep % m_DebugPrintFrequency == 0) {
+      m_TotNumSteps %
+              static_cast<unsigned long long int>(m_DebugPrintFrequency) ==
+          0ULL) {
     auto peContainer = m_Context->getPotentialEnergy();
     peContainer.transferFromDevice();
     auto pe = peContainer[0];

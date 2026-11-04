@@ -394,6 +394,35 @@ APOCHARMM_C_API apo_status apo_charmm_context_set_periodic_boundary_condition(
     apo_charmm_context *context, const apo_pbc pbc);
 
 /**
+ * @brief Selects the context's authoritative crystal type.
+ *
+ * @param[in] context Borrowed non-NULL context handle.
+ * @param[in] crystal_type `APO_CRYSTAL_TYPE_CUBIC`,
+ * `APO_CRYSTAL_TYPE_TETRAGONAL`, or `APO_CRYSTAL_TYPE_ORTHORHOMBIC`.
+ * `APO_CRYSTAL_TYPE_UNSET` is an invalid sentinel and does not select an
+ * aperiodic system.
+ *
+ * @retval APO_STATUS_OK The requested compatible type was recorded, including
+ * an unchanged selection. The type is never inferred from box dimensions.
+ * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is NULL,
+ * `crystal_type` is `APO_CRYSTAL_TYPE_UNSET` or not a declared value, or an
+ * existing box is incompatible with the requested type.
+ *
+ * @note Configure this before attaching a Langevin-piston integrator or
+ * reading/writing a restart file. A compatible type change is allowed between
+ * completed propagation calls. After a change, reinitialize each attached
+ * piston integrator with @ref apo_cuda_integrator_initialize before accessing
+ * piston state, propagating, or reading/writing a restart file. Then configure
+ * the new phase's custom piston masses if needed. Friction is retained and only
+ * needs setting when deliberately changed. Box lengths remain adjustable while
+ * respecting the selected symmetry. Serialize these operations with
+ * propagation.
+ * @post A failed validation leaves the stored crystal type unchanged.
+ */
+APOCHARMM_C_API apo_status apo_charmm_context_set_crystal_type(
+    apo_charmm_context *context, const apo_crystal_type crystal_type);
+
+/**
  * @brief Sets orthorhombic box dimensions.
  *
  * @param[in,out] context Borrowed non-NULL context handle.
@@ -403,8 +432,8 @@ APOCHARMM_C_API apo_status apo_charmm_context_set_periodic_boundary_condition(
  *
  * @retval APO_STATUS_OK The dimensions were copied and propagated.
  * @retval APO_STATUS_INVALID_ARGUMENT A handle or buffer is NULL, the length
- * is not three, a dimension is not positive, an attached manager rejects a
- * non-finite dimension, or the cutoff exceeds half the X length.
+ * is not three, a dimension is non-finite or not positive, the lengths do not
+ * match the configured crystal type, or the cutoff exceeds half the X length.
  * @retval APO_STATUS_CUDA_ERROR Triggered initialization, image centering,
  * synchronization, or neighbor-list rebuilding failed.
  */
@@ -657,6 +686,24 @@ APOCHARMM_C_API apo_status apo_charmm_context_get_velocity_mass(
  */
 APOCHARMM_C_API apo_status apo_charmm_context_get_periodic_boundary_condition(
     apo_pbc *pbc, const apo_charmm_context *context);
+
+/**
+ * @brief Returns the context's authoritative crystal type.
+ *
+ * @param[in] crystal_type Non-NULL output pointer receiving the mapped
+ * `apo_crystal_type` value.
+ * @param[in] context Borrowed non-NULL context handle.
+ *
+ * @retval APO_STATUS_OK `*crystal_type` was written ,including
+ * `APO_CRYSTAL_UNSET` before explicit configuration.
+ * @retval APO_STATUS_INVALID_ARGUMENT An output pointer, handle, or native
+ * object is NULL, or the native crystal value is not representable by
+ * `apo_crystal_type`.
+ *
+ * @post On failure, `*crystal_type` is unchanged.
+ */
+APOCHARMM_C_API apo_status apo_charmm_context_get_crystal_type(
+    apo_crystal_type *crystal_type, const apo_charmm_context *context);
 
 /**
  * @brief Copies the three box dimensions.

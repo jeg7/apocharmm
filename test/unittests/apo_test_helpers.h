@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -50,6 +51,19 @@ inline void WriteTextFile(const std::filesystem::path &filePath,
   REQUIRE(fout.good());
 
   return;
+}
+
+[[nodiscard]] inline std::string
+ReadTextFile(const std::filesystem::path &filePath) {
+  std::ifstream fin(filePath);
+  REQUIRE(fin.good());
+
+  const std::string contents((std::istreambuf_iterator<char>(fin)),
+                             std::istreambuf_iterator<char>());
+
+  REQUIRE(!fin.bad());
+
+  return contents;
 }
 
 inline void RemoveIfExists(const std::filesystem::path &filePath) {
@@ -238,6 +252,45 @@ inline void CheckVectorsEqual(const std::string &label,
     const double4 expectedValue = make_double4(
         static_cast<double>(expected[i].x), static_cast<double>(expected[i].y),
         static_cast<double>(expected[i].z), static_cast<double>(expected[i].w));
+    const double4 difference =
+        make_double4(std::abs(observedValue.x - expectedValue.x),
+                     std::abs(observedValue.y - expectedValue.y),
+                     std::abs(observedValue.z - expectedValue.z),
+                     std::abs(observedValue.w - expectedValue.w));
+
+    INFO("index:     " << i);
+    INFO("observed:  {" << std::setprecision(17) << observedValue.x << ", "
+                        << std::setprecision(17) << observedValue.y << ", "
+                        << std::setprecision(17) << observedValue.z << ", "
+                        << std::setprecision(17) << observedValue.w << "}");
+    INFO("expected:  {" << std::setprecision(17) << expectedValue.x << ", "
+                        << std::setprecision(17) << expectedValue.y << ", "
+                        << std::setprecision(17) << expectedValue.z << ", "
+                        << std::setprecision(17) << expectedValue.w << "}");
+    INFO("abs diff:  {" << std::setprecision(17) << difference.x << ", "
+                        << std::setprecision(17) << difference.y << ", "
+                        << std::setprecision(17) << difference.z << ", "
+                        << std::setprecision(17) << difference.w << "}");
+
+    CHECK(observedValue.x == expectedValue.x);
+    CHECK(observedValue.y == expectedValue.y);
+    CHECK(observedValue.z == expectedValue.z);
+    CHECK(observedValue.w == expectedValue.w);
+  }
+
+  return;
+}
+
+template <>
+inline void CheckVectorsEqual(const std::string &label,
+                              const std::vector<double4> &observed,
+                              const std::vector<double4> &expected) {
+  INFO("vector label: " << label);
+  REQUIRE(observed.size() == expected.size());
+
+  for (std::size_t i = 0; i < expected.size(); i++) {
+    const double4 observedValue = observed[i];
+    const double4 expectedValue = expected[i];
     const double4 difference =
         make_double4(std::abs(observedValue.x - expectedValue.x),
                      std::abs(observedValue.y - expectedValue.y),

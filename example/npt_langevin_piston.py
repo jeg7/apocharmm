@@ -34,6 +34,7 @@ def main(argc, argv):
 
     # Setup the CharmmContext
     ctx = apo.CharmmContext(fm)
+    ctx.setCrystalType(apo.CrystalType.CUBIC)
     ctx.setCoordinates(crd)
     ctx.setRandomSeed(random_seed)
     ctx.useHolonomicConstraints(use_holonomic_constraints)
@@ -41,10 +42,9 @@ def main(argc, argv):
     # NPT Heating & Equilibration
     integrator = apo.CudaLangevinPistonIntegrator(time_step)
     integrator.useNoseHooverThermostat(use_nose_hoover_thermostat)
-    integrator.setCrystalType(apo.CrystalType.CUBIC)
     integrator.setLangevinPistonFrictionSeed(random_seed)
-    integrator.setLangevinPistonFriction(20.0)
     integrator.setCharmmContext(ctx)
+    integrator.setLangevinPistonFriction(20.0)
 
     num_heat_steps = 50000
     ihtfrq = 100
@@ -108,7 +108,6 @@ def main(argc, argv):
     # Setup new integrator for running at higher pressure
     integrator = apo.CudaLangevinPistonIntegrator(0.002)
     integrator.useNoseHooverThermostat(use_nose_hoover_thermostat)
-    integrator.setCrystalType(apo.CrystalType.CUBIC)
     integrator.setLangevinPistonFrictionSeed(random_seed)
     integrator.setReferencePressure([[7.0, 0.0, 0.0], [0.0, 7.0, 0.0], [0.0, 0.0, 7.0]])
     integrator.setCharmmContext(ctx)

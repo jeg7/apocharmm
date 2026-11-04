@@ -109,8 +109,9 @@ zero. The base implementation stores the value internally in AKMA time by
 dividing by `0.0488882129`; [getTimeStep()](@ref CudaIntegrator::getTimeStep)
 converts it back to picoseconds.
 
-Configure the time step and concrete-integrator parameters before attaching the
-context. [setCharmmContext()](@ref CudaIntegrator::setCharmmContext) may be
+Configure the time step and parameters that do not require attached state before
+attaching the context. Set crystal-dependent piston masses and friction after
+attachment. [setCharmmContext()](@ref CudaIntegrator::setCharmmContext) may be
 called only once. It retains the context, resizes the base per-atom work arrays,
 constructs any configured holonomic-constraint helper, and immediately invokes
 the concrete initialization hook. A failure clears the retained context and
@@ -125,17 +126,54 @@ non-positive number of steps and checks context and force-manager readiness
 before changing the trajectory.
 
 For [CudaLangevinPistonIntegrator](@ref CudaLangevinPistonIntegrator), call
-[setCrystalType()](@ref CudaLangevinPistonIntegrator::setCrystalType) before
-attaching the context. The supported layouts are:
+[CharmmContext::setCrystalType()](@ref CharmmContext::setCrystalType) before
+attaching that context. The context owns the crystal selection; the piston
+integrator has no crystal setter or independent crystal value. The supported
+layouts are:
 
 - `CRYSTAL::CUBIC`: one isotropic box degree of freedom.
 - `CRYSTAL::TETRAGONAL`: one shared X/Y degree of freedom and one Z degree of
   freedom.
 - `CRYSTAL::ORTHORHOMBIC`: independent X, Y, and Z degrees of freedom.
 
-Setting the crystal type allocates and resets all crystal-dependent piston
-arrays. A custom Langevin-piston mass must contain exactly one, two, or three
-values according to that selected layout.
+Context attachment allocates the crystal-dependent piston arrays and computes
+default piston masses. Set custom Langevin-piston masses and friction after
+attachment. A custom mass vector must contain exactly one, two, or three values
+according to the context's layout. Reinitializing the same crystal preserves
+these configured masses and friction. Both initialization and each piston step
+validate that the context's finite positive box matches its declared symmetry;
+equal edge lengths do not relabel an explicitly orthorhombic context.
+
+Change a context's crystal type only between completed propagation calls.
+For example, after cubic equilibration, select `CRYSTAL::ORTHORHOMBIC` on the
+same context, call `integrator.initialize()`, then supply any custom three-axis
+piston masses before starting the next phase. Reinitialization is available as
+native `CudaIntegrator::initialize()`, C `apo_cuda_integrator_initialize()`, and
+Python `CudaIntegrator.initialize()`. Box dimensions must satisfy the
+new type; equal lengths are valid orthorhombic dimensions. Calls involving one
+context/integrator must be serialized, including subscriber callbacks.
+
+A type change makes the attached piston's derived layout stale. Piston state
+getters/setters, inherited displacement-history access, restart loading, and
+propagation reject the stale layout with `NotInitialized` before using it.
+`getCrystalType()` continues to report the context's current type. Call
+`initialize()` to rebuild the layout; do not reuse previously borrowed native
+container aliases across the transition. An initialization failure also blocks
+state access until initialization succeeds.
+
+After a type change, call `initialize()` on the attached piston integrator,
+then set custom masses for the new one-, two-, or three-axis layout if the
+defaults are not wanted; friction only needs setting again when the next phase
+needs a new coefficient. Particle velocities and the completed-step counter
+survive the transition, but this begins a newly initialized phase, not an exact
+continuation of the previous piston history, and restart import/export must
+wait until reinitialization has completed. The exact list of state that a
+layout change resets and retains is documented on
+[initializeImpl()](@ref CudaLangevinPistonIntegrator::initializeImpl).
+
+A successful restart import also clears the run origin of every attached
+subscriber, so the next `propagate()` begins a new CHARMM-style run at the
+imported step.
 
 Attaching a context initializes the concrete integrator automatically.
 [initialize()](@ref CudaIntegrator::initialize) repeats concrete
@@ -322,23 +360,28 @@ storage.
 
 [propagate()](@ref CudaIntegrator::propagate) resets the context neighbor list
 before the loop, sets the per-call neighbor-list counter to zero, stores the
-requested step count, and adds the complete request to the total-step counter
-before executing the first step. A later failure therefore leaves the total
-requested-step count greater than the number of completed steps.
+requested length, fixes the run origin of any subscriber that does not have one
+yet, and announces the starting step and requested length to each subscriber.
+The cumulative step count advances only after a concrete step returns
+successfully. A failing step can still have partly modified the state.
 
-The current propagated-step counter is incremented after each successful
-concrete step and wraps from `INT_MAX` to zero. Calling
-[propagateOneStep()](@ref CudaIntegrator::propagateOneStep) directly does not
-increment these counters, run scheduled subscribers, reset the neighbor list,
-or perform the periodic NaN check.
+[getCurrentPropagatedStep()](@ref CudaIntegrator::getCurrentPropagatedStep)
+derives its compatibility value from the cumulative count modulo `INT_MAX + 1`;
+it does not maintain a separate clock. Internal center-of-mass and debug
+schedules use the full count and do not restart at that wrap boundary. Calling
+[propagateOneStep()](@ref CudaIntegrator::propagateOneStep) directly remains
+uncounted and does not announce a run, invoke scheduled subscribers, reset the
+neighbor list, or perform the periodic NaN check.
 
 Subscriber reporting intervals are copied into a parallel scheduling array at
 subscription time. Changing a subscriber's own reporting frequency afterward
-does not change the cached schedule. Each call to `propagate()` numbers its
-local subscriber schedule from one.
+does not change the cached schedule. A subscriber is updated when the number of
+steps completed since its run origin is divisible by its interval, which is
+CHARMM's `MOD(ISTEP,NSAVC)` test; successive `propagate()` calls continue the
+same run rather than restarting the count at one.
 
 The default nonbonded-list update interval is 20 steps and the default
-center-of-mass-removal interval is 1000 steps. Because the current-step counter
+center-of-mass-removal interval is 1000 steps. Because the cumulative counter
 starts at zero, each concrete integrator performs its center-of-mass operation
 during the first propagated step. These operations can synchronize the
 integrator stream and transfer velocity or displacement storage between device
@@ -359,8 +402,8 @@ predictor-corrector iteration count.
 
 Changing a Langevin thermostat seed or sequence position reinitializes its
 per-atom RNG states when a context is attached. Changing a piston seed or
-sequence position reinitializes its RNG states only after a crystal type has
-established the piston degree-of-freedom count.
+sequence position reinitializes its RNG states only after context attachment
+has established the piston degree-of-freedom count.
 
 Mutable native container accessors bypass shape, coherence, and initialization
 invariants. Resizing or replacing kinetic-energy, temperature, pressure,
@@ -415,19 +458,13 @@ backed by private handle structs under
 
 The native lifecycle is:
 
-```text
-construct concrete integrator
-        |
-configure time step and concrete parameters
-        |
-for piston: choose crystal type
-        |
-setCharmmContext()
-        |
-base allocates per-atom state and calls initializeImpl()
-        |
-propagate(), propagateOneStep(), or initializeFromRestartFile()
-```
+1. Construct the context and concrete integrator.
+2. Configure the time step and parameters that do not require piston storage.
+3. For a piston, select the crystal type on the context.
+4. Call `setCharmmContext()`; the base and concrete initialization allocate the
+   required state.
+5. For a piston, set any custom piston masses and friction.
+6. Propagate or restore a restart after validating its context compatibility.
 
 A concrete extension derives from [CudaIntegrator](@ref CudaIntegrator) and
 implements `initializeImpl()`, `initializeFromRestartFileImpl()`, and

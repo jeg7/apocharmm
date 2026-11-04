@@ -39,10 +39,20 @@ public:
 
   int getPropagateOneStepCount(void) const { return m_PropagateOneStepCount; }
 
+  void setCompletedStepForTest(const unsigned long long int step) {
+    m_TotNumSteps = step;
+    return;
+  }
+
   void checkForNanEnergyForTest(void) {
     this->checkForNanEnergy();
     return;
   }
+
+public:
+  int failOnAttempt = 0;
+  unsigned long long int restartCompletedSteps = 0;
+  std::vector<unsigned long long int> completedBeforeStep;
 
 protected:
   void initializeImpl(void) override {
@@ -50,7 +60,19 @@ protected:
     return;
   }
 
+  void initializeFromRestartFileImpl(
+      const std::filesystem::path &rstFilePath) override {
+    static_cast<void>(rstFilePath);
+    m_TotNumSteps = restartCompletedSteps;
+    return;
+  }
+
   void propagateOneStepImpl(void) override {
+    completedBeforeStep.push_back(this->getTotNumSteps());
+    if (failOnAttempt == m_PropagateOneStepCount + 1) {
+      APOCHARMM_THROW(ApoCharmmErrorCode::Runtime,
+                      "Deliberate propagation failure");
+    }
     m_PropagateOneStepCount++;
     return;
   }
@@ -92,12 +114,33 @@ public:
     this->setReportFrequency(reportFrequency);
   }
 
+  void onPropagationStart(const unsigned long long int startStep,
+                          const int numSteps) override {
+    startSteps.push_back(startStep);
+    requestedLengths.push_back(numSteps);
+    if (failOnStart) {
+      APOCHARMM_THROW(ApoCharmmErrorCode::Runtime,
+                      "Deliberate subscriber start failure");
+    }
+    return;
+  }
+
   void update(void) override {
     updateCount++;
+    completedSteps.push_back(m_Integrator->getTotNumSteps());
+    if (failOnUpdate) {
+      APOCHARMM_THROW(ApoCharmmErrorCode::Runtime,
+                      "Deliberate subscriber update failure");
+    }
     return;
   }
 
   int updateCount = 0;
+  bool failOnStart = false;
+  bool failOnUpdate = false;
+  std::vector<unsigned long long int> startSteps;
+  std::vector<unsigned long long int> completedSteps;
+  std::vector<int> requestedLengths;
 };
 
 } // namespace
@@ -375,6 +418,163 @@ TEST_CASE("CudaIntegratorBasePropagationValidation") {
     CHECK(integrator.getTotNumSteps() == 3ULL);
     CHECK(integrator.getCurrentPropagatedStep() == 3);
     CHECK(integrator.getPropagateOneStepCount() == 3);
+    CHECK((integrator.completedBeforeStep ==
+           std::vector<unsigned long long int>{0ULL, 1ULL, 2ULL}));
+
+    CHECK_NOTHROW(integrator.propagate(2));
+    CHECK(integrator.getTotNumSteps() == 5ULL);
+    CHECK(integrator.getNumSteps() == 2);
+  }
+
+  SECTION("FailurePreservesOnlyCompletedSteps") {
+    auto context = MakeInitializedContext();
+    CudaIntegratorProbe integrator(TIME_STEP);
+    integrator.setCharmmContext(context);
+    integrator.failOnAttempt = 3;
+
+    apo_test::CheckApoCharmmError([&]() { integrator.propagate(5); },
+                                  ApoCharmmErrorCode::Runtime,
+                                  "Deliberate propagation failure");
+    CHECK(integrator.getTotNumSteps() == 2ULL);
+    CHECK(integrator.getCurrentPropagatedStep() == 2);
+    CHECK(integrator.getNumSteps() == 5);
+
+    integrator.failOnAttempt = 0;
+    CHECK_NOTHROW(integrator.propagate(1));
+    CHECK(integrator.getTotNumSteps() == 3ULL);
+    CHECK(integrator.getNumSteps() == 1);
+  }
+
+  SECTION("WrappedGetterDerivesFromFullCount") {
+    auto context = MakeInitializedContext();
+    CudaIntegratorProbe integrator(TIME_STEP);
+    integrator.setCharmmContext(context);
+    const auto maximum =
+        static_cast<unsigned long long int>(std::numeric_limits<int>::max());
+    integrator.setCompletedStepForTest(maximum - 1ULL);
+    CHECK(integrator.getCurrentPropagatedStep() ==
+          std::numeric_limits<int>::max() - 1);
+
+    integrator.propagate(1);
+    CHECK(integrator.getTotNumSteps() == maximum);
+    CHECK(integrator.getCurrentPropagatedStep() ==
+          std::numeric_limits<int>::max());
+    integrator.propagate(1);
+    CHECK(integrator.getTotNumSteps() == maximum + 1ULL);
+    CHECK(integrator.getCurrentPropagatedStep() == 0);
+    integrator.propagate(1);
+    CHECK(integrator.getTotNumSteps() == maximum + 2ULL);
+    CHECK(integrator.getCurrentPropagatedStep() == 1);
+  }
+
+  SECTION("RejectsCompletedCounterOverflowBeforeSteps") {
+    auto context = MakeInitializedContext();
+    CudaIntegratorProbe integrator(TIME_STEP);
+    integrator.setCharmmContext(context);
+    const auto maximum = std::numeric_limits<unsigned long long int>::max();
+    integrator.setCompletedStepForTest(maximum);
+    apo_test::CheckApoCharmmError(
+        [&]() { integrator.propagate(1); }, ApoCharmmErrorCode::InvalidArgument,
+        "Requested propagation exceeds the completed-step counter range");
+    CHECK(integrator.getTotNumSteps() == maximum);
+    CHECK(integrator.getPropagateOneStepCount() == 0);
+    CHECK(integrator.getNumSteps() == 0);
+  }
+
+  SECTION("SubscribersObserveRunAnnouncementsAndCompletedSteps") {
+    auto context = MakeInitializedContext();
+    context->getPotentialEnergy().setToValue(0.0);
+    auto integrator = std::make_shared<CudaIntegratorProbe>(TIME_STEP);
+    integrator->setCharmmContext(context);
+    auto subscriber = std::make_shared<CountingSubscriber>(2);
+    integrator->subscribe(subscriber);
+
+    integrator->propagate(5);
+    CHECK(
+        (subscriber->startSteps == std::vector<unsigned long long int>{0ULL}));
+    CHECK((subscriber->requestedLengths == std::vector<int>{5}));
+    CHECK((subscriber->completedSteps ==
+           std::vector<unsigned long long int>{2ULL, 4ULL}));
+
+    // CHARMM counts ISTEP from the start of the run, not from each call: the
+    // frequency-2 subscriber reports at step 6 although this call has one step.
+    integrator->propagate(1);
+    CHECK((subscriber->startSteps ==
+           std::vector<unsigned long long int>{0ULL, 5ULL}));
+    CHECK((subscriber->requestedLengths == std::vector<int>{5, 1}));
+    CHECK((subscriber->completedSteps ==
+           std::vector<unsigned long long int>{2ULL, 4ULL, 6ULL}));
+    CHECK(integrator->getTotNumSteps() == 6ULL);
+    CHECK(subscriber->getStartStep().value() == 0ULL);
+
+    // A subscriber added later begins its own run at the step count it first
+    // observes, as a restarted CHARMM run would.
+    auto lateSubscriber = std::make_shared<CountingSubscriber>(4);
+    integrator->subscribe(lateSubscriber);
+    CHECK_FALSE(lateSubscriber->getStartStep().has_value());
+    integrator->propagate(3);
+    CHECK(lateSubscriber->getStartStep().value() == 6ULL);
+    CHECK(lateSubscriber->completedSteps.empty());
+    integrator->propagate(1);
+    CHECK((lateSubscriber->completedSteps ==
+           std::vector<unsigned long long int>{10ULL}));
+    CHECK((subscriber->completedSteps ==
+           std::vector<unsigned long long int>{2ULL, 4ULL, 6ULL, 8ULL, 10ULL}));
+  }
+
+  SECTION("SubscriberStartFailureDoesNotAdvanceClock") {
+    auto context = MakeInitializedContext();
+    auto integrator = std::make_shared<CudaIntegratorProbe>(TIME_STEP);
+    integrator->setCharmmContext(context);
+    auto subscriber = std::make_shared<CountingSubscriber>(1);
+    integrator->subscribe(subscriber);
+    subscriber->failOnStart = true;
+    apo_test::CheckApoCharmmError([&]() { integrator->propagate(3); },
+                                  ApoCharmmErrorCode::Runtime,
+                                  "Deliberate subscriber start failure");
+    CHECK(integrator->getTotNumSteps() == 0ULL);
+    CHECK(integrator->getNumSteps() == 3);
+    CHECK(integrator->getPropagateOneStepCount() == 0);
+  }
+
+  SECTION("SubscriberUpdateFailureKeepsCompletedStep") {
+    auto context = MakeInitializedContext();
+    context->getPotentialEnergy().setToValue(0.0);
+    auto integrator = std::make_shared<CudaIntegratorProbe>(TIME_STEP);
+    integrator->setCharmmContext(context);
+    auto subscriber = std::make_shared<CountingSubscriber>(1);
+    integrator->subscribe(subscriber);
+    subscriber->failOnUpdate = true;
+    apo_test::CheckApoCharmmError([&]() { integrator->propagate(3); },
+                                  ApoCharmmErrorCode::Runtime,
+                                  "Deliberate subscriber update failure");
+    CHECK(integrator->getTotNumSteps() == 1ULL);
+    CHECK((subscriber->completedSteps ==
+           std::vector<unsigned long long int>{1ULL}));
+  }
+
+  SECTION("RestartImportStartsANewRunForAttachedSubscribers") {
+    auto context = MakeInitializedContext();
+    context->getPotentialEnergy().setToValue(0.0);
+    auto integrator = std::make_shared<CudaIntegratorProbe>(TIME_STEP);
+    integrator->setCharmmContext(context);
+    auto subscriber = std::make_shared<CountingSubscriber>(4);
+    integrator->subscribe(subscriber);
+    integrator->propagate(3);
+    CHECK(subscriber->getStartStep().value() == 0ULL);
+    CHECK(subscriber->completedSteps.empty());
+
+    // Resuming at NPRIV=1005 begins a new CHARMM-style run: the next report is
+    // due at step 1009, not at the lifetime multiple 1008.
+    integrator->restartCompletedSteps = 1005ULL;
+    integrator->initializeFromRestartFile("unused.rst");
+    CHECK_FALSE(subscriber->getStartStep().has_value());
+    integrator->propagate(4);
+    CHECK(subscriber->getStartStep().value() == 1005ULL);
+    CHECK((subscriber->startSteps ==
+           std::vector<unsigned long long int>{0ULL, 1005ULL}));
+    CHECK((subscriber->completedSteps ==
+           std::vector<unsigned long long int>{1009ULL}));
   }
 
   SECTION("DirectOneStepUsesValidatedBoundary") {
@@ -384,6 +584,9 @@ TEST_CASE("CudaIntegratorBasePropagationValidation") {
 
     CHECK_NOTHROW(integrator.propagateOneStep());
     CHECK(integrator.getPropagateOneStepCount() == 1);
+    CHECK(integrator.getTotNumSteps() == 0ULL);
+    CHECK(integrator.getCurrentPropagatedStep() == 0);
+    CHECK(integrator.getNumSteps() == 0);
   }
 }
 

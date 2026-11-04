@@ -71,6 +71,15 @@ protected:
   int sync(void) override { return -1; }
 };
 
+class TestDcdIntegrator : public CudaIntegrator {
+public:
+  using CudaIntegrator::CudaIntegrator;
+
+  void setCompletedSteps(const unsigned long long int step) {
+    m_TotNumSteps = step;
+  }
+};
+
 class TestDcdSubscriber : public DcdSubscriber {
 public:
   using DcdSubscriber::DcdSubscriber;
@@ -328,7 +337,7 @@ TEST_CASE("DcdSubscriberUpdateValidatesRequiredState") {
     const std::string fileName = "tmp_dcd_update_requires_context.dcd";
     apo_test::RemoveIfExists(fileName);
 
-    auto integrator = std::make_shared<CudaIntegrator>(TIME_STEP);
+    auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
 
     DcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
     subscriber.setIntegrator(integrator);
@@ -361,7 +370,7 @@ TEST_CASE("DcdSubscriberUpdateValidatesRequiredState") {
     apo_test::RemoveIfExists(fileName);
 
     auto ctx = CreateContext();
-    auto integrator = std::make_shared<CudaIntegrator>(TIME_STEP);
+    auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
 
     TestDcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
     subscriber.setCharmmContext(ctx);
@@ -381,7 +390,7 @@ TEST_CASE("DcdSubscriberUpdateValidatesRequiredState") {
 
     auto ctx = CreateContext();
     ctx->getBoxDimensions()[0] = 0.0;
-    auto integrator = std::make_shared<CudaIntegrator>(TIME_STEP);
+    auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
 
     DcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
     subscriber.setCharmmContext(ctx);
@@ -400,7 +409,7 @@ TEST_CASE("DcdSubscriberUpdateValidatesRequiredState") {
 
     auto ctx = std::make_shared<CharmmContext>();
     ctx->setBoxDimensions(BOX_DIMENSIONS);
-    auto integrator = std::make_shared<CudaIntegrator>(TIME_STEP);
+    auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
 
     DcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
     subscriber.setCharmmContext(ctx);
@@ -420,13 +429,18 @@ TEST_CASE("DcdSubscriberReportsMetadataAndOutputFailures") {
     apo_test::RemoveIfExists(fileName);
 
     auto ctx = CreateContext();
-    auto integrator = std::make_shared<CudaIntegrator>(TIME_STEP);
+    auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
 
     DcdSubscriber subscriber(fileName, std::numeric_limits<int>::max());
     subscriber.setCharmmContext(ctx);
     subscriber.setIntegrator(integrator);
 
     subscriber.update();
+    const auto maxStep =
+        static_cast<unsigned long long int>(std::numeric_limits<int>::max());
+    integrator->setCompletedSteps(maxStep);
+    subscriber.update();
+    integrator->setCompletedSteps(2ULL * maxStep);
 
     apo_test::CheckApoCharmmError(
         [&]() { subscriber.update(); }, ApoCharmmErrorCode::Runtime,
@@ -440,7 +454,7 @@ TEST_CASE("DcdSubscriberReportsMetadataAndOutputFailures") {
     apo_test::RemoveIfExists(fileName);
 
     auto ctx = CreateContext();
-    auto integrator = std::make_shared<CudaIntegrator>(TIME_STEP);
+    auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
     FailingStreamBuffer failingBuffer;
 
     TestDcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
@@ -460,7 +474,7 @@ TEST_CASE("DcdSubscriberReportsMetadataAndOutputFailures") {
     apo_test::RemoveIfExists(fileName);
 
     auto ctx = CreateContext();
-    auto integrator = std::make_shared<CudaIntegrator>(TIME_STEP);
+    auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
     FailingStreamBuffer failingBuffer;
 
     TestDcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
@@ -468,6 +482,7 @@ TEST_CASE("DcdSubscriberReportsMetadataAndOutputFailures") {
     subscriber.setIntegrator(integrator);
 
     subscriber.update();
+    integrator->setCompletedSteps(REPORT_FREQUENCY);
     subscriber.getOutputFile().std::basic_ios<char>::rdbuf(&failingBuffer);
 
     apo_test::CheckApoCharmmError([&]() { subscriber.update(); },
@@ -483,7 +498,7 @@ TEST_CASE("DcdSubscriberOpenFileResetsTrajectoryState") {
   apo_test::RemoveIfExists(fileName);
 
   auto ctx = CreateContext();
-  auto integrator = std::make_shared<CudaIntegrator>(TIME_STEP);
+  auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
 
   DcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
   subscriber.setCharmmContext(ctx);
@@ -495,7 +510,7 @@ TEST_CASE("DcdSubscriberOpenFileResetsTrajectoryState") {
 
   const DcdFile dcd = ReadDcdFile(fileName);
   CHECK(dcd.numFrames == 1);
-  CHECK(dcd.numSteps == REPORT_FREQUENCY);
+  CHECK(dcd.numSteps == 0);
   REQUIRE(dcd.frames.size() == 1);
 
   apo_test::RemoveIfExists(fileName);
@@ -506,7 +521,7 @@ TEST_CASE("DcdSubscriberUpdateWritesOneFrame") {
   apo_test::RemoveIfExists(fileName);
 
   auto ctx = CreateContext();
-  auto integrator = std::make_shared<CudaIntegrator>(TIME_STEP);
+  auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
 
   DcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
   subscriber.setCharmmContext(ctx);
@@ -527,12 +542,12 @@ TEST_CASE("DcdSubscriberUpdateWritesOneFrame") {
   CHECK(dcd.numFrames == 1);
   CHECK(dcd.start == 0);
   CHECK(dcd.reportFrequency == REPORT_FREQUENCY);
-  CHECK(dcd.numSteps == REPORT_FREQUENCY);
+  CHECK(dcd.numSteps == 0);
   CHECK(dcd.numDegreesOfFreedom == ctx->getNumDegreesOfFreedom());
-  CHECK(dcd.timeStep ==
-        Approx(static_cast<float>(TIME_STEP)).margin(FLOAT_TOLERANCE));
+  CHECK(dcd.timeStep == Approx(static_cast<float>(TIME_STEP / 0.0488882129))
+                            .margin(FLOAT_TOLERANCE));
   CHECK(dcd.hasXtalData == 1);
-  CHECK(dcd.version == 49);
+  CHECK(dcd.version == 52);
   CHECK(dcd.numAtoms == ctx->getNumAtoms());
 
   REQUIRE(dcd.frames.size() == 1);
@@ -549,25 +564,249 @@ TEST_CASE("DcdSubscriberUpdatePatchesHeaderForMultipleFrames") {
   apo_test::RemoveIfExists(fileName);
 
   auto ctx = CreateContext();
-  auto integrator = std::make_shared<CudaIntegrator>(TIME_STEP);
+  auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
 
   DcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
   subscriber.setCharmmContext(ctx);
   subscriber.setIntegrator(integrator);
 
   subscriber.update();
+  integrator->setCompletedSteps(REPORT_FREQUENCY);
   subscriber.update();
 
   const DcdFile dcd = ReadDcdFile(fileName);
 
   CHECK(dcd.numFrames == 2);
   CHECK(dcd.reportFrequency == REPORT_FREQUENCY);
-  CHECK(dcd.numSteps == 2 * REPORT_FREQUENCY);
+  CHECK(dcd.numSteps == REPORT_FREQUENCY);
   CHECK(dcd.numAtoms == ctx->getNumAtoms());
 
   REQUIRE(dcd.frames.size() == 2);
   CheckFrameMatchesContext(dcd.frames[0], ctx);
   CheckFrameMatchesContext(dcd.frames[1], ctx);
 
+  apo_test::RemoveIfExists(fileName);
+}
+
+TEST_CASE("DcdSubscriberPreservesFirstStepAndRejectsMetadataChanges") {
+  const std::string fileName = "tmp_dcd_metadata_consistency.dcd";
+  apo_test::RemoveIfExists(fileName);
+  auto ctx = CreateContext();
+  auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
+  DcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
+  subscriber.setCharmmContext(ctx);
+  subscriber.setIntegrator(integrator);
+  subscriber.onPropagationStart(98, 5);
+  integrator->setCompletedSteps(100);
+  subscriber.update();
+  integrator->setCompletedSteps(100 + REPORT_FREQUENCY);
+  subscriber.update();
+
+  const DcdFile dcd = ReadDcdFile(fileName);
+  CHECK(dcd.start == 100);
+  CHECK(dcd.numFrames == 2);
+  CHECK(dcd.numSteps == 5);
+
+  SECTION("DuplicateFrameStep") {
+    apo_test::CheckApoCharmmError(
+        [&]() { subscriber.update(); }, ApoCharmmErrorCode::InvalidArgument,
+        "DcdSubscriber frames must be separated by the reporting frequency");
+  }
+  SECTION("IrregularFrameStep") {
+    subscriber.onPropagationStart(102, 8);
+    integrator->setCompletedSteps(105);
+    apo_test::CheckApoCharmmError(
+        [&]() { subscriber.update(); }, ApoCharmmErrorCode::InvalidArgument,
+        "DcdSubscriber frames must be separated by the reporting frequency");
+  }
+  SECTION("ChangedTimeStep") {
+    subscriber.onPropagationStart(102, 8);
+    integrator->setCompletedSteps(104);
+    integrator->setTimeStep(TIME_STEP * 2.0);
+    apo_test::CheckApoCharmmError(
+        [&]() { subscriber.update(); }, ApoCharmmErrorCode::InvalidArgument,
+        "DcdSubscriber trajectory metadata changed; open a new DCD file");
+  }
+  SECTION("ChangedReportingFrequency") {
+    subscriber.onPropagationStart(102, 8);
+    integrator->setCompletedSteps(104);
+    subscriber.setReportFrequency(REPORT_FREQUENCY * 2);
+    apo_test::CheckApoCharmmError(
+        [&]() { subscriber.update(); }, ApoCharmmErrorCode::InvalidArgument,
+        "DcdSubscriber trajectory metadata changed; open a new DCD file");
+  }
+  apo_test::RemoveIfExists(fileName);
+}
+
+TEST_CASE("DcdSubscriberPreservesPlannedUnsavedTailAndShortRequests") {
+  const std::string fileName = "tmp_dcd_planned_tail.dcd";
+  apo_test::RemoveIfExists(fileName);
+  auto ctx = CreateContext();
+  auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
+  DcdSubscriber subscriber(fileName, 10);
+  subscriber.setCharmmContext(ctx);
+  subscriber.setIntegrator(integrator);
+  subscriber.onPropagationStart(0, 25);
+  integrator->setCompletedSteps(10);
+  subscriber.update();
+  integrator->setCompletedSteps(20);
+  subscriber.update();
+  const DcdFile dcd = ReadDcdFile(fileName);
+  CHECK(dcd.start == 10);
+  CHECK(dcd.numFrames == 2);
+  CHECK(dcd.numSteps == 25);
+
+  // No frame is written by this shorter-than-frequency request. Its plan is
+  // visible immediately, even if another subscriber or a later step fails.
+  subscriber.onPropagationStart(25, 3);
+  const DcdFile shortRequest = ReadDcdFile(fileName);
+  CHECK(shortRequest.numFrames == 2);
+  CHECK(shortRequest.numSteps == 28);
+
+  // Like CHARMM's MOD(ISTEP,NSAVC) with ISTEP counted from the run origin, the
+  // integrator schedules the next frame at step 30 regardless of how the
+  // remaining steps are split across calls. The plan now extends to step 50.
+  subscriber.onPropagationStart(28, 22);
+  const DcdFile extendedRequest = ReadDcdFile(fileName);
+  CHECK(extendedRequest.numFrames == 2);
+  CHECK(extendedRequest.numSteps == 50);
+  integrator->setCompletedSteps(30);
+  subscriber.update();
+  const DcdFile thirdFrame = ReadDcdFile(fileName);
+  CHECK(thirdFrame.start == 10);
+  CHECK(thirdFrame.numFrames == 3);
+  CHECK(thirdFrame.numSteps == 50);
+  apo_test::RemoveIfExists(fileName);
+}
+
+TEST_CASE("DcdSubscriberExtendsAlignedRunsAndClearsPlanOnReopen") {
+  const std::string fileName = "tmp_dcd_multiple_runs.dcd";
+  apo_test::RemoveIfExists(fileName);
+  auto ctx = CreateContext();
+  auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
+  DcdSubscriber subscriber(fileName, 10);
+  subscriber.setCharmmContext(ctx);
+  subscriber.setIntegrator(integrator);
+  subscriber.onPropagationStart(0, 20);
+  integrator->setCompletedSteps(10);
+  subscriber.update();
+  integrator->setCompletedSteps(20);
+  subscriber.update();
+  subscriber.onPropagationStart(20, 15);
+  integrator->setCompletedSteps(30);
+  subscriber.update();
+  const DcdFile dcd = ReadDcdFile(fileName);
+  CHECK(dcd.start == 10);
+  CHECK(dcd.numFrames == 3);
+  CHECK(dcd.numSteps == 35);
+
+  subscriber.openFile();
+  integrator->setCompletedSteps(35);
+  subscriber.update();
+  const DcdFile manualFirst = ReadDcdFile(fileName);
+  CHECK(manualFirst.start == 35);
+  CHECK(manualFirst.numSteps == 0);
+  integrator->setCompletedSteps(45);
+  subscriber.update();
+  const DcdFile manualSecond = ReadDcdFile(fileName);
+  CHECK(manualSecond.numFrames == 2);
+  CHECK(manualSecond.numSteps == 10);
+  apo_test::RemoveIfExists(fileName);
+}
+
+TEST_CASE("DcdSubscriberValidatesPropagationAnnouncements") {
+  const std::string fileName = "tmp_dcd_invalid_plan.dcd";
+  apo_test::RemoveIfExists(fileName);
+  auto ctx = CreateContext();
+  auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
+  DcdSubscriber subscriber(fileName, REPORT_FREQUENCY);
+  subscriber.setCharmmContext(ctx);
+  subscriber.setIntegrator(integrator);
+
+  apo_test::CheckApoCharmmError(
+      [&]() { subscriber.onPropagationStart(0, 0); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "DcdSubscriber propagation request must be positive");
+  apo_test::CheckApoCharmmError(
+      [&]() {
+        subscriber.onPropagationStart(
+            std::numeric_limits<unsigned long long int>::max(), 1);
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "DcdSubscriber propagation request exceeds the step counter range");
+  subscriber.onPropagationStart(10, 10);
+  integrator->setCompletedSteps(12);
+  subscriber.update();
+  apo_test::CheckApoCharmmError(
+      [&]() { subscriber.onPropagationStart(11, 10); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "DcdSubscriber integration step metadata is inconsistent");
+  apo_test::CheckApoCharmmError(
+      [&]() { subscriber.onPropagationStart(9, 1); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "DcdSubscriber integration step metadata is inconsistent");
+
+  // Clearing the origin after frames exist (what a restart load does) is a
+  // new run; CHARMM would open a new trajectory unit.
+  subscriber.setStartStep(std::nullopt);
+  apo_test::CheckApoCharmmError(
+      [&]() { subscriber.onPropagationStart(12, 10); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "DcdSubscriber run origin was reset; open a new DCD file");
+  apo_test::CheckApoCharmmError(
+      [&]() { subscriber.update(); }, ApoCharmmErrorCode::InvalidArgument,
+      "DcdSubscriber run origin was reset; open a new DCD file");
+
+  subscriber.openFile();
+  subscriber.onPropagationStart(0, std::numeric_limits<int>::max());
+  apo_test::CheckApoCharmmError(
+      [&]() {
+        subscriber.onPropagationStart(static_cast<unsigned long long int>(
+                                          std::numeric_limits<int>::max()),
+                                      1);
+      },
+      ApoCharmmErrorCode::Runtime,
+      "DcdSubscriber frame metadata exceeds DCD integer range");
+  apo_test::RemoveIfExists(fileName);
+}
+
+TEST_CASE("DcdSubscriberUsesFirstAnnouncementAsRunOrigin") {
+  const std::string fileName = "tmp_dcd_initial_short_run.dcd";
+  apo_test::RemoveIfExists(fileName);
+  auto ctx = CreateContext();
+  auto integrator = std::make_shared<TestDcdIntegrator>(TIME_STEP);
+  DcdSubscriber subscriber(fileName, 10);
+  subscriber.setCharmmContext(ctx);
+  subscriber.setIntegrator(integrator);
+  // A 5-step request followed by a 25-step request is one 30-step CHARMM run:
+  // frames at steps 10, 20, and 30 with START=10 and NSTEP=30.
+  subscriber.onPropagationStart(0, 5);
+  CHECK(subscriber.getStartStep().value() == 0ULL);
+  subscriber.onPropagationStart(5, 25);
+  CHECK(subscriber.getStartStep().value() == 0ULL);
+  integrator->setCompletedSteps(10);
+  subscriber.update();
+  const DcdFile dcd = ReadDcdFile(fileName);
+  CHECK(dcd.start == 10);
+  CHECK(dcd.numFrames == 1);
+  CHECK(dcd.numSteps == 30);
+  integrator->setCompletedSteps(20);
+  subscriber.update();
+  const DcdFile second = ReadDcdFile(fileName);
+  CHECK(second.numFrames == 2);
+  CHECK(second.numSteps == 30);
+
+  // Reopening starts a new run at the step count first observed afterwards,
+  // like a CHARMM run restarted at NPRIV=1005 saving at 1015, 1025, ...
+  subscriber.openFile();
+  CHECK_FALSE(subscriber.getStartStep().has_value());
+  subscriber.onPropagationStart(1005, 20);
+  CHECK(subscriber.getStartStep().value() == 1005ULL);
+  integrator->setCompletedSteps(1015);
+  subscriber.update();
+  const DcdFile restarted = ReadDcdFile(fileName);
+  CHECK(restarted.start == 1015);
+  CHECK(restarted.numFrames == 1);
+  CHECK(restarted.numSteps == 20);
   apo_test::RemoveIfExists(fileName);
 }

@@ -7,6 +7,11 @@
 //
 // ENDLICENSE
 
+/**
+ * @file
+ * @brief Declares the C ABI Nose-Hoover integrator interface.
+ */
+
 #ifndef __APOCHARMM_C_CUDA_NOSE_HOOVER_INTEGRATOR_H__
 #define __APOCHARMM_C_CUDA_NOSE_HOOVER_INTEGRATOR_H__
 

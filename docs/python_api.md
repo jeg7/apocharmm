@@ -27,7 +27,9 @@ units, errors, limitations, and implementation details.
   the [CharmmContext subsystem](@ref charmm_context) and
   [ForceManager subsystem](@ref force_manager).
 - [apocharmm.CrystalType](@ref python_crystal_type) selects the supported
-  crystal symmetry and Langevin-piston degree-of-freedom layout. See the
+  crystal symmetry, owned by the context, and the Langevin-piston
+  degree-of-freedom layout derived from it. See the
+  [CharmmContext subsystem](@ref charmm_context) and the
   [CUDA Integrators subsystem](@ref cuda_integrators).
 - [apocharmm.VdwType](@ref python_vdw_type) selects the native van der Waals
   model. See the [ForceManager subsystem](@ref force_manager).

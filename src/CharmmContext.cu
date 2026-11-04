@@ -12,6 +12,7 @@
 
 #include "ApoCharmmError.h"
 #include "Constants.h"
+#include "Crystal.h"
 #include "PBC.h"
 #include "cuda_utils.h"
 #include "gpu_utils.h"
@@ -33,20 +34,41 @@ static constexpr int KE_ATOMS_PER_THREAD = 2;
 static bool hasValidBoxDimensions(const std::vector<double> &boxDimensions) {
   if (boxDimensions.size() != 3)
     return false;
-  return ((boxDimensions[0] > 0.0) && (boxDimensions[1] > 0.0) &&
-          (boxDimensions[2] > 0.0));
+  return (std::isfinite(boxDimensions[0]) && std::isfinite(boxDimensions[1]) &&
+          std::isfinite(boxDimensions[2]) && (boxDimensions[0] > 0.0) &&
+          (boxDimensions[1] > 0.0) && (boxDimensions[2] > 0.0));
+}
+
+static bool
+hasCompatibleCrystalDimensions(const std::vector<double> &boxDimensions,
+                               const CRYSTAL crystalType) {
+  if (!hasValidBoxDimensions(boxDimensions))
+    return false;
+
+  switch (crystalType) {
+  case CRYSTAL::UNSET:
+  case CRYSTAL::ORTHORHOMBIC:
+    return true;
+  case CRYSTAL::TETRAGONAL:
+    return (boxDimensions[0] == boxDimensions[1]);
+  case CRYSTAL::CUBIC:
+    return ((boxDimensions[0] == boxDimensions[1]) &&
+            (boxDimensions[0] == boxDimensions[2]));
+  }
+
+  return false;
 }
 
 CharmmContext::CharmmContext(void)
     : m_RandomSeed(0), m_Psf(nullptr), m_Prm(nullptr),
       m_BoxDimensions({-9999.9999, -9999.9999, -9999.9999}),
-      m_HasBoxDimensions(false), m_ForceManager(nullptr), m_NumAtoms(-1),
-      m_NumDegreesOfFreedom(-1), m_Pbc(PBC::P1), m_HasPbc(false),
-      m_CoordinatesChargesSP(), m_CoordinatesChargesDP(),
-      m_HasCoordinates(false), m_VelocitiesInverseMasses(),
-      m_KineticEnergyPartialSums(), m_KineticEnergy(1), m_Pressure(9),
-      m_VirialKineticEnergyTensor(9), m_EnergyTableEvaluationCount(0),
-      m_PreviousPrintedPotentialEnergy(0.0),
+      m_HasBoxDimensions(false), m_CrystalType(CRYSTAL::UNSET),
+      m_ForceManager(nullptr), m_NumAtoms(-1), m_NumDegreesOfFreedom(-1),
+      m_Pbc(PBC::P1), m_HasPbc(false), m_CoordinatesChargesSP(),
+      m_CoordinatesChargesDP(), m_HasCoordinates(false),
+      m_VelocitiesInverseMasses(), m_KineticEnergyPartialSums(),
+      m_KineticEnergy(1), m_Pressure(9), m_VirialKineticEnergyTensor(9),
+      m_EnergyTableEvaluationCount(0), m_PreviousPrintedPotentialEnergy(0.0),
       m_HasPreviousPrintedPotentialEnergy(false), m_Temperature(0.0f),
       m_UsingHolonomicConstraints(false) {}
 
@@ -99,6 +121,7 @@ CharmmContext::CharmmContext(const CharmmContext &other)
   m_Prm = other.m_Prm;
   m_BoxDimensions = other.m_BoxDimensions;
   m_HasBoxDimensions = other.m_HasBoxDimensions;
+  m_CrystalType = other.m_CrystalType;
   m_Pbc = other.m_Pbc;
   m_HasPbc = other.m_HasPbc;
 
@@ -160,6 +183,24 @@ void CharmmContext::setPsf(std::shared_ptr<CharmmPSF> psf) {
 void CharmmContext::setForceManager(std::shared_ptr<ForceManager> fm) {
   APOCHARMM_REQUIRE(fm != nullptr, ApoCharmmErrorCode::InvalidArgument,
                     "ForceManager must not be null");
+
+  if (m_HasBoxDimensions) {
+    APOCHARMM_REQUIRE(
+        hasValidBoxDimensions(m_BoxDimensions),
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions must contain exactly 3 finite positive values");
+    APOCHARMM_REQUIRE(
+        hasCompatibleCrystalDimensions(m_BoxDimensions, m_CrystalType),
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions are incompatible with the crystal type");
+  } else {
+    const std::vector<double> &candidateBox = fm->getBoxDimensions();
+    APOCHARMM_REQUIRE(
+        !hasValidBoxDimensions(candidateBox) ||
+            hasCompatibleCrystalDimensions(candidateBox, m_CrystalType),
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions are incompatible with the crystal type");
+  }
 
   m_ForceManager = fm;
 
@@ -642,28 +683,52 @@ void CharmmContext::setPeriodicBoundaryCondition(const PBC pbc) {
   return;
 }
 
-void CharmmContext::setBoxDimensions(const std::vector<double> &boxDimensions) {
-  APOCHARMM_REQUIRE(hasValidBoxDimensions(boxDimensions),
+void CharmmContext::setCrystalType(const CRYSTAL crystalType) {
+  APOCHARMM_REQUIRE((crystalType == CRYSTAL::CUBIC) ||
+                        (crystalType == CRYSTAL::TETRAGONAL) ||
+                        (crystalType == CRYSTAL::ORTHORHOMBIC),
                     ApoCharmmErrorCode::InvalidArgument,
-                    "Box dimensions must contain exactly 3 positive values");
+                    "Crystal type must be CRYSTAL::CUBIC, CRYSTAL::TETRAGONAL, "
+                    "or CRYSTAL::ORTHORHOMBIC; observed " +
+                        std::to_string(static_cast<int>(crystalType)));
+
+  if (m_HasBoxDimensions) {
+    APOCHARMM_REQUIRE(
+        hasValidBoxDimensions(m_BoxDimensions),
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions must contain exactly 3 finite positive values");
+    APOCHARMM_REQUIRE(
+        hasCompatibleCrystalDimensions(m_BoxDimensions, crystalType),
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions are incompatible with the crystal type");
+  }
+
+  m_CrystalType = crystalType;
+
+  return;
+}
+
+void CharmmContext::setBoxDimensions(const std::vector<double> &boxDimensions) {
+  APOCHARMM_REQUIRE(
+      hasValidBoxDimensions(boxDimensions), ApoCharmmErrorCode::InvalidArgument,
+      "Box dimensions must contain exactly 3 finite positive values");
+  APOCHARMM_REQUIRE(
+      hasCompatibleCrystalDimensions(boxDimensions, m_CrystalType),
+      ApoCharmmErrorCode::InvalidArgument,
+      "Box dimensions are incompatible with the crystal type");
+
+  if (m_ForceManager != nullptr)
+    m_ForceManager->setBoxDimensions(boxDimensions);
 
   m_BoxDimensions = boxDimensions;
   m_HasBoxDimensions = true;
 
-  if (m_ForceManager != nullptr) {
-    m_ForceManager->setBoxDimensions(m_BoxDimensions);
-    m_BoxDimensions = m_ForceManager->getBoxDimensions();
-    m_HasBoxDimensions = hasValidBoxDimensions(m_BoxDimensions);
-  }
-
-  // JEG260707: This is done to prevent building the neighbor list twice.
-  const bool forceManagerWasInitialized =
-      ((m_ForceManager != nullptr) && m_ForceManager->isInitialized());
-
   this->finalizeSetupIfReady();
 
-  if (forceManagerWasInitialized && m_HasCoordinates)
-    this->resetNeighborList();
+  // JEG261027: Don't need to build neighbor list when box size changes. In
+  // normal dynamics, this shouldn't be an issue.
+  // if (forceManagerWasInitialized && m_HasCoordinates)
+  //   this->resetNeighborList();
 
   return;
 }
@@ -779,6 +844,8 @@ CharmmContext::getVelocitiesInverseMasses(void) const {
 double CharmmContext::getTemperature(void) const { return m_Temperature; }
 
 PBC CharmmContext::getPeriodicBoundaryCondition(void) const { return m_Pbc; }
+
+CRYSTAL CharmmContext::getCrystalType(void) const { return m_CrystalType; }
 
 const std::vector<double> &CharmmContext::getBoxDimensions(void) const {
   return m_BoxDimensions;
@@ -1328,6 +1395,26 @@ void CharmmContext::linkBackForceManager(void) {
   return;
 }
 
+void CharmmContext::requireCrystalBox(void) const {
+  APOCHARMM_REQUIRE((m_CrystalType == CRYSTAL::CUBIC) ||
+                        (m_CrystalType == CRYSTAL::TETRAGONAL) ||
+                        (m_CrystalType == CRYSTAL::ORTHORHOMBIC),
+                    ApoCharmmErrorCode::NotInitialized,
+                    "Crystal type must be configured before this operation");
+
+  APOCHARMM_REQUIRE(
+      m_HasBoxDimensions && hasValidBoxDimensions(m_BoxDimensions),
+      ApoCharmmErrorCode::NotInitialized,
+      "Crystal box requires exactly 3 finite positive dimensions");
+
+  APOCHARMM_REQUIRE(
+      hasCompatibleCrystalDimensions(m_BoxDimensions, m_CrystalType),
+      ApoCharmmErrorCode::InvalidArgument,
+      "Box dimensions are incompatible with the crystal type");
+
+  return;
+}
+
 /**
  * @brief Implements CHARMM-style energy-table formatting and print history.
  *
@@ -1448,7 +1535,13 @@ void CharmmContext::syncStateFromForceManager(void) {
   if (prm != nullptr)
     m_Prm = prm;
 
-  m_BoxDimensions = m_ForceManager->getBoxDimensions();
+  const std::vector<double> &candidateBox = m_ForceManager->getBoxDimensions();
+  APOCHARMM_REQUIRE(
+      !hasValidBoxDimensions(candidateBox) ||
+          hasCompatibleCrystalDimensions(candidateBox, m_CrystalType),
+      ApoCharmmErrorCode::InvalidArgument,
+      "Box dimensions are incompatible with the crystal type");
+  m_BoxDimensions = candidateBox;
   m_HasBoxDimensions = hasValidBoxDimensions(m_BoxDimensions);
 
   m_Pbc = m_ForceManager->getPeriodicBoundaryCondition();
@@ -1485,10 +1578,21 @@ void CharmmContext::syncForceManagerFromState(void) {
       m_Prm = prm;
   }
 
-  if (m_HasBoxDimensions)
+  if (m_HasBoxDimensions) {
+    APOCHARMM_REQUIRE(
+        hasCompatibleCrystalDimensions(m_BoxDimensions, m_CrystalType),
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions are incompatible with the crystal type");
     m_ForceManager->setBoxDimensions(m_BoxDimensions);
-  else {
-    m_BoxDimensions = m_ForceManager->getBoxDimensions();
+  } else {
+    const std::vector<double> &candidateBox =
+        m_ForceManager->getBoxDimensions();
+    APOCHARMM_REQUIRE(
+        !hasValidBoxDimensions(candidateBox) ||
+            hasCompatibleCrystalDimensions(candidateBox, m_CrystalType),
+        ApoCharmmErrorCode::InvalidArgument,
+        "Box dimensions are incompatible with the crystal type");
+    m_BoxDimensions = candidateBox;
     m_HasBoxDimensions = hasValidBoxDimensions(m_BoxDimensions);
   }
 

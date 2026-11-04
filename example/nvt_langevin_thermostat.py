@@ -33,6 +33,7 @@ def main(argc, argv):
 
     # Setup the CharmmContext
     ctx = apo.CharmmContext(fm)
+    ctx.setCrystalType(apo.CrystalType.CUBIC)
     ctx.setCoordinates(crd)
     ctx.setRandomSeed(random_seed)
     ctx.assignVelocitiesAtTemperature(temperature)

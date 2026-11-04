@@ -32,6 +32,7 @@ psf = apo.CharmmPsf(data / "waterbox.psf")
 coordinates = apo.CharmmCrd(data / "waterbox.crd")
 
 context = apo.CharmmContext(psf, parameters)
+context.setCrystalType(apo.CrystalType.CUBIC)
 context.setBoxDimensions((50.0, 50.0, 50.0))
 context.setCoordinates(coordinates)
 context.calculatePotentialEnergy(print_energy=True)
@@ -48,6 +49,7 @@ The equivalent direct native workflow is:
 #include "CharmmCrd.h"
 #include "CharmmPSF.h"
 #include "CharmmParameters.h"
+#include "Crystal.h"
 
 #include <memory>
 
@@ -59,6 +61,7 @@ int main() {
       std::make_shared<CharmmCrd>("test/data/waterbox.crd");
 
   auto context = std::make_shared<CharmmContext>(psf, parameters);
+  context->setCrystalType(CRYSTAL::CUBIC);
   context->setBoxDimensions({50.0, 50.0, 50.0});
   context->setCoordinates(coordinates);
   context->calculatePotentialEnergy(false, true);
@@ -89,7 +92,7 @@ The force manager is considered complete when all of the following are present:
 - a `ForceManager`;
 - a `CharmmPSF`;
 - `CharmmParameters`;
-- exactly three positive box dimensions.
+- exactly three finite positive box dimensions.
 
 The current completeness predicate does not require coordinates or an explicit
 periodic-boundary setter. A normal force manager supplies `PBC::P1` by default.
@@ -98,6 +101,35 @@ periodic-boundary setter. A normal force manager supplies `PBC::P1` by default.
 the same invalid, unconfigured sentinel. They do not select an aperiodic system.
 The native, C ABI, and Python periodic-boundary setters reject this value;
 runnable configurations use `P1` or `P21`.
+
+Crystal symmetry is independent of periodic-boundary selection and edge lengths.
+Call `setCrystalType()` on the context with `CUBIC`, `TETRAGONAL`, or
+`ORTHORHOMBIC` before configuring a Langevin piston or reading/writing restart
+state. The default `UNSET` is an unusable crystal configuration and does not
+select an aperiodic system. Change the type only between completed propagation
+calls, with no concurrent context use or subscriber callback in progress.
+Repeating the current type is allowed and validates the current box.
+A cubic box requires equal X, Y, and Z lengths. A tetragonal box requires equal
+X and Y lengths. An orthorhombic crystal may also have equal edges and remains
+orthorhombic. No type is inferred from the lengths.
+
+You may select the type before setting lengths, or after compatible lengths have
+been supplied. `setBoxDimensions()` validates subsequent length updates against
+the selected type. Piston and restart operations additionally validate the
+current crystal box. The DCD cell record contains the orthogonal lattice matrix
+rather than a crystal-type label and does not require a selected type.
+
+For cubic heating followed by orthorhombic dynamics, keep the same context and
+call `setCrystalType(ORTHORHOMBIC)` after the heating call finishes. Equal cubic
+edge lengths are already valid orthorhombic lengths. If a piston is attached,
+explicitly call its `initialize()` before using it again, then configure the
+new phase's piston masses; scalar friction is retained unless changed explicitly.
+Alternatively, attach a new piston to the context. Reinitializing the existing
+integrator preserves its accumulated step count; a newly constructed integrator
+starts a separate count. Type selection itself preserves coordinates, atomic velocities,
+and random seeds; it does not require regenerating atomic velocities. Piston
+initialization rebuilds dependent piston and half-step state. Do not change
+the context type from inside a propagation callback.
 
 For custom nonbonded configuration, call `setKappa()`, `setCutoff()`,
 `setCtonnb()`, `setCtofnb()`, `setFFTGrid()`, `setPmeSplineOrder()`, and
@@ -129,6 +161,17 @@ CharmmContext
                          |
                          `-- weak_ptr --> CharmmContext
 ```
+
+Native copy construction retains the selected crystal type and copies the
+context-owned arrays, without copying the force-manager association. Native
+copy assignment retains the existing memberwise behavior, including copying
+the crystal type and shared force-manager association. Use the validated
+crystal setter to change symmetry on a live context between phases.
+
+The legacy native mutable box getter remains available, but editing that alias
+bypasses validation, force-manager synchronization, and neighbor-list updates.
+Use `setBoxDimensions()` for supported changes. Piston and restart operations
+check the current dimensions again before consuming them.
 
 Native collaborator getters return copied `std::shared_ptr` instances. The
 returned owner can keep that collaborator alive after the context is destroyed.
@@ -275,9 +318,10 @@ The mutable C++ container and vector accessors intentionally bypass context
 invariants. They do not synchronize mirrors, update state flags, propagate box
 changes, or rebuild neighbor lists.
 
-Copy construction does not copy the force-manager association and does not copy
-the kinetic-virial tensor. Copy assignment is compiler-generated and therefore
-has different memberwise behavior.
+Copy construction preserves the crystal type but does not copy the force-manager
+association or kinetic-virial tensor. Copy assignment is defaulted and performs
+memberwise assignment, including the force-manager association. It does not
+perform the validation and synchronization of the context setters.
 
 Pressure computation is not implemented. The pressure container is exposed but
 has no supported producer in `CharmmContext`.

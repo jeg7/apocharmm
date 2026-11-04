@@ -390,6 +390,28 @@ apo_charmm_context_set_periodic_boundary_condition(apo_charmm_context *context,
 }
 
 extern "C" apo_status
+apo_charmm_context_set_crystal_type(apo_charmm_context *context,
+                                    const apo_crystal_type crystal_type) {
+  const char *function_name = "apo_charmm_context_set_crystal_type";
+
+  return apocharmm_c::guard(
+      [&](void) -> apo_status {
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_charmm_context>(
+                context, function_name, "CharmmContext"));
+
+        CRYSTAL cpp_crystal_type = CRYSTAL::UNSET;
+        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::to_crystal_type(
+            &cpp_crystal_type, crystal_type, function_name));
+
+        context->object->setCrystalType(cpp_crystal_type);
+
+        return APO_STATUS_OK;
+      },
+      function_name);
+}
+
+extern "C" apo_status
 apo_charmm_context_set_box_dimensions(apo_charmm_context *context,
                                       const double *box_dimensions,
                                       const size_t box_dimensions_len) {
@@ -710,6 +732,27 @@ extern "C" apo_status apo_charmm_context_get_periodic_boundary_condition(
         return apocharmm_c::from_pbc(
             pbc, context->object->getPeriodicBoundaryCondition(),
             function_name);
+      },
+      function_name);
+}
+
+extern "C" apo_status
+apo_charmm_context_get_crystal_type(apo_crystal_type *crystal_type,
+                                    const apo_charmm_context *context) {
+  const char *function_name = "apo_charmm_context_get_crystal_type";
+
+  return apocharmm_c::guard(
+      [&](void) -> apo_status {
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_charmm_context>(
+                context, function_name, "CharmmContext"));
+
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_pointer<apo_crystal_type>(
+                crystal_type, function_name, "crystal_type"));
+
+        return apocharmm_c::from_crystal_type(
+            crystal_type, context->object->getCrystalType(), function_name);
       },
       function_name);
 }

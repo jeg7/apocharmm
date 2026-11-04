@@ -12,8 +12,8 @@
 
 #include "CudaIntegrator.h"
 
+#include "Crystal.h"
 #include "CudaContainer.h"
-#include "PBC.h"
 
 #include <cstdint>
 #include <curand_kernel.h>
@@ -30,7 +30,15 @@
  * coupling, one Philox RNG state per crystal degree of freedom, pressure
  * tensors, and running temperature and pressure averages.
  *
- * Select a supported @ref CRYSTAL before attaching the context.
+ * Select a supported @ref CRYSTAL on @ref CharmmContext before attaching it.
+ * Attachment derives and allocates piston state from the context crystal.
+ * Configure custom Langevin-piston masses and friction after attachment. Change
+ * context symmetry only between completed propagation calls, then call
+ * initialize() before accessing piston state or continuing dynamics. State
+ * getters/setters, restart loading, and propagation reject a stale layout with
+ * NotInitialized; getCrystalType() still reports the context selection.
+ * Previously borrowed container aliases must not be used across this
+ * transition.
  *
  * @warning Treat the class as non-copyable. It owns a raw device RNG-state
  * allocation in addition to base CUDA streams.
@@ -54,7 +62,7 @@ public:
    *
    * @post Nose-Hoover temperature coupling is enabled, the reference
    * temperature is 300 K, the reference pressure is the 3-by-3 identity tensor
-   * in atmospheres, no crystal is selected, the maximum predictor-corrector
+   * in atmospheres, no context is attached, the maximum predictor-corrector
    * count is three, and running averages are zero.
    */
   CudaLangevinPistonIntegrator(const double timeStep);
@@ -218,29 +226,6 @@ public:
   void setConstantSurfaceTension(const bool constantSurfaceTensionFlag);
 
   /**
-   * @brief Selects the crystal symmetry and reallocates piston state.
-   *
-   * @param[in] crystalType `CRYSTAL::CUBIC`, `CRYSTAL::TETRAGONAL`, or
-   * `CRYSTAL::ORTHORHOMBIC`.
-   *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` for `CRYSTAL::NONE` or another
-   * unsupported value.
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if
-   * crystal-dependent containers cannot be allocated, initialized, or
-   * transferred.
-   * @throws std::bad_alloc If host state allocation fails.
-   *
-   * @post The piston degree-of-freedom count is one, two, or three; every
-   * crystal-dependent piston array has that length and has been reset.
-   * @post If a context is already attached, a default mass is computed from its
-   * atom masses.
-   * @warning Previously borrowed piston-container references and device
-   * pointers can be invalidated.
-   */
-  void setCrystalType(const CRYSTAL crystalType);
-
-  /**
    * @brief Sets the Langevin-piston masses.
    *
    * @param[in] mass Borrowed values copied in crystal-degree-of-freedom order.
@@ -248,11 +233,10 @@ public:
    * value must be finite and non-negative. The exact dimensional convention is
    * not established by the repository.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if no crystal type has been selected.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if the length is wrong or a value is
-   * non-finite or negative.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * context with a supported crystal type has been attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * the length is wrong or a value is non-finite or negative.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if masses,
    * inverse masses, or derived friction factors cannot be transferred.
    *
@@ -266,8 +250,8 @@ public:
    *
    * @param[in] seed Dimensionless 64-bit seed.
    *
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if a selected
-   * crystal requires RNG allocation or initialization and CUDA work fails.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if an attached
+   * context requires RNG allocation or initialization and CUDA work fails.
    *
    * @post The existing sequence position is preserved.
    */
@@ -278,8 +262,8 @@ public:
    *
    * @param[in] rngSequencePos Dimensionless Philox sequence position.
    *
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if a selected
-   * crystal requires RNG allocation or initialization and CUDA work fails.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if an attached
+   * context requires RNG allocation or initialization and CUDA work fails.
    */
   void setRngSequencePos(const unsigned long long int rngSequencePos);
 
@@ -289,11 +273,11 @@ public:
    * @param[in] rngStateString Borrowed opaque string produced by
    * `getRngStates()`.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if no crystal type has been selected.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if the decoded state count does not
-   * equal the active piston degree-of-freedom count.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * context with a supported crystal type has been attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * the decoded state count does not equal the active piston degree-of-freedom
+   * count.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if the
    * string cannot be decoded.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if device
@@ -306,11 +290,10 @@ public:
    *
    * @param[in] pgamma Finite non-negative friction in inverse picoseconds.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if no crystal type has been selected.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `pgamma` is non-finite or
-   * negative.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * context with a supported crystal type has been attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `pgamma` is non-finite or negative.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if stochastic
    * forcing factors cannot be transferred to device storage.
    */
@@ -403,10 +386,11 @@ public:
   const CudaContainer<double> &getReferencePressureTensor(void) const;
 
   /**
-   * @brief Returns the selected crystal symmetry.
+   * @brief Returns the attached context's authoritative crystal symmetry.
    *
-   * @return `CRYSTAL::NONE` before configuration, or the active supported
-   * crystal value.
+   * @return `CRYSTAL::UNSET` before context attachment; otherwise the value
+   * returned by @ref CharmmContext::getCrystalType. No independent integrator
+   * crystal value is stored.
    */
   CRYSTAL getCrystalType(void) const;
 
@@ -674,19 +658,36 @@ public:
    * @return `0.5 * Lz * (Pzz - 0.5 * (Pxx + Pyy))` converted to dyne per
    * centimeter.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if no context is attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * context is attached.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if the pressure
    * tensor cannot be transferred to the host.
    */
   double getInstantaneousSurfaceTension(void);
 
 protected:
-  /** @brief Allocates and initializes pressure-controlled state. */
+  /**
+   * @brief Validates the context crystal and box and initializes
+   * pressure-controlled state.
+   *
+   * First attachment or a changed crystal layout allocates piston storage,
+   * computes default crystal-sized masses, and resets piston/thermostat dynamic
+   * history and phase averages. The scalar Nose-Hoover mass, reference
+   * settings, friction coefficient, seed, and RNG sequence position are
+   * preserved. RNG states and particle displacement history are rebuilt from
+   * current state; particle velocities are retained. Configure custom
+   * crystal-sized masses after this call. Reinitializing the same layout
+   * preserves configured masses, friction, and the existing
+   * extended-variable/average behavior.
+   * A failed layout rebuild invalidates the derived piston-size marker, so
+   * state access remains blocked until a subsequent initialization succeeds; a
+   * failed reinitialization of the current layout leaves it usable.
+   */
   void initializeImpl(void) override;
 
   /**
-   * @brief Restores pressure, crystal, displacement, and RNG state.
+   * @brief Restores box, piston, thermostat, displacement, and RNG state from a
+   * restart whose crystal type equals the context's.
    *
    * @param[in] rstFilePath Borrowed restart-file path. The path is not
    * canonicalized or retained.
@@ -727,6 +728,25 @@ protected:
    * @pre The piston degree-of-freedom count is one, two, or three.
    */
   void allocateLangevinPistonVariables(void);
+
+  /**
+   * @brief Validates context crystal/box and derives the required piston size.
+   *
+   * @return One, two, or three for cubic, tetragonal, or orthorhombic symmetry.
+   * @throws ApoCharmmError If the context is absent, its crystal is unset, or
+   * the finite positive box dimensions do not match the declared symmetry.
+   */
+  int getContextPistonDegreesOfFreedom(void) const;
+
+  /**
+   * @brief Rejects state cached for a different context crystal layout.
+   *
+   * Before attachment this is a no-op, preserving constructor inspection and
+   * scalar configuration. A stale or failed layout throws NotInitialized with
+   * instructions to reinitialize. Base history and lifecycle entry points
+   * dispatch this override, including calls made through a base-class handle.
+   */
+  void requireCurrentState(void) const override;
 
   /** @brief Initializes one Philox state per piston degree of freedom. */
   void initializeRng(void);
@@ -805,9 +825,6 @@ protected:
 
   /** @brief Stores the predictor-corrector-invariant delta-pressure part. */
   CudaContainer<double> m_StaticDeltaPressureTensor;
-
-  /** @brief Stores the configured crystal symmetry. */
-  CRYSTAL m_CrystalType;
 
   /** @brief Stores the active crystal degree-of-freedom count. */
   int m_LangevinPistonDegreesOfFreedom;

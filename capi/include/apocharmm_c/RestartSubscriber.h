@@ -34,7 +34,18 @@ extern "C" {
  * Updates occur indirectly during integrator propagation and replace the file
  * with current context and supported-integrator state. Box lengths and
  * coordinates use angstroms, context velocities use angstroms per AKMA time
- * unit, and average temperature uses kelvin.
+ * unit, and average temperature uses kelvin. The standard core uses CHARMM
+ * version-52 sizes and D22.15 precision, with native RNG data in a trailing
+ * extension. Decimal serialization is not bitwise lossless. Energy/statistics
+ * history and the thermal-piston reference-energy origin are explicitly reset.
+ *
+ * Supported imports use ordinary leapfrog state, CUBI/TETR/ORTH cells, and
+ * default CHARMM energy-selection flags. Match topology, timestep, constraints,
+ * potential, and thermostat/piston configuration in both programs. Configure a
+ * new RNG seed before a foreign import; foreign RNG data is not restored.
+ * Set the context crystal type with @ref apo_charmm_context_set_crystal_type
+ * before writing or loading. The context type supplies the output label and
+ * must match the label on import; it is never inferred from box lengths.
  *
  * Do not overlap destruction, subscription, propagation, or frequency changes
  * involving the same handle from multiple threads.

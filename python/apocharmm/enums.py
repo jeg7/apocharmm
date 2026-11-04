@@ -12,21 +12,30 @@ from enum import IntEnum
 
 class CrystalType(IntEnum):
     """
-    @brief Selects the Langevin-piston crystal symmetry.
+    @brief Selects the crystal type owned by a CharmmContext.
 
     `CUBIC` uses one isotropic X/Y/Z degree of freedom. `TETRAGONAL`
     uses one coupled X/Y degree of freedom and one Z degree of freedom.
     `ORTHORHOMBIC` uses independent X, Y, and Z degrees of freedom.
-    `NONE` represents the initial unconfigured state and is rejected by
-    `CudaLangevinPistonIntegrator.setCrystalType()`.
+    `UNSET` represents an unusable crystal configuration, not an aperiodic
+    system, and is rejected by `CharmmContext.setCrystalType()`. The type also
+    labels restart cells and is not inferred from instantaneous box
+    dimensions. Compatible changes on the context are allowed between
+    completed propagation calls; attached piston integrators must then be
+    reinitialized before their state is used.
 
     @anchor python_crystal_type
+    @see charmm_context
     @see cuda_integrators
     """
 
-    NONE = 0
+    ## @brief Represents an unconfigured, non-runnable crystal.
+    UNSET = 0
+    ## @brief Selects one isotropic X/Y/Z piston degree of freedom.
     CUBIC = 1
+    ## @brief Selects coupled X/Y and independent Z piston degrees of freedom.
     TETRAGONAL = 2
+    ## @brief Selects independent X, Y, and Z piston degrees of freedom.
     ORTHORHOMBIC = 3
 
 

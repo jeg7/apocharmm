@@ -7,6 +7,11 @@
 //
 // ENDLICENSE
 
+/**
+ * @file
+ * @brief Declares the C ABI Langevin-thermostat integrator interface.
+ */
+
 #ifndef __APOCHARMM_C_CUDA_LANGEVIN_THERMOSTAT_INTEGRATOR_H__
 #define __APOCHARMM_C_CUDA_LANGEVIN_THERMOSTAT_INTEGRATOR_H__
 

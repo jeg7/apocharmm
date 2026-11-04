@@ -35,7 +35,7 @@ TOLERANCE: float = 1.0e-10
 DETERMINISTIC_TOLERANCE: float = 1.0e-14
 
 
-def create_context() -> apo.CharmmContext:
+def create_context(configure_crystal: bool = True) -> apo.CharmmContext:
     prm_path: str = apo_test.require_file(
         apo_test.get_toppar_dir() / "toppar_water_ions.str"
     )
@@ -47,6 +47,8 @@ def create_context() -> apo.CharmmContext:
     crd = apo.CharmmCrd(crd_path)
 
     ctx = apo.CharmmContext(psf, prm)
+    if configure_crystal:
+        ctx.setCrystalType(apo.CrystalType.CUBIC)
     ctx.setBoxDimensions(BOX_DIMENSIONS)
     ctx.setCoordinates(crd)
     ctx.useHolonomicConstraints(False)
@@ -56,15 +58,15 @@ def create_context() -> apo.CharmmContext:
     return ctx
 
 
-def create_integrator() -> apo.CudaLangevinPistonIntegrator:
+def create_integrator(context: apo.CharmmContext) -> apo.CudaLangevinPistonIntegrator:
     integrator = apo.CudaLangevinPistonIntegrator(TIME_STEP)
     integrator.useNoseHooverThermostat(True)
     integrator.setReferenceTemperature(REFERENCE_TEMPERATURE)
     integrator.setNoseHooverPistonMass(NOSE_HOOVER_PISTON_MASS)
     integrator.setReferencePressure(REFERENCE_PRESSURE_TENSOR)
-    integrator.setCrystalType(apo.CrystalType.CUBIC)
-    integrator.setLangevinPistonMass(LANGEVIN_PISTON_MASS)
     integrator.setLangevinPistonFrictionSeed(LANGEVIN_PISTON_SEED)
+    integrator.setCharmmContext(context)
+    integrator.setLangevinPistonMass(LANGEVIN_PISTON_MASS)
     integrator.setLangevinPistonFriction(LANGEVIN_PISTON_FRICTION)
     return integrator
 
@@ -72,7 +74,8 @@ def create_integrator() -> apo.CudaLangevinPistonIntegrator:
 def check_setters_and_getters() -> None:
     print("Checking CudaLangevinPistonIntegrator setters/getters...")
 
-    integrator = create_integrator()
+    context = create_context()
+    integrator = create_integrator(context)
 
     apo_test.assert_close(
         "CudaLangevinPistonIntegrator.getReferenceTemperature",
@@ -189,14 +192,6 @@ def check_validation() -> None:
     )
 
     apo_test.expect_apo_error(
-        "setCrystalType rejects invalid crystal type",
-        lambda: integrator.setCrystalType(999),
-        apo.APO_STATUS_INVALID_ARGUMENT,
-        "invalid crystal type",
-        "CudaLangevinPistonIntegrator.setCrystalType(crystal_type)",
-    )
-
-    apo_test.expect_apo_error(
         "setReferenceTemperature rejects negative temperature",
         lambda: integrator.setReferenceTemperature(-1.0),
         apo.APO_STATUS_INVALID_ARGUMENT,
@@ -216,15 +211,15 @@ def check_validation() -> None:
         "setLangevinPistonMass rejects missing crystal type",
         lambda: integrator.setLangevinPistonMass([1.0]),
         apo.APO_STATUS_NOT_INITIALIZED,
-        "Crystal type must be set before Langevin piston mass",
+        "Attach a CharmmContext with a crystal type before setting the Langevin piston mass",
         "CudaLangevinPistonIntegrator.setLangevinPistonMass(mass)",
     )
 
     apo_test.expect_apo_error(
-        "setLangevinPistonFriction rejects missing crystal type",
+        "setLangevinPistonFriction rejects missing context",
         lambda: integrator.setLangevinPistonFriction(1.0),
         apo.APO_STATUS_NOT_INITIALIZED,
-        "Crystal type must be set before Langevin piston friction",
+        "Attach a CharmmContext with a crystal type before setting the Langevin piston friction",
         "CudaLangevinPistonIntegrator.setLangevinPistonFriction(friction)",
     )
 
@@ -242,7 +237,8 @@ def check_validation() -> None:
         lambda: integrator.setLangevinPistonFrictionSeed(-1),
     )
 
-    integrator.setCrystalType(apo.CrystalType.CUBIC)
+    configured_context = create_context()
+    integrator.setCharmmContext(configured_context)
 
     apo_test.expect_apo_error(
         "setLangevinPistonMass rejects wrong length for cubic crystal",
@@ -285,13 +281,13 @@ def check_validation() -> None:
     )
 
     missing_crystal_integrator = apo.CudaLangevinPistonIntegrator(TIME_STEP)
-    context = create_context()
+    context = create_context(configure_crystal=False)
 
     apo_test.expect_apo_error(
         "setCharmmContext rejects missing crystal type",
         lambda: missing_crystal_integrator.setCharmmContext(context),
         apo.APO_STATUS_NOT_INITIALIZED,
-        "Crystal type must be set before initialization",
+        "Crystal type must be configured before this operation",
         "CudaIntegrator.setCharmmContext(context)",
     )
 
@@ -301,13 +297,128 @@ def check_validation() -> None:
     return
 
 
+def check_crystal_phase_change() -> None:
+    print("Checking CudaLangevinPistonIntegrator crystal phase changes...")
+
+    context = create_context()
+    integrator = apo.CudaLangevinPistonIntegrator(TIME_STEP)
+
+    try:
+        apo_test.expect_apo_error(
+            "initialize requires an attached context",
+            integrator.initialize,
+            apo.APO_STATUS_NOT_INITIALIZED,
+            "CharmmContext must be set before initialization",
+            "CudaIntegrator.initialize()",
+        )
+
+        integrator.setCharmmContext(context)
+        integrator.setLangevinPistonMass(LANGEVIN_PISTON_MASS)
+        integrator.setLangevinPistonFriction(LANGEVIN_PISTON_FRICTION)
+        integrator.propagate(1)
+
+        context.setCrystalType(apo.CrystalType.CUBIC)
+        apo_test.assert_sequence_close(
+            "unchanged selection preserves usable piston masses",
+            integrator.getLangevinPistonMass(),
+            LANGEVIN_PISTON_MASS,
+            TOLERANCE,
+        )
+
+        context.setCrystalType(apo.CrystalType.ORTHORHOMBIC)
+        apo_test.assert_equal(
+            "piston crystal getter follows the context",
+            integrator.getCrystalType(),
+            apo.CrystalType.ORTHORHOMBIC,
+        )
+
+        stale: str = (
+            "Langevin piston state does not match the context crystal type; reinitialize the integrator"
+        )
+        orth_masses: list[float] = [5.0, 6.0, 7.0]
+        for label, operation, function in [
+            (
+                "stale piston mass getter",
+                integrator.getLangevinPistonMass,
+                "CudaLangevinPistonIntegrator.getLangevinPistonMass()",
+            ),
+            (
+                "stale piston mass setter",
+                lambda: integrator.setLangevinPistonMass(orth_masses),
+                "CudaLangevinPistonIntegrator.setLangevinPistonMass(mass)",
+            ),
+            (
+                "stale piston friction setter",
+                lambda: integrator.setLangevinPistonFriction(6.0),
+                "CudaLangevinPistonIntegrator.setLangevinPistonFriction(friction)",
+            ),
+            (
+                "stale propagation",
+                lambda: integrator.propagate(1),
+                "CudaIntegrator.propagate(num_steps)",
+            ),
+            (
+                "stale restart import",
+                lambda: integrator.initializeFromRestartFile(
+                    "unused_while_piston_state_is_stale.rst"
+                ),
+                "CudaIntegrator.initializeFromRestartFile(path)",
+            ),
+        ]:
+            apo_test.expect_apo_error(
+                label, operation, apo.APO_STATUS_NOT_INITIALIZED, stale, function
+            )
+
+        integrator.initialize()
+        apo_test.assert_equal(
+            "ORTH allocates three piston masses",
+            len(integrator.getLangevinPistonMass()),
+            3,
+        )
+        integrator.setLangevinPistonMass(orth_masses)
+        integrator.initialize()
+        apo_test.assert_sequence_close(
+            "same-type initialize preserves masses",
+            integrator.getLangevinPistonMass(),
+            orth_masses,
+            TOLERANCE,
+        )
+        integrator.propagate(1)
+        context.setBoxDimensions((50.0, 51.0, 52.0))
+        apo_test.expect_apo_error(
+            "unequal ORTH box rejects reverse change to CUBIC",
+            lambda: context.setCrystalType(apo.CrystalType.CUBIC),
+            apo.APO_STATUS_INVALID_ARGUMENT,
+            "Box dimensions are incompatible with the crystal type",
+            "CharmmContext.setCrystalType(crystal_type)",
+        )
+        apo_test.assert_equal(
+            "failed change preserves context crystal",
+            context.getCrystalType(),
+            apo.CrystalType.ORTHORHOMBIC,
+        )
+        apo_test.assert_sequence_close(
+            "failed change leaves piston state usable",
+            integrator.getLangevinPistonMass(),
+            orth_masses,
+            TOLERANCE,
+        )
+    finally:
+        integrator.close()
+        context.close()
+
+    apo_test.expect_exception(
+        "initialize rejects a closed wrapper", RuntimeError, integrator.initialize
+    )
+
+    return
+
+
 def check_short_propagation() -> None:
     print("Checking CudaLangevinPistonIntegrator short propagation...")
 
     ctx = create_context()
-    integrator = create_integrator()
-
-    integrator.setCharmmContext(ctx)
+    integrator = create_integrator(ctx)
     integrator.resetAverages()
 
     initial_coordinates_charges: list[list[float]] = ctx.getCoordinatesCharges()
@@ -366,11 +477,8 @@ def check_deterministic_trajectories() -> None:
         DETERMINISTIC_TOLERANCE,
     )
 
-    integrator1 = create_integrator()
-    integrator1.setCharmmContext(ctx1)
-
-    integrator2 = create_integrator()
-    integrator2.setCharmmContext(ctx2)
+    integrator1 = create_integrator(ctx1)
+    integrator2 = create_integrator(ctx2)
 
     apo_test.assert_close(
         "deterministic initial reference temperature",
@@ -462,6 +570,7 @@ def check_deterministic_trajectories() -> None:
 def main(argc: int, argv: list[str]) -> int:
     check_setters_and_getters()
     check_validation()
+    check_crystal_phase_change()
     check_short_propagation()
     check_deterministic_trajectories()
 

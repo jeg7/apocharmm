@@ -28,14 +28,35 @@
  * transfers the complete single-precision coordinate/charge container from the
  * CUDA device to host memory and synchronizes the current CUDA device.
  *
- * @warning The binary representation uses native integer size, floating-point
- * representation, and byte order. The implementation performs no endian
- * conversion.
- * @warning Reporting frequency is cached by the integrator at subscription but
- * read again by DCD metadata generation. Changing it after subscription can
- * make callback spacing and recorded metadata disagree.
- * @warning A failed frame write is not transactional and can leave a partial or
- * internally inconsistent DCD file.
+ * Integer fields and record markers are signed 32-bit values. Coordinates use
+ * IEEE binary32 and unit-cell entries use IEEE binary64. The byte order is
+ * native; the implementation performs no endian conversion.
+ *
+ * The first saved frame records the integrator's completed step as `START`.
+ * `NFILE` counts successfully written frames. For scheduled output, `NSTEP` is
+ * the latest announced propagation endpoint minus the run origin, which is the
+ * completed step at the first `propagate()` call after subscription (or after
+ * reopening). This matches CHARMM, where `NSTEP` is the run length and frames
+ * are saved when `MOD(ISTEP,NSAVC) == 0` with `ISTEP` counted from the start of
+ * the run; successive `propagate()` calls continue the same run, so a request
+ * split into chunks produces the same file as one request. `NSTEP` includes
+ * unsaved trailing steps and is updated by later announcements even if they
+ * produce no frame.
+ *
+ * A manual update without a propagation announcement uses the first snapshot's
+ * completed step as its origin and the observed step span as `NSTEP`. It does
+ * not invent a future run. Direct `propagateOneStep()` calls do not advance the
+ * integrator's completed-step metadata. Reopening clears all pending metadata
+ * and the run origin. A run origin cleared after frames exist, as a restart
+ * load does, is rejected until the file is reopened under a new path.
+ *
+ * @warning Changes to atom count, degrees of freedom, time step, or reporting
+ * frequency after the header is written are rejected. Later frames must be
+ * exactly one reporting interval apart, which the integrator's run-relative
+ * schedule guarantees; open a new file for another cadence.
+ * @warning Writes and propagation announcements are not transactional. A hook
+ * can update the planned duration before another subscriber or a later step
+ * fails. A failed frame write can leave a partial or inconsistent DCD file.
  *
  * @see Subscriber
  * @see subscriber
@@ -89,6 +110,31 @@ public:
 
 public:
   /**
+   * @brief Receives the next propagation request before its first step.
+   *
+   * Records the planned endpoint, and the run origin if none is set yet. If a
+   * header already exists, immediately patches `NSTEP` and flushes the stream;
+   * `NFILE` is unchanged. This covers requests shorter than the reporting
+   * interval.
+   *
+   * @param[in] startStep Number of completed steps before the request.
+   * @param[in] numSteps Positive number of steps requested for the call.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` for
+   * a nonpositive request, unsigned-counter overflow, a backwards integration
+   * step, a changed reporting frequency, or a run origin cleared after frames
+   * were written (for example by a restart load).
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if the
+   * planned duration exceeds the signed 32-bit DCD range or metadata output
+   * fails.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if an
+   * existing header's stream has been closed.
+   * @warning The planned endpoint describes the accepted request even if a
+   * later hook or propagation step fails. This method is not transactional.
+   */
+  void onPropagationStart(const unsigned long long int startStep,
+                          const int numSteps) override;
+
+  /**
    * @brief Appends one DCD coordinate frame and updates header metadata.
    *
    * On the first update, the method writes the header before the unit-cell and
@@ -96,14 +142,14 @@ public:
    * byte offset 20, flushes the stream, and increments the in-memory frame
    * count only after the final stream-state check succeeds.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if the logical file path is empty, no
-   * context or integrator is attached, the stream is closed, the context does
-   * not contain exactly three positive box lengths, or the atom count is not
-   * positive.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if
+   * the logical file path is empty, no context or integrator is attached, the
+   * stream is closed, the context does not contain exactly three finite
+   * positive box lengths, or the atom count is not positive.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if the next
-   * frame count or derived step count exceeds signed `int`, or if header/frame
-   * output or flushing fails.
+   * frame count, first frame step, derived step count, or coordinate record
+   * length exceeds signed 32-bit range, or if header/frame output or flushing
+   * fails.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if transferring
    * coordinates from device to host or synchronizing the current CUDA device
    * fails.
@@ -121,7 +167,8 @@ public:
    * @brief Opens the stored path as a truncating binary DCD output stream.
    *
    * An already-open stream is closed first. Successful opening resets the frame
-   * count to zero and marks the header as unwritten.
+   * count, header metadata, last frame step, planned endpoint, and run origin,
+   * and marks the header as unwritten.
    *
    * @throws ApoCharmmError With code
    * `ApoCharmmErrorCode::NotInitialized` if the stored file name is empty.
@@ -142,13 +189,17 @@ private:
   /**
    * @brief Writes the fixed DCD header, title, and atom-count records.
    *
-   * The control record stores the current report frequency, context degree-of-
-   * freedom count, integrator time step in picoseconds, an enabled unit-cell
-   * flag, and CHARMM version value 49. It flushes and validates the stream
-   * before marking the header written.
+   * The control record stores the first frame's completed integration step,
+   * report frequency, context degree-of-freedom count, integrator time step in
+   * AKMA time units, an enabled unit-cell flag, and the reference CHARMM
+   * version. It flushes and validates the stream before marking the header
+   * written.
    *
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if writing
-   * or flushing the header fails.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if first
+   * frame step exceeds signed 32-bit range or writing or flushing the header
+   * fails.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * the time step cannot be represented as a positive finite DCD float.
    *
    * @pre The file is open and valid context and integrator attachments exist.
    */
@@ -157,8 +208,9 @@ private:
   /**
    * @brief Writes one six-value periodic-cell record.
    *
-   * Elements 0, 2, and 5 receive the context's X, Y, and Z box lengths in
-   * angstroms; the remaining `double` elements are zero.
+   * The CHARMM symmetric shape matrix has diagonal entries at elements 0, 2,
+   * and 5. These receive the context's X, Y, and Z box lengths in angstroms;
+   * the other elements are zero for the supported orthogonal cells.
    *
    * @pre The context contains exactly three valid box lengths and the stream is
    * open.
@@ -184,11 +236,36 @@ private:
   /**
    * @brief Stores the number of frames committed by successful updates.
    *
-   * The value is encoded into the DCD `NFILE` field and participates in the
-   * derived `NSTEP` value.
+   * The value is encoded into the DCD `NFILE` field and counts complete frames
+   * present in the file.
    */
   int m_NumFramesWritten;
 
   /** @brief Records whether the current open file already contains a header. */
   bool m_IsHeaderWritten;
+
+  /** @brief Stores the report frequency recorded in the current header. */
+  int m_HeaderReportFrequency;
+
+  /** @brief Stores the atom count recorded in the current header. */
+  int m_HeaderNumAtoms;
+
+  /** @brief Stores the degree-of-freedom count recorded in the header. */
+  int m_HeaderNumDegreesOfFreedom;
+
+  /** @brief Stores the time step in picoseconds recorded in the header. */
+  double m_HeaderTimeStep;
+
+  /** @brief Stores the completed integration step of the last saved frame. */
+  unsigned long long int m_LastStepWritten;
+
+  /**
+   * @brief Stores the last announced propagation endpoint for this file.
+   *
+   * The header's `NSTEP` span is this endpoint minus the run origin kept in
+   * `Subscriber::m_StartStep`, which `openFile()` clears so that a new file
+   * starts a new run. Manual snapshots without an announcement use the observed
+   * span instead.
+   */
+  unsigned long long int m_PlannedEndStep;
 };

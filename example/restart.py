@@ -32,6 +32,7 @@ def run0(
 
     # Setup the CharmmContext
     ctx = apo.CharmmContext(fm)
+    ctx.setCrystalType(apo.CrystalType.CUBIC)
     ctx.setCoordinates(crd)
     ctx.setRandomSeed(random_seed)
     ctx.assignVelocitiesAtTemperature(temperature)
@@ -81,6 +82,7 @@ def run1(
 
     # Setup the CharmmContext
     ctx = apo.CharmmContext(fm)
+    ctx.setCrystalType(apo.CrystalType.CUBIC)
     ctx.setCoordinates(crd)
     ctx.useHolonomicConstraints(use_holonomic_constraints)
 

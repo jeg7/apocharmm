@@ -12,15 +12,16 @@
 
 #include "ApoCharmmError.h"
 #include "Constants.h"
+#include "Crystal.h"
 #include "CurandStateString.h"
+#include "RestartIO.h"
 #include "cuda_utils.h"
 #include "gpu_utils.h"
-#include "str_utils.h"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
-#include <fstream>
 #include <random>
 #include <vector_functions.h>
 
@@ -83,7 +84,8 @@ void CudaLangevinThermostatIntegrator::setThermostatFriction(
                         std::to_string(thermostatFriction));
 
   m_ThermostatFriction = thermostatFriction;
-  m_ThermostatGamma = m_TimeStep * m_Timfac * thermostatFriction;
+  m_ThermostatGamma =
+      m_TimeStep * charmm::constants::timfac * thermostatFriction;
 
   // JEG260409: If the friction changes before running a new simulation (i.e.
   // not from a restart file or continuing a previous one) AND the CHARMM
@@ -359,280 +361,111 @@ void CudaLangevinThermostatIntegrator::initializeImpl(void) {
 
 void CudaLangevinThermostatIntegrator::initializeFromRestartFileImpl(
     const std::filesystem::path &rstFilePath) {
-  std::ifstream fin(rstFilePath);
-  APOCHARMM_REQUIRE(fin.is_open(), ApoCharmmErrorCode::Runtime,
-                    "Could not open file \"" + rstFilePath.string() + "\"");
+  const int numAtoms = m_Context->getNumAtoms();
+  const apo::RestartSnapshot snapshot =
+      apo::ReadRestartFile(rstFilePath, numAtoms);
 
-  const std::string restartContext =
-      "restart file \"" + rstFilePath.string() + "\"";
-
-  std::size_t lineNumber = 0;
-  std::string line = "";
-
-  apo::get_line(line, lineNumber, fin, "restart header", restartContext);
-
-  // Get crystal type and check if we need to use the RNG state
-  const bool isApoRstFile =
-      (line.length() >= 33) && (line.compare(30, 3, "APO") == 0);
-
-  // Find CRYSTAL PARAMETERS section
-  apo::find_required_line(fin, lineNumber, " !CRYSTAL PARAMETERS",
-                          "!CRYSTAL PARAMETERS section", restartContext);
-
-  // Parse CRYSTAL PARAMETERS section
-  std::vector<double> XTLABC(6, 0.0);
-  // std::vector<double> HDOT(6, 0.0);
-  // double PNH = 0.0,
-  // double PNHV = 0.0, PNHF = 0.0;
-  // std::vector<double> UC1A(6, 0.0), UC2A(6, 0.0), UC1B(6, 0.0), UC2B(6, 0.0);
-  // double GRAD1A = 0.0, GRAD1B = 0.0, GRAD2A = 0.0, GRAD2B = 0.0;
-
-  apo::get_line(line, lineNumber, fin, "first XTLABC record", restartContext);
-  XTLABC[0] =
-      apo::parse_fixed_width_double(line, 0, 22, "XTLABC[0]", restartContext);
-  XTLABC[1] =
-      apo::parse_fixed_width_double(line, 22, 22, "XTLABC[1]", restartContext);
-  XTLABC[2] =
-      apo::parse_fixed_width_double(line, 44, 22, "XTLABC[2]", restartContext);
-
-  apo::get_line(line, lineNumber, fin, "second XTLABC record", restartContext);
-  XTLABC[3] =
-      apo::parse_fixed_width_double(line, 0, 22, "XTLABC[3]", restartContext);
-  XTLABC[4] =
-      apo::parse_fixed_width_double(line, 22, 22, "XTLABC[4]", restartContext);
-  XTLABC[5] =
-      apo::parse_fixed_width_double(line, 44, 22, "XTLABC[5]", restartContext);
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "first HDOT record", restartContext);
-  // HDOT[0] = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // HDOT[1] = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // HDOT[2] = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "second HDOT record", restartContext);
-  // HDOT[3] = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // HDOT[4] = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // HDOT[5] = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "PNH record", restartContext);
-  // PNH = apo::fortSciStrToCDouble(line.substr(0, 22));   // Not needed for LT
-  // PNHV = apo::fortSciStrToCDouble(line.substr(22, 22)); // Not needed for LT
-  // PNHF = apo::fortSciStrToCDouble(line.substr(44, 22)); // Not needed for LT
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "first UC1A record", restartContext);
-  // UC1A[0] = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // UC1A[1] = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // UC1A[2] = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "second UC1A record", restartContext);
-  // UC1A[3] = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // UC1A[4] = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // UC1A[5] = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "first UC2A record", restartContext);
-  // UC2A[0] = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // UC2A[1] = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // UC2A[2] = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "second UC2A record", restartContext);
-  // UC2A[3] = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // UC2A[4] = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // UC2A[5] = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "first UC1B record", restartContext);
-  // UC1B[0] = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // UC1B[1] = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // UC1B[2] = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "second UC1B record", restartContext);
-  // UC1B[3] = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // UC1B[4] = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // UC1B[5] = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "first UC2B record", restartContext);
-  // UC2B[0] = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // UC2B[1] = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // UC2B[2] = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "second UC2B record", restartContext);
-  // UC2B[3] = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // UC2B[4] = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // UC2B[5] = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "first GRAD record", restartContext);
-  // GRAD1A = apo::fortSciStrToCDouble(line.substr(0, 22));
-  // GRAD1B = apo::fortSciStrToCDouble(line.substr(22, 22));
-  // GRAD2A = apo::fortSciStrToCDouble(line.substr(44, 22));
-
-  // Not needed for Langevin Thermostat
-  apo::get_line(line, lineNumber, fin, "second GRAD record", restartContext);
-  // GRAD2B = apo::fortSciStrToCDouble(line.substr(0, 22));
-
-  // Find integer section
-  apo::find_required_line(
-      fin, lineNumber,
-      " !NATOM,NPRIV,NSTEP,NSAVC,NSAVV,JHSTRT,NDEGF,SEED,NSAVL",
-      "!NATOM,NPRIV,NSTEP,NSAVC,NSAVV,JHSTRT,NDEGF,SEED,NSAVL section",
-      restartContext);
-
-  int NATOM = 0;
-  unsigned long long int NPRIV = 0;
-  int NSTEP = 0;
-  // int NSAVC = 0;  // Not needed for Langevin Thermostat
-  // int NSAVV = 0;  // Not needed for Langevin Thermostat
-  // int JHSTRT = 0; // Not needed for Langevin Thermostat
-  int NDEGF = 0;
-  std::uint64_t SEED = 0;
-  std::string RNGSTATE = "";
-
-  apo::get_line(line, lineNumber, fin, "NATOM/NPRIV/NSTEP/NDEGF/SEED record",
-                restartContext);
-  NATOM = apo::parse_fixed_width_int(line, 0, 12, "NATOM", restartContext);
-  NPRIV = apo::parse_fixed_width_ull(line, 12, 12, "NPRIV", restartContext);
-  NSTEP = apo::parse_fixed_width_int(line, 24, 12, "NSTEP", restartContext);
-  // NSAVC = apo::parse_fixed_width_int(line, 36, 12, "NSAVC", restartContext);
-  // NSAVV = apo::parse_fixed_width_int(line, 48, 12, "NSAVV", restartContext);
-  // JHSTRT = apo::parse_fixed_width_int(line, 60, 12, "JHSTRT",
-  // restartContext);
-  NDEGF = apo::parse_fixed_width_int(line, 72, 12, "NDEGF", restartContext);
-  SEED = apo::parse_fixed_width_ull(line, 84, 22, "SEED", restartContext);
-
-  if (isApoRstFile) {
-    APOCHARMM_REQUIRE(line.size() > 106, ApoCharmmErrorCode::Runtime,
-                      "Restart field \"RNGSTATE\" is missing in " +
-                          restartContext);
-    RNGSTATE = line.substr(106);
-  }
+  m_Context->requireCrystalBox();
 
   APOCHARMM_REQUIRE(
-      NATOM == m_Context->getNumAtoms(), ApoCharmmErrorCode::InvalidArgument,
-      "NATOM mismatch in restart file \"" + rstFilePath.string() + "\"");
+      snapshot.crystal == m_Context->getCrystalType(),
+      ApoCharmmErrorCode::InvalidArgument,
+      "Restart crystal type does not match the configured CharmmContext");
 
-  if (NDEGF != m_Context->getNumDegreesOfFreedom()) {
-    std::cout << "WARNING: NDEGF mismatch in restart file \""
-              << rstFilePath.string() << "\"\n";
-    std::cout << "RST: " << NDEGF << '\n';
-    std::cout << "CTX: " << m_Context->getNumDegreesOfFreedom() << std::endl;
-  }
+  // JEG261102: We should support this one day and just reset the RNG, but for
+  // now we will throw an error.
+  APOCHARMM_REQUIRE(snapshot.nativeKind.empty() ||
+                        snapshot.nativeKind == "LANGEVIN_THERMOSTAT",
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "Restart was written by a different apoCHARMM integrator");
+
+  // CHARMM recomputes NDEGF from its own setup after READYN, and its
+  // conventions differ from this context's (Langevin dynamics, for example,
+  // keeps the three center-of-mass degrees of freedom). Require equality only
+  // for files written by apoCHARMM.
+  APOCHARMM_REQUIRE(snapshot.nativeKind.empty() ||
+                        snapshot.degreesOfFreedom ==
+                            m_Context->getNumDegreesOfFreedom(),
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "Restart NDEGF does not match the configured context");
+
+  // JEG261102: Again, we should support this one day.
+  APOCHARMM_REQUIRE((snapshot.hdot == std::array<double, 6>{}) &&
+                        snapshot.pnhv == 0.0 && snapshot.pnhf == 0.0,
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "A Langevin thermostat cannot restore piston or "
+                    "Nose-Hoover thermostat state");
 
   unsigned long long int restartRngPosition = 0;
   std::vector<curandStatePhilox4_32_10_t> restartRngStates;
-
-  if (isApoRstFile) {
+  if (snapshot.hasNativeRng) {
     apo::curand_states_from_string(restartRngPosition, restartRngStates,
-                                   RNGSTATE);
-
+                                   snapshot.rngState);
     APOCHARMM_REQUIRE(restartRngStates.size() ==
-                          static_cast<std::size_t>(NATOM),
+                          static_cast<std::size_t>(numAtoms),
                       ApoCharmmErrorCode::InvalidArgument,
-                      "RNG state count must match number of atoms; expected " +
-                          std::to_string(NATOM) + ", observed " +
-                          std::to_string(restartRngStates.size()));
+                      "Restart RNG state count must match the atom count");
   }
 
-  // Skip ENERGIES and STATISTICS section
-
-  // Find XOLD, YOLD, ZOLD section
-  apo::find_required_line(fin, lineNumber, " !XOLD, YOLD, ZOLD",
-                          "!XOLD, YOLD, ZOLD section", restartContext);
-
-  // Parse XOLD, YOLD, ZOLD section
-  std::vector<double> XOLD(NATOM), YOLD(NATOM), ZOLD(NATOM);
-  for (int i = 0; i < NATOM; i++) {
-    apo::get_line(line, lineNumber, fin,
-                  "XOLD/YOLD/ZOLD record " + std::to_string(i + 1),
-                  restartContext);
-    XOLD[i] = apo::parse_fixed_width_double(
-        line, 0, 22, "XOLD[" + std::to_string(i) + "]", restartContext);
-    YOLD[i] = apo::parse_fixed_width_double(
-        line, 22, 22, "YOLD[" + std::to_string(i) + "]", restartContext);
-    ZOLD[i] = apo::parse_fixed_width_double(
-        line, 44, 22, "ZOLD[" + std::to_string(i) + "]", restartContext);
+  CudaContainer<double4> &coordinates = m_Context->getCoordinatesChargesDP();
+  CudaContainer<double4> &velocities = m_Context->getVelocitiesInverseMasses();
+  coordinates.transferToHost();
+  velocities.transferToHost();
+  m_CoordsDeltaPrevious.transferToHost();
+  for (int i = 0; i < numAtoms; i++) {
+    coordinates[i].x = snapshot.coordinates[i][0];
+    coordinates[i].y = snapshot.coordinates[i][1];
+    coordinates[i].z = snapshot.coordinates[i][2];
+    velocities[i].x = snapshot.velocities[i][0];
+    velocities[i].y = snapshot.velocities[i][1];
+    velocities[i].z = snapshot.velocities[i][2];
+    m_CoordsDeltaPrevious[i].x = snapshot.deltas[i][0];
+    m_CoordsDeltaPrevious[i].y = snapshot.deltas[i][1];
+    m_CoordsDeltaPrevious[i].z = snapshot.deltas[i][2];
   }
 
-  // Find VX, VY, VZ section
-  apo::find_required_line(fin, lineNumber, " !VX, VY, VZ",
-                          "! VX, VY, VZ section", restartContext);
+  m_Context->setBoxDimensions(
+      {snapshot.box[0], snapshot.box[1], snapshot.box[2]});
 
-  // Parse VX, VY, VZ section
-  std::vector<double> VX(NATOM), VY(NATOM), VZ(NATOM);
-  for (int i = 0; i < NATOM; i++) {
-    apo::get_line(line, lineNumber, fin,
-                  "VX/VY/VZ record " + std::to_string(i + 1), restartContext);
-    VX[i] = apo::parse_fixed_width_double(
-        line, 0, 22, "VX[" + std::to_string(i) + "]", restartContext);
-    VY[i] = apo::parse_fixed_width_double(
-        line, 22, 22, "VY[" + std::to_string(i) + "]", restartContext);
-    VZ[i] = apo::parse_fixed_width_double(
-        line, 44, 22, "VZ[" + std::to_string(i) + "]", restartContext);
-  }
+  this->resetAverageTemperature();
 
-  // Find X, Y, Z section
-  apo::find_required_line(fin, lineNumber, " !X, Y, Z", "!X, Y, Z section",
-                          restartContext);
+  m_TotNumSteps = snapshot.completedSteps;
+  m_NumSteps = snapshot.requestedSteps;
+  m_StepsSinceNeighborListUpdate = 0;
 
-  // Parse X, Y, Z section
-  std::vector<double> X(NATOM), Y(NATOM), Z(NATOM);
-  for (int i = 0; i < NATOM; i++) {
-    apo::get_line(line, lineNumber, fin,
-                  "X/Y/Z record " + std::to_string(i + 1), restartContext);
-    X[i] = apo::parse_fixed_width_double(
-        line, 0, 22, "X[" + std::to_string(i) + "]", restartContext);
-    Y[i] = apo::parse_fixed_width_double(
-        line, 22, 22, "Y[" + std::to_string(i) + "]", restartContext);
-    Z[i] = apo::parse_fixed_width_double(
-        line, 44, 22, "Z[" + std::to_string(i) + "]", restartContext);
-  }
-
-  m_Context->setBoxDimensions({XTLABC[0], XTLABC[2], XTLABC[5]});
-
-  m_TotNumSteps = NPRIV;
-  m_NumSteps = NSTEP;
-  m_CurrentPropagatedStep = CudaIntegrator::wrapCurrentPropagatedStep(NPRIV);
-
-  m_Seed = SEED;
-
-  if (isApoRstFile)
+  if (snapshot.hasNativeRng) {
+    m_Seed = snapshot.rngSeed;
     this->setRngStateData(restartRngPosition, restartRngStates);
-  else {
+  } else {
+    // CHARMM uses another generator. Keep the caller-configured apoCHARMM seed
+    // and start a new stream instead of interpreting CHARMM's state.
     m_RngSequencePos = 0;
     this->initializeRng();
   }
 
-  for (int i = 0; i < NATOM; i++) {
-    m_Context->getCoordinatesChargesDP()[i].x = XOLD[i];
-    m_Context->getCoordinatesChargesDP()[i].y = YOLD[i];
-    m_Context->getCoordinatesChargesDP()[i].z = ZOLD[i];
-    m_Context->getVelocitiesInverseMasses()[i].x = VX[i];
-    m_Context->getVelocitiesInverseMasses()[i].y = VY[i];
-    m_Context->getVelocitiesInverseMasses()[i].z = VZ[i];
-    m_CoordsDeltaPrevious[i].x = X[i];
-    m_CoordsDeltaPrevious[i].y = Y[i];
-    m_CoordsDeltaPrevious[i].z = Z[i];
-  }
-  m_Context->getCoordinatesChargesDP().transferToDevice();
-  m_Context->getVelocitiesInverseMasses().transferToDevice();
+  coordinates.transferToDevice();
+  velocities.transferToDevice();
   m_CoordsDeltaPrevious.transferToDevice();
+  m_CoordsDelta = m_CoordsDeltaPrevious;
 
-  {
-    constexpr int numThreads = 256;
-    const int numBlocks = (NATOM + numThreads - 1) / numThreads;
-    cudaCheckLaunch(UpdateSinglePrecisionCoordinatesKernel<<<
-                        numBlocks, numThreads, 0, *m_IntegratorStream>>>(
-        m_Context->getCoordinatesChargesSP().getDeviceArray().data(),
-        m_Context->getCoordinatesChargesDP().getDeviceArray().data(), NATOM));
-    cudaCheck(cudaStreamSynchronize(*m_IntegratorStream));
+  constexpr int numThreads = 256;
+  const int numBlocks = (numAtoms + numThreads - 1) / numThreads;
+  cudaCheckLaunch(
+      UpdateSinglePrecisionCoordinatesKernel<<<numBlocks, numThreads, 0,
+                                               *m_IntegratorStream>>>(
+          m_Context->getCoordinatesChargesSP().getDeviceArray().data(),
+          coordinates.getDeviceArray().data(), numAtoms));
+  cudaCheck(cudaStreamSynchronize(*m_IntegratorStream));
+
+  if (snapshot.nativeKind.empty() && snapshot.heatingSteps == 0) {
+    // CHARMM resumes a restart written with JHSTRT=0 through its two-step start
+    // (IGVOPT=2): the previous displacement is regenerated from the velocities
+    // and forces rather than taken from the !X, Y, Z block. Native apoCHARMM
+    // files carry JHSTRT=1 once propagation has occurred. The neighbor list
+    // still describes the pre-restart coordinates and calculateForces() does
+    // not rebuild it, so rebuild it first.
+    m_Context->resetNeighborList();
+    this->initialize();
   }
 
   return;
@@ -862,16 +695,21 @@ void CudaLangevinThermostatIntegrator::propagateOneStepImpl(void) {
     m_Context->resetNeighborList();
   }
 
-  if (m_CurrentPropagatedStep % m_RemoveCenterOfMassFrequency == 0)
+  if (m_TotNumSteps %
+          static_cast<unsigned long long int>(m_RemoveCenterOfMassFrequency) ==
+      0ULL) {
     this->removeCenterOfMassMotion();
+  }
 
   copy_DtoD_async<double4>(coordsCharges, m_CoordsRef.getDeviceArray().data(),
                            numAtoms, *m_IntegratorStream);
 
   cudaCheck(cudaStreamSynchronize(*m_IntegratorStream));
 
-  if ((m_DebugPrintFrequency > 0) &&
-      (m_CurrentPropagatedStep % m_DebugPrintFrequency == 0)) {
+  if (m_DebugPrintFrequency > 0 &&
+      m_TotNumSteps %
+              static_cast<unsigned long long int>(m_DebugPrintFrequency) ==
+          0ULL) {
     m_Context->calculateForces(false, true, true);
   } else {
     m_Context->calculateForces(false, false, false);

@@ -7,6 +7,11 @@
 //
 // ENDLICENSE
 
+/**
+ * @file
+ * @brief Declares the C ABI base CUDA-integrator interface.
+ */
+
 #ifndef __APOCHARMM_C_CUDA_INTEGRATOR_H__
 #define __APOCHARMM_C_CUDA_INTEGRATOR_H__
 
@@ -96,6 +101,38 @@ APOCHARMM_C_API apo_status apo_cuda_integrator_set_charmm_context(
     apo_cuda_integrator *integrator, apo_charmm_context *context);
 
 /**
+ * @brief Reinitializes concrete state using the already attached context.
+ *
+ * @param[in] integrator Borrowed live base view. The pointer may not be `NULL`.
+ *
+ * @retval APO_STATUS_OK Concrete initialization completed.
+ * @retval APO_STATUS_INVALID_ARGUMENT The handle or native object is `NULL`, or
+ * the configured context does not satisfy concrete validation.
+ * @retval APO_STATUS_NOT_INITIALIZED No context is attached or a concrete
+ * initialization prerequisite, such as a configured crystal type, is absent.
+ * @retval APO_STATUS_NOT_IMPLEMENTED The direct base hook was reached.
+ * @retval APO_STATUS_CUDA_ERROR CUDA initialization failed.
+ * @retval APO_STATUS_RUNTIME_ERROR Another native failure occurred.
+ *
+ * @note Call between completed propagation calls after changing the context's
+ * crystal type. This rebuilds concrete integration history and RNG state
+ * without resetting the completed-step counter. Friction, RNG seed/sequence,
+ * reference temperature/pressure, Nose-Hoover mass, and atomic velocities are
+ * retained. When the piston layout changes, piston storage is rebuilt with
+ * default masses and piston/Nose-Hoover dynamic history and phase averages are
+ * reset; configure custom new-layout masses afterward if needed. Repeating
+ * initialization with an unchanged type preserves the selected masses and
+ * friction.
+ * @warning Initialization is not transactional. Serialize it with propagation
+ * and other access to the same integrator/context. Do not use this operation to
+ * resume an exact restart; use
+ * @ref apo_cuda_integrator_initialize_from_restart_file for that purpose.
+ * @note On failure, diagnostic text is available through @ref apo_last_error.
+ */
+APOCHARMM_C_API apo_status
+apo_cuda_integrator_initialize(apo_cuda_integrator *integrator);
+
+/**
  * @brief Attaches one subscriber and caches its current reporting interval.
  *
  * @param[in] integrator Borrowed live base view. The pointer may not be `NULL`.
@@ -155,13 +192,13 @@ APOCHARMM_C_API apo_status apo_cuda_integrator_unsubscribe(
  * @retval APO_STATUS_NOT_IMPLEMENTED A concrete operation or subscriber reports
  * an unsupported operation.
  * @retval APO_STATUS_CUDA_ERROR A kernel, CUDA allocation, transfer, force
- * calculation, or synchronization failed.
- * @retval APO_STATUS_RUNTIME_ERROR A restart/output operation, NaN check,
- * allocation, or other runtime operation failed.
+ * calculation, or synchronization failed. @retval APO_STATUS_RUNTIME_ERROR A
+ * restart/output operation, NaN check, allocation, or other runtime operation
+ * failed.
  *
- * @warning Propagation is not transactional. The total requested-step counter
- * is increased before the first step, and completed state and output remain
- * observable after a later failure.
+ * @warning Propagation is not transactional. The completed-step counter
+ * advances after each successful concrete step. State and output remain
+ * observable after a later failure; the failing step may partly modify state.
  * @note On failure, diagnostic text is available through @ref apo_last_error.
  */
 APOCHARMM_C_API apo_status apo_cuda_integrator_propagate(
@@ -180,11 +217,12 @@ APOCHARMM_C_API apo_status apo_cuda_integrator_propagate(
  * `path` is `NULL`, or parsed state is incompatible with configured state.
  * @retval APO_STATUS_NOT_INITIALIZED No context is attached or required
  * concrete state is absent.
- * @retval APO_STATUS_NOT_IMPLEMENTED The direct base restart hook was reached.
+ * @retval APO_STATUS_NOT_IMPLEMENTED The direct base restart hook was reached,
+ * or the file uses an unsupported dynamics type, crystal label, or extension.
  * @retval APO_STATUS_CUDA_ERROR Restored state could not be allocated,
  * transferred, or synchronized.
- * @retval APO_STATUS_RUNTIME_ERROR The file could not be opened or parsed, its
- * crystal type is unsupported, or another runtime failure occurred.
+ * @retval APO_STATUS_RUNTIME_ERROR The file could not be opened or parsed, or
+ * another runtime failure occurred.
  *
  * @warning Restart loading is not transactional. Earlier parsed or transferred
  * state can remain observable after failure.
