@@ -63,6 +63,43 @@ typedef enum apo_crystal_type {
   APO_CRYSTAL_TYPE_ORTHORHOMBIC = 3,
 } apo_crystal_type;
 
+/**
+ * @brief Selects the activation predicate of one geometric restraint term.
+ *
+ * The explicit values equal the native `GeometricRestraintForce::Activation`
+ * enumerators. Every term-addition function rejects any other value before
+ * native conversion. For reaction coordinate `q` and offset `D`, an active
+ * evaluation uses `Delta = q - D`, and equality contributes zero. A plane uses
+ * its signed distance for `SYMMETRIC` and its absolute slab distance for
+ * `INSIDE` and `OUTSIDE`. CHARMM defaults to `INSIDE`; the C ABI requires an
+ * explicit value.
+ */
+typedef enum apo_geometric_restraint_activation {
+  /** Applies the harmonic law on both sides of the offset. */
+  APO_GEOMETRIC_RESTRAINT_ACTIVATION_SYMMETRIC = 0,
+  /** Activates when the reaction coordinate is greater than the offset. */
+  APO_GEOMETRIC_RESTRAINT_ACTIVATION_INSIDE = 1,
+  /** Activates when the reaction coordinate is less than the offset. */
+  APO_GEOMETRIC_RESTRAINT_ACTIVATION_OUTSIDE = -1
+} apo_geometric_restraint_activation;
+
+/**
+ * @brief Selects independent atom evaluations or one mass-weighted center.
+ *
+ * The explicit values equal the native
+ * `GeometricRestraintForce::SelectionMode` enumerators. Every term-addition
+ * function rejects any other value before native conversion.
+ */
+typedef enum apo_geometric_restraint_selection_mode {
+  /** Evaluates every selected atom independently and ignores masses. */
+  APO_GEOMETRIC_RESTRAINT_SELECTION_MODE_ATOMWISE = 0,
+  /**
+   * Evaluates once at the signed mass-weighted center of the selected atoms
+   * and distributes the center gradient by signed mass fraction.
+   */
+  APO_GEOMETRIC_RESTRAINT_SELECTION_MODE_RCM = 1
+} apo_geometric_restraint_selection_mode;
+
 #ifdef __cplusplus
 }
 #endif

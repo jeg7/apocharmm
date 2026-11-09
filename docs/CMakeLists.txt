@@ -87,6 +87,7 @@ set(APOCHARMM_DOCUMENTATION_C_API
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/Enums.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/Error.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/ForceManager.h"
+  "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/GeometricRestraintForce.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/HarmonicCenterOfMassRestraintForce.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/HarmonicRestraintForce.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/RestartSubscriber.h"

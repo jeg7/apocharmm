@@ -227,6 +227,73 @@ logical state. Numeric rejection within `calcForce()` preserves that call's
 pre-existing public output. This does not undo clearing performed earlier by
 the caller or manager. CUDA failures do not provide an output rollback guarantee.
 
+## C ABI
+
+`capi/include/apocharmm_c/GeometricRestraintForce.h` exposes construction, term
+addition, force-wide mass replacement, and reset for the
+`GeometricRestraintForce<long long int, float>` specialization. It does not
+expose calculation, output access, or force-manager subscription.
+
+### Ownership, borrowing, and lifetime
+
+[apo_geometric_restraint_force_create](@ref apo_geometric_restraint_force_create)
+borrows an `apo_charmm_psf` handle only while the native constructor copies the
+atom count and masses. The returned handle shares ownership of the native
+restraint and retains no PSF owner, so the PSF handle may be destroyed, and its
+native PSF mutated, without affecting the restraint. Creation stores a non-NULL
+handle only on success; with a non-NULL `out`, every failure leaves
+`*out == NULL`. Construction and mass replacement use synchronous device
+transfers, so they can wait for other work on the device.
+[apo_geometric_restraint_force_destroy](@ref apo_geometric_restraint_force_destroy)
+accepts `NULL` and releases the native restraint, its CUDA stream, and its
+outputs.
+
+Each geometry has one entry point for a borrowed `apo_atom_selection` and one
+for a borrowed `apo_atom_reference`. No entry point accepts raw atom indices.
+
+| Geometry | AtomSelection input | AtomReference input |
+|---|---|---|
+| Plane | [apo_geometric_restraint_force_add_plane_from_selection](@ref apo_geometric_restraint_force_add_plane_from_selection) | [apo_geometric_restraint_force_add_plane_from_atom_reference](@ref apo_geometric_restraint_force_add_plane_from_atom_reference) |
+| Cylinder | [apo_geometric_restraint_force_add_cylinder_from_selection](@ref apo_geometric_restraint_force_add_cylinder_from_selection) | [apo_geometric_restraint_force_add_cylinder_from_atom_reference](@ref apo_geometric_restraint_force_add_cylinder_from_atom_reference) |
+| Sphere | [apo_geometric_restraint_force_add_sphere_from_selection](@ref apo_geometric_restraint_force_add_sphere_from_selection) | [apo_geometric_restraint_force_add_sphere_from_atom_reference](@ref apo_geometric_restraint_force_add_sphere_from_atom_reference) |
+
+Native code copies the selected or referenced indices and every parameter, so
+atom handles and caller arrays may be released as soon as a call returns. An
+atom reference contributes only its index, which must lie in the restraint's
+atom range; its topology is neither compared nor retained.
+
+Origins, centers, and directions are passed as a `const double *` with a length
+that must equal three, and masses as a `const double *` with a length that must
+equal `N`. Force constants and offsets are `double`. Activation and selection
+mode use `apo_geometric_restraint_activation` and
+`apo_geometric_restraint_selection_mode`, whose explicit values equal the native
+enumerators; undeclared values are rejected before native conversion. C has no
+default arguments: pass offset zero,
+`APO_GEOMETRIC_RESTRAINT_ACTIVATION_INSIDE`, and
+`APO_GEOMETRIC_RESTRAINT_SELECTION_MODE_ATOMWISE` for the native defaults.
+
+[apo_geometric_restraint_force_set_masses](@ref apo_geometric_restraint_force_set_masses)
+copies the caller array into the native transactional replacement; a rejected
+replacement leaves the previous masses in effect.
+[apo_geometric_restraint_force_reset](@ref apo_geometric_restraint_force_reset)
+removes every term while preserving the active masses and existing output.
+
+### Statuses and thread safety
+
+Every status-returning function clears the calling thread's diagnostic at entry
+and leaves it empty on success. `APO_STATUS_INVALID_ARGUMENT` covers invalid
+handles, pointers, lengths, and enum values and every native argument
+rejection. `APO_STATUS_NOT_INITIALIZED` reports a PSF with a negative atom
+count. `APO_STATUS_CUDA_ERROR` reports CUDA failures during construction or
+mass replacement; term addition and reset perform no CUDA work.
+`APO_STATUS_RUNTIME_ERROR` covers an inconsistent PSF mass count, host
+allocation failures, and other C++ exceptions. Read failure text with
+[apo_last_error](@ref apo_last_error) on the same thread.
+
+The handle and native object provide no internal synchronization. Serialize
+every call that uses one restraint handle, including destruction, and do not
+destroy or mutate a borrowed PSF, selection, or reference during a call.
+
 ## Important Behavior and Limitations
 
 ### Mutation, reset, and clear
@@ -297,6 +364,14 @@ coefficient arrays. An inverse membership list preserves term insertion order
 for each atom. RCM reduction workspace grows with the selected memberships.
 Block/chunk sizes do not impose a fixed term or selection capacity.
 
+The C ABI is declared in `capi/include/apocharmm_c/GeometricRestraintForce.h`,
+and its activation and selection-mode enumerations are declared in
+`capi/include/apocharmm_c/Enums.h`. The private shared-owner handle is defined
+in `capi/private_include/apocharmm_c/detail/GeometricRestraintForceHandle.h`,
+and the enumeration conversions are in
+`capi/private_include/apocharmm_c/detail/EnumConversion.h`, and guarded entry
+points are implemented in `capi/src/apocharmm_c/GeometricRestraintForce.cpp`.
+
 ### Evaluation and aggregation
 
 Dirty host term mirrors are synchronized before use. RCM work first reduces
@@ -316,6 +391,9 @@ ordinary coordinate-gradient reconstruction for this force.
 activation, signed masses, output controls, mutation, manager ownership and
 lifecycle, accumulation, dynamic capacity, and stable derivative checks.
 `test/unittests/unittest-forceManager.cpp` covers the shared manager machinery.
+`test/unittests/unittest-capiGeometricRestraintForce.cpp` covers C ABI
+construction, ownership, borrowing, typed atom inputs, enumeration and array
+validation, status mapping, mass replacement, and reset.
 The public potential enum contains only `HARMONIC`. Changes to representations,
 imaging, ordering, or tensor handling require corresponding numerical and
 lifecycle review; they are not additional modes implied by the current API.
@@ -325,3 +403,4 @@ lifecycle review; they are not additional modes implied by the current API.
 - Native C++: [GeometricRestraintForce](@ref GeometricRestraintForce).
 - Typed inputs: [AtomSelection](@ref AtomSelection), [AtomReference](@ref AtomReference), and [CharmmPSF](@ref CharmmPSF).
 - Integration: [ForceManager](@ref ForceManager), [ForceView](@ref ForceView), and [PBC](@ref PBC).
+- C ABI: [apo_geometric_restraint_force](@ref apo_geometric_restraint_force), [apo_geometric_restraint_activation](@ref apo_geometric_restraint_activation), [apo_geometric_restraint_selection_mode](@ref apo_geometric_restraint_selection_mode), [apo_geometric_restraint_force_create](@ref apo_geometric_restraint_force_create), [apo_geometric_restraint_force_destroy](@ref apo_geometric_restraint_force_destroy), [apo_geometric_restraint_force_set_masses](@ref apo_geometric_restraint_force_set_masses), and [apo_geometric_restraint_force_reset](@ref apo_geometric_restraint_force_reset); the six term-addition functions are linked in the C ABI section.

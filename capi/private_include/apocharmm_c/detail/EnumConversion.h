@@ -12,6 +12,7 @@
 #define __APOCHARMM_C_DETAIL_ENUM_CONVERSION_H__
 
 #include "Crystal.h"
+#include "GeometricRestraintForce.h"
 #include "PBC.h"
 #include "apocharmm_c/Enums.h"
 #include "apocharmm_c/Status.h"
@@ -104,6 +105,56 @@ inline apo_status from_crystal_type(apo_crystal_type *out,
     return APO_STATUS_OK;
   default:
     return invalid_argument(function_name, "unknown C++ crystal type value");
+  }
+}
+
+inline apo_status to_geometric_restraint_activation(
+    GeometricRestraintForce<long long int, float>::Activation *out,
+    const apo_geometric_restraint_activation activation,
+    const char *function_name) {
+  APOCHARMM_C_RETURN_IF_ERROR(
+      (require_pointer<
+          GeometricRestraintForce<long long int, float>::Activation>(
+          out, function_name, "out")));
+
+  switch (activation) {
+  case APO_GEOMETRIC_RESTRAINT_ACTIVATION_SYMMETRIC:
+    *out = GeometricRestraintForce<long long int, float>::Activation::SYMMETRIC;
+    return APO_STATUS_OK;
+  case APO_GEOMETRIC_RESTRAINT_ACTIVATION_INSIDE:
+    *out = GeometricRestraintForce<long long int, float>::Activation::INSIDE;
+    return APO_STATUS_OK;
+  case APO_GEOMETRIC_RESTRAINT_ACTIVATION_OUTSIDE:
+    *out = GeometricRestraintForce<long long int, float>::Activation::OUTSIDE;
+    return APO_STATUS_OK;
+  default:
+    return invalid_argument(function_name,
+                            "activation is not a declared "
+                            "apo_geometric_restraint_activation value");
+  }
+}
+
+inline apo_status to_geometric_restraint_selection_mode(
+    GeometricRestraintForce<long long int, float>::SelectionMode *out,
+    const apo_geometric_restraint_selection_mode selection_mode,
+    const char *function_name) {
+  APOCHARMM_C_RETURN_IF_ERROR(
+      (require_pointer<
+          GeometricRestraintForce<long long int, float>::SelectionMode>(
+          out, function_name, "out")));
+
+  switch (selection_mode) {
+  case APO_GEOMETRIC_RESTRAINT_SELECTION_MODE_ATOMWISE:
+    *out =
+        GeometricRestraintForce<long long int, float>::SelectionMode::ATOMWISE;
+    return APO_STATUS_OK;
+  case APO_GEOMETRIC_RESTRAINT_SELECTION_MODE_RCM:
+    *out = GeometricRestraintForce<long long int, float>::SelectionMode::RCM;
+    return APO_STATUS_OK;
+  default:
+    return invalid_argument(function_name,
+                            "selection_mode is not a declared "
+                            "apo_geometric_restraint_selection_mode value");
   }
 }
 
