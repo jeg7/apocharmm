@@ -10,21 +10,32 @@
 
 #include "AtomSelection.h"
 #include "CharmmPSF.h"
+#include "CudaContainer.h"
+#include "ForceManager.h"
+#include "GeometricRestraintForce.h"
 #include "apo_test_helpers.h"
 #include "apocharmm_c/AtomReference.h"
 #include "apocharmm_c/AtomSelection.h"
+#include "apocharmm_c/CharmmContext.h"
+#include "apocharmm_c/CharmmParameters.h"
 #include "apocharmm_c/CharmmPsf.h"
 #include "apocharmm_c/Error.h"
+#include "apocharmm_c/ForceManager.h"
 #include "apocharmm_c/GeometricRestraintForce.h"
 #include "apocharmm_c/Status.h"
 #include "apocharmm_c/detail/AtomReferenceHandle.h"
 #include "apocharmm_c/detail/AtomSelectionHandle.h"
 #include "apocharmm_c/detail/CharmmPsfHandle.h"
+#include "apocharmm_c/detail/ForceManagerHandle.h"
 #include "apocharmm_c/detail/GeometricRestraintForceHandle.h"
 #include "catch.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <string>
@@ -55,6 +66,111 @@ constexpr apo_geometric_restraint_selection_mode ATOMWISE =
 constexpr apo_geometric_restraint_selection_mode RCM =
     APO_GEOMETRIC_RESTRAINT_SELECTION_MODE_RCM;
 
+constexpr int ORACLE_NUM_ATOMS = 12;
+constexpr char PSF_FILE[] = "tmp_capi_geometric_restraint_force_manager.psf";
+constexpr char PARAMETER_FILE[] =
+    "tmp_capi_geometric_restraint_force_manager.prm";
+constexpr char SUBSCRIBE_FUNCTION_NAME[] =
+    "apo_force_manager_subscribe_geometric_restraint_force";
+constexpr char UNSUBSCRIBE_FUNCTION_NAME[] =
+    "apo_force_manager_unsubscribe_geometric_restraint_force";
+constexpr char SET_PBC_FUNCTION_NAME[] =
+    "apo_force_manager_set_periodic_boundary_condition";
+constexpr char FORCE_MANAGER_HEADER_FILE[] = "include/ForceManager.h";
+constexpr char FORCE_MANAGER_SOURCE_FILE[] = "src/ForceManager.cu";
+constexpr double BOX_DIMENSIONS[3] = {20.0, 30.0, 40.0};
+constexpr double INV_FORCE_SCALE_TEST = 1.0 / static_cast<double>(1LL << 40);
+constexpr double ARITHMETIC_TOLERANCE =
+    64.0 * std::numeric_limits<double>::epsilon();
+
+constexpr char ZERO_INTERACTION_PSF_TEXT[] = R"PSF(PSF
+
+       1 !NTITLE
+ REMARKS C ABI MMFP zero-interaction system
+      12 !NATOM
+       1 MMFP     1 DUM  DUM  DUM    0.000000   1.0000           0
+       2 MMFP     2 DUM  DUM  DUM    0.000000   1.5000           0
+       3 MMFP     3 DUM  DUM  DUM    0.000000   2.0000           0
+       4 MMFP     4 DUM  DUM  DUM    0.000000   2.5000           0
+       5 MMFP     5 DUM  DUM  DUM    0.000000   3.0000           0
+       6 MMFP     6 DUM  DUM  DUM    0.000000   3.5000           0
+       7 MMFP     7 DUM  DUM  DUM    0.000000   4.0000           0
+       8 MMFP     8 DUM  DUM  DUM    0.000000   4.5000           0
+       9 MMFP     9 DUM  DUM  DUM    0.000000   5.0000           0
+      10 MMFP    10 DUM  DUM  DUM    0.000000   5.5000           0
+      11 MMFP    11 DUM  DUM  DUM    0.000000   6.0000           0
+      12 MMFP    12 DUM  DUM  DUM    0.000000   6.5000           0
+       0 !NBOND: bonds
+       0 !NTHETA: angles
+       0 !NPHI: dihedrals
+       0 !NIMPHI: impropers
+       0 !NDON: donors
+       0 !NACC: acceptors
+       0 !NCRTERM: cross-terms
+)PSF";
+
+constexpr char ZERO_INTERACTION_PARAMETER_TEXT[] = "NONBONDED\n"
+                                                   "DUM 0.0 0.0 1.0\n"
+                                                   "END\n";
+
+constexpr std::array<double, ORACLE_NUM_ATOMS> STANDARD_MASSES = {
+    1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5};
+constexpr std::array<double, ORACLE_NUM_ATOMS> UNEQUAL_MASSES = {
+    1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0};
+constexpr std::array<double, ORACLE_NUM_ATOMS> EQUAL_MASSES = {
+    2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0};
+constexpr std::array<double, ORACLE_NUM_ATOMS> NEGATIVE_TOTAL_MASSES = {
+    1.0, -3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0};
+constexpr std::array<double, ORACLE_NUM_ATOMS> ZERO_TOTAL_MASSES = {
+    1.0, -1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0};
+
+enum class Geometry { PLANE, CYLINDER, SPHERE };
+
+enum class AtomRoute { SELECTION, ATOM_REFERENCE };
+
+struct OracleTerm {
+  Geometry geometry;
+  apo_geometric_restraint_activation activation;
+  apo_geometric_restraint_selection_mode selectionMode;
+  std::vector<int> atoms;
+  std::array<double, 3> origin;
+  std::array<double, 3> direction;
+  double forceConstant;
+  double offset;
+};
+
+struct OracleForce {
+  int atom;
+  std::array<double, 3> force;
+};
+
+struct OraclePhase {
+  std::string_view name;
+  bool resetFirst;
+  std::vector<OracleTerm> terms;
+  bool energyReported;
+  double energy;
+  std::vector<OracleForce> forces;
+  std::array<double, 9> virial;
+  double energyTolerance;
+  double forceTolerance;
+  double virialTolerance;
+};
+
+struct OracleCase {
+  std::string_view caseId;
+  std::vector<std::array<double, 3>> coordinatePrefix;
+  std::array<double, ORACLE_NUM_ATOMS> masses;
+  bool translateFirstAtomToOrigin;
+  std::vector<OraclePhase> phases;
+};
+
+struct ManagerOutput {
+  std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> gradients;
+  double energy;
+  std::array<double, 9> virial;
+};
+
 struct GeometricRestraintForceDeleter {
   void operator()(apo_geometric_restraint_force *restraint) const noexcept {
     apo_geometric_restraint_force_destroy(restraint);
@@ -83,6 +199,27 @@ struct AtomReferenceDeleter {
   }
 };
 
+struct CharmmParametersDeleter {
+  void operator()(apo_charmm_parameters *parameters) const noexcept {
+    apo_charmm_parameters_destroy(parameters);
+    return;
+  }
+};
+
+struct ForceManagerDeleter {
+  void operator()(apo_force_manager *forceManager) const noexcept {
+    apo_force_manager_destroy(forceManager);
+    return;
+  }
+};
+
+struct CharmmContextDeleter {
+  void operator()(apo_charmm_context *context) const noexcept {
+    apo_charmm_context_destroy(context);
+    return;
+  }
+};
+
 using GeometricRestraintForceHandle =
     std::unique_ptr<apo_geometric_restraint_force,
                     GeometricRestraintForceDeleter>;
@@ -91,6 +228,19 @@ using AtomSelectionHandle =
     std::unique_ptr<apo_atom_selection, AtomSelectionDeleter>;
 using AtomReferenceHandle =
     std::unique_ptr<apo_atom_reference, AtomReferenceDeleter>;
+using CharmmParametersHandle =
+    std::unique_ptr<apo_charmm_parameters, CharmmParametersDeleter>;
+using ForceManagerHandle =
+    std::unique_ptr<apo_force_manager, ForceManagerDeleter>;
+using CharmmContextHandle =
+    std::unique_ptr<apo_charmm_context, CharmmContextDeleter>;
+
+struct ZeroInteractionSystem {
+  CharmmPsfHandle psf;
+  CharmmParametersHandle parameters;
+  ForceManagerHandle forceManager;
+  CharmmContextHandle context;
+};
 
 using TermAddition = std::function<apo_status(
     apo_geometric_restraint_force *, apo_geometric_restraint_activation,
@@ -282,6 +432,942 @@ void CheckMmfpNativeError(const apo_status status,
   apo_test::CheckNativeError(status, APO_STATUS_INVALID_ARGUMENT,
                              "InvalidArgument", functionName, expectedMessage,
                              MMFP_SOURCE_FILE, sourceFunction);
+  return;
+}
+
+std::vector<OracleCase> MakeOracleCases(void) {
+  const std::vector<OracleCase> cases = {
+      {"law_planar_symmetric_force_positive_above",
+       {{3.0, 0.0, 0.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         1.0,
+         {{0, {-2.0, 0.0, 0.0}}},
+         {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.7000000000599994e-09}}},
+      {"plane_x_axis_negative_side",
+       {{-3.0, 0.0, 0.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         25.0,
+         {{0, {10.0, 0.0, 0.0}}},
+         {30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-06,
+         1e-10,
+         5.100000000059999e-09}}},
+      {"plane_general_nonunit",
+       {{3.0, 2.0, 4.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.5, -1.0, 1.5},
+           {2.0, 4.0, 6.0},
+           2.0,
+           2.0}},
+         true,
+         5.1809948,
+         {{0, {-1.2166693181, -2.4333386361, -3.6500079542}}},
+         {3.6500079542999995, 7.300015908299999, 10.9500238626, 2.4333386362,
+          4.8666772722, 7.3000159084, 4.8666772724, 9.7333545444,
+          14.6000318168},
+         5e-08,
+         1e-10,
+         5.08250039777e-09}}},
+      {"r13_b008_plane_inside_negd_zero_general",
+       {},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           INSIDE,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 2.0, 3.0},
+           2.0,
+           -2.0}},
+         true,
+         4.0,
+         {{0, {-1.0690449676, -2.1380899353, -3.2071349029}}},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.660356745205e-09}}},
+      {"r12_b047_plane_outside_zero_general",
+       {},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           OUTSIDE,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 2.0, 3.0},
+           2.0,
+           2.0}},
+         true,
+         4.0,
+         {{0, {1.0690449676, 2.1380899353, 3.2071349029}}},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.660356745205e-09}}},
+      {"law_default_potential_and_activation_omitted_delta_2",
+       {{4.0, 0.0, 0.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           INSIDE,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         4.0,
+         {{0, {-4.0, 0.0, 0.0}}},
+         {16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.900000000059999e-09}}},
+      {"cylinder_general_nonunit",
+       {{4.0, 1.0, -1.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::CYLINDER,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {1.0, -2.0, 3.0},
+           {2.0, 4.0, 6.0},
+           2.0,
+           2.0}},
+         true,
+         14.2548857,
+         {{0, {-4.2024438653, -4.4826067897, 4.3892191482}}},
+         {16.8097754612, 17.9304271588, -17.5568765928, 4.2024438653,
+          4.4826067897, -4.3892191482, -4.2024438653, -4.4826067897,
+          4.3892191482},
+         5e-08,
+         1e-10,
+         4.924130339544999e-09}}},
+      {"r11_b045_negd_cyl_in",
+       {{1.0, 0.0, 5.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::CYLINDER,
+           INSIDE,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 1.0},
+           2.0,
+           -2.0}},
+         true,
+         9.0,
+         {{0, {-6.0, 0.0, 0.0}}},
+         {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 30.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.30000000006e-09}}},
+      {"r13_b016_cylinder_outside_active",
+       {{1.0, 0.0, 5.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::CYLINDER,
+           OUTSIDE,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 1.0},
+           2.0,
+           2.0}},
+         true,
+         1.0,
+         {{0, {2.0, 0.0, 0.0}}},
+         {-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, -10.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.10000000006e-09}}},
+      {"r11_sphere_transition_last_suppressed",
+       {{1.2500099999, -2.5, 3.75}},
+       STANDARD_MASSES,
+       true,
+       {{"restrained",
+         false,
+         {{Geometry::SPHERE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {1.25, -2.5, 3.75},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.87500000006e-09}}},
+      {"r11_sphere_transition_first_ordinary",
+       {{1.25001, -2.5, 3.75}},
+       STANDARD_MASSES,
+       true,
+       {{"restrained",
+         false,
+         {{Geometry::SPHERE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {1.25, -2.5, 3.75},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         3.99996,
+         {{0, {3.99998, 0.0, 0.0}}},
+         {-5.0000149998, 0.0, 0.0, 9.99995, 0.0, 0.0, -14.999925, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.07499900006e-09}}},
+      {"accumulation_multiple_spheres",
+       {{3.0, 2.0, 1.0}, {4.0, 1.0, 2.0}, {5.0, 3.0, 1.0}},
+       UNEQUAL_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::SPHERE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           1.0,
+           1.0},
+          {Geometry::SPHERE,
+           SYMMETRIC,
+           ATOMWISE,
+           {1},
+           {1.0, 1.0, 1.0},
+           {0.0, 0.0, 0.0},
+           1.5,
+           1.0}},
+         true,
+         7.26492612,
+         {{0, {-2.1982162743, -1.4654775162, -0.7327387581}},
+          {1, {-3.0769750529, 0.0, -1.025658351}}},
+         {18.902549034499998, 4.3964325486, 6.3008496783, 7.4734076015,
+          2.9309550324, 2.4911358671999997, 8.3521663801, 1.4654775162,
+          2.7840554601},
+         5e-09,
+         1e-10,
+         5.663759566419999e-09}}},
+      {"p1_sphere_crosses_x_boundary_b",
+       {{-10.5, 0.0, 0.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::SPHERE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {9.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         306.25,
+         {{0, {35.0, 0.0, 0.0}}},
+         {367.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-05,
+         1e-10,
+         7.1000000000599994e-09}}},
+      {"r11_b029_cancel_p_n_s",
+       {{3.0, 0.0, 0.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1e+16,
+           2.0},
+          {Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           -1e+16,
+           2.0},
+          {Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           2.0}},
+         true,
+         0.5,
+         {{0, {-1.0, 0.0, 0.0}}},
+         {3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-08,
+         1e-10,
+         4.650000000059999e-09}}},
+      {"r11_b029_cancel_p_s_n",
+       {{3.0, 0.0, 0.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1e+16,
+           2.0},
+          {Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           2.0},
+          {Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           -1e+16,
+           2.0}},
+         true,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.600000000059999e-09}}},
+      {"ordinary_different_coordinates_three_selected",
+       {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {8.0, 8.0, 8.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0, 1, 2},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         6.0,
+         {{0, {-2.0, 0.0, 0.0}}, {1, {-4.0, 0.0, 0.0}}, {2, {2.0, 0.0, 0.0}}},
+         {20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         6.20000000006e-09}}},
+      {"ordinary_overlapping_selections_two_terms",
+       {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {8.0, 8.0, 8.0}},
+       STANDARD_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           2.0},
+          {Geometry::SPHERE,
+           SYMMETRIC,
+           ATOMWISE,
+           {1, 2},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           1.5,
+           2.0}},
+         true,
+         6.25,
+         {{0, {-1.0, 0.0, 0.0}}, {1, {-5.0, 0.0, 0.0}}, {2, {1.5, 0.0, 0.0}}},
+         {21.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         6.1750000000599994e-09}}},
+      {"rcm_unequal_masses",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
+       UNEQUAL_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         4.0,
+         {{0, {-1.0, 0.0, 0.0}}, {1, {-3.0, 0.0, 0.0}}},
+         {16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.9000000000599994e-09}}},
+      {"rcm_negative_total_mass",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
+       NEGATIVE_TOTAL_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         25.0,
+         {{0, {5.0, 0.0, 0.0}}, {1, {-15.0, 0.0, 0.0}}},
+         {70.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-06,
+         1e-10,
+         6.70000000006e-09}}},
+      {"r12_b022_rcm_sphere_cross_x_boundary",
+       {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
+       EQUAL_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::SPHERE,
+           SYMMETRIC,
+           RCM,
+           {0, 1},
+           {9.0, 0.0, 0.0},
+           {0.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         306.25,
+         {{0, {17.5, 0.0, 0.0}}, {1, {17.5, 0.0, 0.0}}},
+         {367.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-05,
+         1e-10,
+         8.05000000006e-09}}},
+      {"virial_rcm_cylinder",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
+       UNEQUAL_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::CYLINDER,
+           SYMMETRIC,
+           RCM,
+           {0, 1, 2},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 1.0},
+           2.0,
+           2.0}},
+         true,
+         13.4444444,
+         {{0, {-1.2222222222, 0.0, 0.0}},
+          {1, {-3.6666666667, 0.0, 0.0}},
+          {2, {-2.4444444444, 0.0, 0.0}}},
+         {41.5555555553, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-08,
+         1e-10,
+         6.066666666725e-09}}},
+      {"virial_mixed_ordinary_rcm",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
+       UNEQUAL_MASSES,
+       false,
+       {{"restrained",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           1.0,
+           2.0},
+          {Geometry::CYLINDER,
+           OUTSIDE,
+           ATOMWISE,
+           {1, 2},
+           {0.0, 0.0, 0.0},
+           {0.0, 0.0, 1.0},
+           1.5,
+           2.0},
+          {Geometry::SPHERE,
+           SYMMETRIC,
+           RCM,
+           {0, 1, 2},
+           {1.0, 1.0, 1.0},
+           {0.0, 0.0, 0.0},
+           0.75,
+           2.5}},
+         true,
+         7.11745489,
+         {{0, {0.7157355097, 0.0609138193, 0.0609138193}},
+          {1, {-3.8527934708, 0.182741458, 0.182741458}},
+          {2, {-0.5685289805, 0.1218276387, 0.1218276387}}},
+         {23.664992668800004, -2.0710698576, -2.0710698576, 0.0, 0.0, 0.0, 0.0,
+          0.0, 0.0},
+         5e-09,
+         1e-10,
+         5.95685289811e-09}}},
+      {"r11_b033_reset_reuse_rcm",
+       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}},
+       UNEQUAL_MASSES,
+       false,
+       {{"pre_reset",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           ATOMWISE,
+           {0},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         1.0,
+         {{0, {2.0, 0.0, 0.0}}},
+         {-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         4.9000000000599996e-09},
+        {"post_reset",
+         true,
+         {},
+         false,
+         0.0,
+         {},
+         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         0.0,
+         1e-10,
+         4.8000000000599995e-09},
+        {"post_new_rcm",
+         false,
+         {{Geometry::PLANE,
+           SYMMETRIC,
+           RCM,
+           {0, 1},
+           {0.0, 0.0, 0.0},
+           {1.0, 0.0, 0.0},
+           2.0,
+           2.0}},
+         true,
+         4.0,
+         {{0, {-1.0, 0.0, 0.0}}, {1, {-3.0, 0.0, 0.0}}},
+         {16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         5e-07,
+         1e-10,
+         5.000000000059999e-09}}}};
+
+  return cases;
+}
+
+OracleCase FindOracleCase(const std::string_view caseId) {
+  for (const OracleCase &test : MakeOracleCases()) {
+    if (test.caseId == caseId)
+      return test;
+  }
+
+  FAIL("Unknown MMFP oracle case_id: " << caseId);
+  return {};
+}
+
+std::array<std::array<double, 3>, ORACLE_NUM_ATOMS>
+EvaluatedCoordinates(const OracleCase &test) {
+  std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates = {{
+      {0.0, 0.0, 0.0},
+      {1.0, 0.0, 0.0},
+      {0.0, 1.0, 0.0},
+      {0.0, 0.0, 1.0},
+      {3.0, 4.0, 5.0},
+      {-3.0, -4.0, -5.0},
+      {7.0, 1.0, -2.0},
+      {-7.0, -1.0, 2.0},
+      {9.0, 9.0, 9.0},
+      {-9.0, -9.0, -9.0},
+      {2.0, 5.0, -6.0},
+      {-2.0, -5.0, 6.0},
+  }};
+  std::copy(test.coordinatePrefix.begin(), test.coordinatePrefix.end(),
+            coordinates.begin());
+
+  if (test.translateFirstAtomToOrigin)
+    coordinates[0] = {0.0, 0.0, 0.0};
+
+  return coordinates;
+}
+
+std::array<double, 3> OriginShift(const OracleCase &test) {
+  if (!test.translateFirstAtomToOrigin)
+    return {0.0, 0.0, 0.0};
+
+  REQUIRE(test.coordinatePrefix.empty() == false);
+  return test.coordinatePrefix[0];
+}
+
+ZeroInteractionSystem MakeSystem(void) {
+  apo_test::WriteTextFile(PSF_FILE, ZERO_INTERACTION_PSF_TEXT);
+  apo_test::WriteTextFile(PARAMETER_FILE, ZERO_INTERACTION_PARAMETER_TEXT);
+
+  apo_charmm_psf *psf = nullptr;
+  const apo_status psfStatus = apo_charmm_psf_create(&psf, PSF_FILE);
+  CharmmPsfHandle psfHandle(psf);
+
+  apo_charmm_parameters *parameters = nullptr;
+  const apo_status parametersStatus =
+      apo_charmm_parameters_create(&parameters, PARAMETER_FILE);
+  CharmmParametersHandle parametersHandle(parameters);
+
+  apo_test::RemoveIfExists(PSF_FILE);
+  apo_test::RemoveIfExists(PARAMETER_FILE);
+
+  REQUIRE(psfStatus == APO_STATUS_OK);
+  REQUIRE(parametersStatus == APO_STATUS_OK);
+
+  apo_force_manager *forceManager = nullptr;
+  REQUIRE(apo_force_manager_create(&forceManager, psfHandle.get(),
+                                   parametersHandle.get()) == APO_STATUS_OK);
+  ForceManagerHandle forceManagerHandle(forceManager);
+
+  REQUIRE(apo_force_manager_set_box_dimensions(forceManager, BOX_DIMENSIONS,
+                                               3) == APO_STATUS_OK);
+  REQUIRE(apo_force_manager_set_cutoff(forceManager, 9.0) == APO_STATUS_OK);
+  REQUIRE(apo_force_manager_set_ctonnb(forceManager, 8.5) == APO_STATUS_OK);
+  REQUIRE(apo_force_manager_set_ctofnb(forceManager, 7.5) == APO_STATUS_OK);
+  REQUIRE(apo_force_manager_set_periodic_boundary_condition(
+              forceManager, APO_PBC_P1) == APO_STATUS_OK);
+
+  return {std::move(psfHandle), std::move(parametersHandle),
+          std::move(forceManagerHandle), CharmmContextHandle()};
+}
+
+void InitializeSystem(ZeroInteractionSystem &system) {
+  bool initialized = true;
+  REQUIRE(apo_force_manager_is_initialized(
+              &initialized, system.forceManager.get()) == APO_STATUS_OK);
+  REQUIRE(initialized == false);
+
+  apo_charmm_context *context = nullptr;
+  REQUIRE(apo_charmm_context_create(&context, system.forceManager.get()) ==
+          APO_STATUS_OK);
+  system.context.reset(context);
+
+  REQUIRE(apo_force_manager_is_initialized(
+              &initialized, system.forceManager.get()) == APO_STATUS_OK);
+  REQUIRE(initialized == true);
+
+  return;
+}
+
+apo_status AddOracleTerm(apo_geometric_restraint_force *restraint,
+                         const apo_charmm_psf *psf, const OracleTerm &term,
+                         const std::array<double, 3> &originShift,
+                         const AtomRoute route) {
+  const double origin[3] = {term.origin[0] - originShift[0],
+                            term.origin[1] - originShift[1],
+                            term.origin[2] - originShift[2]};
+  const double direction[3] = {term.direction[0], term.direction[1],
+                               term.direction[2]};
+
+  if (route == AtomRoute::ATOM_REFERENCE) {
+    REQUIRE(term.atoms.size() == 1);
+    AtomReferenceHandle atom = MakeReference(psf, term.atoms[0]);
+
+    if (term.geometry == Geometry::PLANE) {
+      return apo_geometric_restraint_force_add_plane_from_atom_reference(
+          restraint, atom.get(), origin, 3, direction, 3, term.forceConstant,
+          term.offset, term.activation, term.selectionMode);
+    }
+
+    if (term.geometry == Geometry::CYLINDER) {
+      return apo_geometric_restraint_force_add_cylinder_from_atom_reference(
+          restraint, atom.get(), origin, 3, direction, 3, term.forceConstant,
+          term.offset, term.activation, term.selectionMode);
+    }
+
+    return apo_geometric_restraint_force_add_sphere_from_atom_reference(
+        restraint, atom.get(), origin, 3, term.forceConstant, term.offset,
+        term.activation, term.selectionMode);
+  }
+
+  AtomSelectionHandle selection = MakeSelection(ORACLE_NUM_ATOMS, term.atoms);
+
+  if (term.geometry == Geometry::PLANE) {
+    return apo_geometric_restraint_force_add_plane_from_selection(
+        restraint, selection.get(), origin, 3, direction, 3, term.forceConstant,
+        term.offset, term.activation, term.selectionMode);
+  }
+
+  if (term.geometry == Geometry::CYLINDER) {
+    return apo_geometric_restraint_force_add_cylinder_from_selection(
+        restraint, selection.get(), origin, 3, direction, 3, term.forceConstant,
+        term.offset, term.activation, term.selectionMode);
+  }
+
+  return apo_geometric_restraint_force_add_sphere_from_selection(
+      restraint, selection.get(), origin, 3, term.forceConstant, term.offset,
+      term.activation, term.selectionMode);
+}
+
+void AddOracleTerms(apo_geometric_restraint_force *restraint,
+                    const apo_charmm_psf *psf, const OracleCase &test,
+                    const OraclePhase &phase, const AtomRoute route) {
+  const std::array<double, 3> originShift = OriginShift(test);
+
+  for (const OracleTerm &term : phase.terms) {
+    if (test.translateFirstAtomToOrigin)
+      REQUIRE(term.atoms == std::vector<int>{0});
+
+    const apo_status status =
+        AddOracleTerm(restraint, psf, term, originShift, route);
+    INFO("term-addition diagnostic: " << apo_last_error());
+    REQUIRE(status == APO_STATUS_OK);
+  }
+
+  return;
+}
+
+ManagerOutput EvaluateManager(
+    const apo_force_manager *forceManager,
+    const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> &coordinates) {
+  std::vector<float4> xyzq;
+  xyzq.reserve(coordinates.size());
+
+  for (const std::array<double, 3> &position : coordinates) {
+    for (const double value : position)
+      REQUIRE(static_cast<double>(static_cast<float>(value)) == value);
+
+    xyzq.push_back(make_float4(static_cast<float>(position[0]),
+                               static_cast<float>(position[1]),
+                               static_cast<float>(position[2]), 0.0f));
+  }
+
+  CudaContainer<float4> deviceCoordinates(xyzq);
+  ForceManager &manager = *forceManager->object;
+  manager.resetNeighborList(deviceCoordinates.getDeviceArray().data());
+  manager.calcForce(deviceCoordinates.getDeviceArray().data(), false, true,
+                    true);
+
+  const std::shared_ptr<Force<double>> forces = manager.getForces();
+  REQUIRE(forces->size() == ORACLE_NUM_ATOMS);
+
+  std::vector<double> x(ORACLE_NUM_ATOMS);
+  std::vector<double> y(ORACLE_NUM_ATOMS);
+  std::vector<double> z(ORACLE_NUM_ATOMS);
+  forces->getXYZ(x.data(), y.data(), z.data());
+
+  ManagerOutput result;
+  for (int atom = 0; atom < ORACLE_NUM_ATOMS; atom++)
+    result.gradients[atom] = {x[atom], y[atom], z[atom]};
+
+  CudaContainer<double> &energy = manager.getPotentialEnergy();
+  energy.transferToHost();
+  result.energy = energy[0];
+
+  CudaContainer<double> &virial = manager.getVirial();
+  virial.transferToHost();
+  for (std::size_t i = 0; i < result.virial.size(); i++)
+    result.virial[i] = virial[i];
+
+  return result;
+}
+
+void CheckManagerOracle(const OracleCase &test, const OraclePhase &phase,
+                        const ManagerOutput &baseline,
+                        const ManagerOutput &observed) {
+  constexpr std::array<const char *, 9> components = {
+      "XX", "XY", "XZ", "YX", "YY", "YZ", "ZX", "ZY", "ZZ"};
+
+  std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> expectedForces{};
+  double forceMagnitude = 0.0;
+  for (const OracleForce &force : phase.forces) {
+    expectedForces[force.atom] = force.force;
+    for (const double component : force.force)
+      forceMagnitude = std::max(forceMagnitude, std::abs(component));
+  }
+
+  const double energyTolerance =
+      phase.energyTolerance + ARITHMETIC_TOLERANCE * std::abs(phase.energy);
+  const double forceTolerance =
+      phase.forceTolerance + 0.5 * INV_FORCE_SCALE_TEST +
+      0.5 * std::numeric_limits<float>::epsilon() * forceMagnitude +
+      ARITHMETIC_TOLERANCE * std::max(1.0, forceMagnitude);
+  const std::array<double, 3> originShift = OriginShift(test);
+
+  INFO(test.caseId << ", phase " << phase.name);
+
+  const double energy = observed.energy - baseline.energy;
+  {
+    INFO("aggregate energy " << energy << ", expected " << phase.energy
+                             << ", tolerance " << energyTolerance);
+    CHECK(std::abs(energy - phase.energy) <= energyTolerance);
+  }
+
+  for (int atom = 0; atom < ORACLE_NUM_ATOMS; atom++) {
+    for (std::size_t k = 0; k < 3; k++) {
+      const double force =
+          -(observed.gradients[atom][k] - baseline.gradients[atom][k]);
+      INFO("atom " << atom << ", physical force component " << k << ": "
+                   << force << ", expected " << expectedForces[atom][k]
+                   << ", tolerance " << forceTolerance);
+      CHECK(std::abs(force - expectedForces[atom][k]) <= forceTolerance);
+    }
+  }
+
+  for (std::size_t a = 0; a < 3; a++) {
+    for (std::size_t b = 0; b < 3; b++) {
+      const std::size_t index = 3 * a + b;
+      const double firstAtomGradient =
+          observed.gradients[0][b] - baseline.gradients[0][b];
+      const double virial = observed.virial[index] - baseline.virial[index] +
+                            originShift[a] * firstAtomGradient;
+      const double tolerance =
+          phase.virialTolerance +
+          ARITHMETIC_TOLERANCE * (1.0 + std::abs(phase.virial[index])) +
+          std::abs(originShift[a]) * forceTolerance;
+      INFO("virial component " << components[index] << ": " << virial
+                               << ", expected " << phase.virial[index]
+                               << ", tolerance " << tolerance);
+      CHECK(std::isfinite(virial));
+      CHECK(std::abs(virial - phase.virial[index]) <= tolerance);
+    }
+  }
+
+  return;
+}
+
+void CheckNoManagerContribution(const ManagerOutput &baseline,
+                                const ManagerOutput &observed) {
+  CHECK(observed.energy == baseline.energy);
+  CHECK(observed.gradients == baseline.gradients);
+  CHECK(observed.virial == baseline.virial);
+  return;
+}
+
+void RunOracleCase(const ZeroInteractionSystem &system, const OracleCase &test,
+                   const AtomRoute route) {
+  INFO(test.caseId << ((route == AtomRoute::SELECTION)
+                           ? " through AtomSelection handles"
+                           : " through AtomReference handles"));
+
+  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+      EvaluatedCoordinates(test);
+  GeometricRestraintForceHandle restraint = MakeRestraint(system.psf.get());
+
+  REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get(),
+              std::string(test.caseId).c_str()) == APO_STATUS_OK);
+
+  const ManagerOutput baseline =
+      EvaluateManager(system.forceManager.get(), coordinates);
+
+  REQUIRE(apo_geometric_restraint_force_set_masses(
+              restraint.get(), test.masses.data(), test.masses.size()) ==
+          APO_STATUS_OK);
+
+  for (const OraclePhase &phase : test.phases) {
+    if (phase.resetFirst)
+      REQUIRE(apo_geometric_restraint_force_reset(restraint.get()) ==
+              APO_STATUS_OK);
+
+    AddOracleTerms(restraint.get(), system.psf.get(), test, phase, route);
+    CheckManagerOracle(test, phase, baseline,
+                       EvaluateManager(system.forceManager.get(), coordinates));
+  }
+
+  REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get()) == APO_STATUS_OK);
+
+  return;
+}
+
+template <typename Function>
+void CheckForceManagerHandleValidation(const std::string_view functionName,
+                                       Function function) {
+  apo_test::CheckStatusAndDiagnostic(
+      function(nullptr), APO_STATUS_INVALID_ARGUMENT,
+      std::string(functionName) + ": ForceManager is NULL");
+
+  apo_force_manager emptyForceManager;
+  apo_test::CheckStatusAndDiagnostic(
+      function(&emptyForceManager), APO_STATUS_INVALID_ARGUMENT,
+      std::string(functionName) + ": ForceManager object is NULL");
+
+  return;
+}
+
+void CheckForceManagerNativeError(const apo_status status,
+                                  const std::string_view functionName,
+                                  const std::string_view expectedMessage,
+                                  const std::string_view sourceFunction) {
+  apo_test::CheckNativeError(status, APO_STATUS_INVALID_ARGUMENT,
+                             "InvalidArgument", functionName, expectedMessage,
+                             FORCE_MANAGER_HEADER_FILE, sourceFunction);
   return;
 }
 
@@ -1308,4 +2394,576 @@ TEST_CASE("CapiGeometricRestraintForceSuccessClearsStaleDiagnostic") {
 
   CHECK(apo_geometric_restraint_force_reset(restraint.get()) == APO_STATUS_OK);
   CHECK(std::string(apo_last_error()).empty() == true);
+}
+
+TEST_CASE("CapiGeometricRestraintForceManagerValidatesHandlesAndTags") {
+  ZeroInteractionSystem system = MakeSystem();
+  GeometricRestraintForceHandle restraint = MakeRestraint(system.psf.get());
+
+  CheckForceManagerHandleValidation(
+      SUBSCRIBE_FUNCTION_NAME,
+      [&restraint](apo_force_manager *candidate) -> apo_status {
+        return apo_force_manager_subscribe_geometric_restraint_force(
+            candidate, restraint.get(), "mmfp");
+      });
+
+  CheckForceManagerHandleValidation(
+      UNSUBSCRIBE_FUNCTION_NAME,
+      [&restraint](apo_force_manager *candidate) -> apo_status {
+        return apo_force_manager_unsubscribe_geometric_restraint_force(
+            candidate, restraint.get());
+      });
+
+  CheckRestraintHandleValidation(
+      SUBSCRIBE_FUNCTION_NAME,
+      [&system](apo_geometric_restraint_force *candidate) -> apo_status {
+        return apo_force_manager_subscribe_geometric_restraint_force(
+            system.forceManager.get(), candidate, "mmfp");
+      });
+
+  CheckRestraintHandleValidation(
+      UNSUBSCRIBE_FUNCTION_NAME,
+      [&system](apo_geometric_restraint_force *candidate) -> apo_status {
+        return apo_force_manager_unsubscribe_geometric_restraint_force(
+            system.forceManager.get(), candidate);
+      });
+
+  apo_test::CheckStatusAndDiagnostic(
+      apo_force_manager_subscribe_geometric_restraint_force(
+          system.forceManager.get(), restraint.get(), nullptr),
+      APO_STATUS_INVALID_ARGUMENT,
+      std::string(SUBSCRIBE_FUNCTION_NAME) + ": force_tag is NULL");
+
+  CheckForceManagerNativeError(
+      apo_force_manager_subscribe_geometric_restraint_force(
+          system.forceManager.get(), restraint.get(), ""),
+      SUBSCRIBE_FUNCTION_NAME, "Force tag must not be empty", "subscribe");
+
+  CheckForceManagerNativeError(
+      apo_force_manager_unsubscribe_geometric_restraint_force(
+          system.forceManager.get(), restraint.get()),
+      UNSUBSCRIBE_FUNCTION_NAME, "Force is not subscribed to this ForceManager",
+      "unsubscribe");
+
+  CHECK(restraint->object.use_count() == 1);
+
+  CHECK(apo_force_manager_subscribe_geometric_restraint_force(
+            system.forceManager.get(), restraint.get(), "mmfp") ==
+        APO_STATUS_OK);
+  CHECK(std::string(apo_last_error()).empty());
+  CHECK(restraint->object.use_count() == 2);
+
+  CHECK(apo_force_manager_unsubscribe_geometric_restraint_force(
+            system.forceManager.get(), restraint.get()) == APO_STATUS_OK);
+  CHECK(std::string(apo_last_error()).empty());
+  CHECK(restraint->object.use_count() == 1);
+}
+
+TEST_CASE("CapiGeometricRestraintForceManagerCopiesTagsAndRejectsDuplicates") {
+  ZeroInteractionSystem system = MakeSystem();
+  GeometricRestraintForceHandle first = MakeRestraint(system.psf.get());
+  GeometricRestraintForceHandle second = MakeRestraint(system.psf.get());
+  ForceManager &manager = *system.forceManager->object;
+
+  char tag[] = "mmfp_copied_tag";
+  REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+              system.forceManager.get(), first.get(), tag) == APO_STATUS_OK);
+  std::fill(std::begin(tag), std::end(tag) - 1, 'x');
+
+  CheckForceManagerNativeError(
+      apo_force_manager_subscribe_geometric_restraint_force(
+          system.forceManager.get(), first.get(), "mmfp_copied_tag"),
+      SUBSCRIBE_FUNCTION_NAME,
+      "Force is already subscribed to this ForceManager", "subscribe");
+
+  CheckForceManagerNativeError(
+      apo_force_manager_subscribe_geometric_restraint_force(
+          system.forceManager.get(), first.get(), "mmfp_other_tag"),
+      SUBSCRIBE_FUNCTION_NAME,
+      "Force is already subscribed to this ForceManager", "subscribe");
+
+  CHECK(first->object.use_count() == 2);
+
+  CHECK(apo_force_manager_subscribe_geometric_restraint_force(
+            system.forceManager.get(), second.get(), "mmfp_copied_tag") ==
+        APO_STATUS_OK);
+  CHECK(second->object.use_count() == 2);
+
+  CHECK(apo_force_manager_unsubscribe_geometric_restraint_force(
+            system.forceManager.get(), second.get()) == APO_STATUS_OK);
+  CHECK(first->object.use_count() == 2);
+  CHECK(second->object.use_count() == 1);
+
+  apo_test::CheckApoCharmmError(
+      [&manager, &tag](void) -> void {
+        manager.unsubscribe(std::string(tag));
+        return;
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Force tag is not subscribed to this ForceManager");
+
+  CHECK_NOTHROW(manager.unsubscribe(std::string("mmfp_copied_tag")));
+  CHECK(first->object.use_count() == 1);
+
+  CheckForceManagerNativeError(
+      apo_force_manager_unsubscribe_geometric_restraint_force(
+          system.forceManager.get(), first.get()),
+      UNSUBSCRIBE_FUNCTION_NAME, "Force is not subscribed to this ForceManager",
+      "unsubscribe");
+
+  CheckForceManagerNativeError(
+      apo_force_manager_unsubscribe_geometric_restraint_force(
+          system.forceManager.get(), second.get()),
+      UNSUBSCRIBE_FUNCTION_NAME, "Force is not subscribed to this ForceManager",
+      "unsubscribe");
+}
+
+TEST_CASE("CapiGeometricRestraintForceManagerRequiresP1") {
+  ZeroInteractionSystem system = MakeSystem();
+  GeometricRestraintForceHandle restraint = MakeRestraint(system.psf.get());
+  apo_force_manager *forceManager = system.forceManager.get();
+  apo_pbc pbc = APO_PBC_UNSET;
+
+  REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+              forceManager, restraint.get(), "mmfp") == APO_STATUS_OK);
+  CHECK(apo_force_manager_set_periodic_boundary_condition(
+            forceManager, APO_PBC_P1) == APO_STATUS_OK);
+
+  apo_test::CheckNativeError(
+      apo_force_manager_set_periodic_boundary_condition(forceManager,
+                                                        APO_PBC_P21),
+      APO_STATUS_INVALID_ARGUMENT, "InvalidArgument", SET_PBC_FUNCTION_NAME,
+      "Subscribed force does not support periodic boundary condition value 2",
+      FORCE_MANAGER_SOURCE_FILE, "checkPBCCompatibility");
+
+  apo_test::CheckNativeError(
+      apo_force_manager_set_periodic_boundary_condition(forceManager,
+                                                        APO_PBC_UNSET),
+      APO_STATUS_INVALID_ARGUMENT, "InvalidArgument", SET_PBC_FUNCTION_NAME,
+      "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 0",
+      FORCE_MANAGER_SOURCE_FILE, "checkPBCCompatibility");
+
+  apo_test::CheckStatusAndDiagnostic(
+      apo_force_manager_set_periodic_boundary_condition(
+          forceManager, static_cast<apo_pbc>(99)),
+      APO_STATUS_INVALID_ARGUMENT,
+      std::string(SET_PBC_FUNCTION_NAME) +
+          ": invalid periodic boundary condition");
+
+  REQUIRE(apo_force_manager_get_periodic_boundary_condition(
+              &pbc, forceManager) == APO_STATUS_OK);
+  CHECK(pbc == APO_PBC_P1);
+
+  CheckForceManagerNativeError(
+      apo_force_manager_subscribe_geometric_restraint_force(
+          forceManager, restraint.get(), "mmfp"),
+      SUBSCRIBE_FUNCTION_NAME,
+      "Force is already subscribed to this ForceManager", "subscribe");
+
+  REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
+              forceManager, restraint.get()) == APO_STATUS_OK);
+  CHECK(apo_force_manager_set_periodic_boundary_condition(
+            forceManager, APO_PBC_P21) == APO_STATUS_OK);
+  REQUIRE(apo_force_manager_get_periodic_boundary_condition(
+              &pbc, forceManager) == APO_STATUS_OK);
+  CHECK(pbc == APO_PBC_P21);
+
+  CheckForceManagerNativeError(
+      apo_force_manager_subscribe_geometric_restraint_force(
+          forceManager, restraint.get(), "mmfp"),
+      SUBSCRIBE_FUNCTION_NAME,
+      "Subscribed force does not support periodic boundary condition value 2",
+      "subscribe");
+
+  CheckForceManagerNativeError(
+      apo_force_manager_unsubscribe_geometric_restraint_force(forceManager,
+                                                              restraint.get()),
+      UNSUBSCRIBE_FUNCTION_NAME, "Force is not subscribed to this ForceManager",
+      "unsubscribe");
+  CHECK(restraint->object.use_count() == 1);
+
+  CHECK(apo_force_manager_set_periodic_boundary_condition(
+            forceManager, APO_PBC_P1) == APO_STATUS_OK);
+  CHECK(apo_force_manager_subscribe_geometric_restraint_force(
+            forceManager, restraint.get(), "mmfp") == APO_STATUS_OK);
+  CHECK(apo_force_manager_unsubscribe_geometric_restraint_force(
+            forceManager, restraint.get()) == APO_STATUS_OK);
+}
+
+TEST_CASE("CapiGeometricRestraintForceManagerSubscribesBeforeAndAfterInit") {
+  const OracleCase test = FindOracleCase("cylinder_general_nonunit");
+  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+      EvaluatedCoordinates(test);
+
+  ZeroInteractionSystem system = MakeSystem();
+  GeometricRestraintForceHandle restraint = MakeRestraint(system.psf.get());
+  AddOracleTerms(restraint.get(), system.psf.get(), test, test.phases[0],
+                 AtomRoute::ATOM_REFERENCE);
+
+  SECTION("SubscribeBeforeInitialization") {
+    REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+                system.forceManager.get(), restraint.get(), "mmfp") ==
+            APO_STATUS_OK);
+    InitializeSystem(system);
+  }
+
+  SECTION("SubscribeAfterInitialization") {
+    InitializeSystem(system);
+    REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+                system.forceManager.get(), restraint.get(), "mmfp") ==
+            APO_STATUS_OK);
+  }
+
+  const ManagerOutput restrained =
+      EvaluateManager(system.forceManager.get(), coordinates);
+
+  REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get()) == APO_STATUS_OK);
+
+  CheckManagerOracle(test, test.phases[0],
+                     EvaluateManager(system.forceManager.get(), coordinates),
+                     restrained);
+}
+
+TEST_CASE("CapiGeometricRestraintForceManagerAppliesMutationsWhileSubscribed") {
+  const OracleCase unequal = FindOracleCase("rcm_unequal_masses");
+  const OracleCase negative = FindOracleCase("rcm_negative_total_mass");
+  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+      EvaluatedCoordinates(unequal);
+
+  REQUIRE(EvaluatedCoordinates(negative) == coordinates);
+  REQUIRE(unequal.phases[0].terms.size() == 1);
+  REQUIRE(negative.phases[0].terms.size() == 1);
+  REQUIRE(negative.phases[0].terms[0].atoms ==
+          unequal.phases[0].terms[0].atoms);
+  REQUIRE(negative.phases[0].terms[0].origin ==
+          unequal.phases[0].terms[0].origin);
+  REQUIRE(negative.phases[0].terms[0].direction ==
+          unequal.phases[0].terms[0].direction);
+  REQUIRE(negative.phases[0].terms[0].forceConstant ==
+          unequal.phases[0].terms[0].forceConstant);
+  REQUIRE(negative.phases[0].terms[0].offset ==
+          unequal.phases[0].terms[0].offset);
+
+  ZeroInteractionSystem system = MakeSystem();
+  InitializeSystem(system);
+  GeometricRestraintForceHandle restraint = MakeRestraint(system.psf.get());
+
+  REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get(), "mmfp") ==
+          APO_STATUS_OK);
+
+  const ManagerOutput baseline =
+      EvaluateManager(system.forceManager.get(), coordinates);
+
+  REQUIRE(apo_geometric_restraint_force_set_masses(
+              restraint.get(), unequal.masses.data(), unequal.masses.size()) ==
+          APO_STATUS_OK);
+  AddOracleTerms(restraint.get(), system.psf.get(), unequal, unequal.phases[0],
+                 AtomRoute::SELECTION);
+  CheckManagerOracle(unequal, unequal.phases[0], baseline,
+                     EvaluateManager(system.forceManager.get(), coordinates));
+
+  REQUIRE(apo_geometric_restraint_force_set_masses(
+              restraint.get(), negative.masses.data(),
+              negative.masses.size()) == APO_STATUS_OK);
+  CheckManagerOracle(negative, negative.phases[0], baseline,
+                     EvaluateManager(system.forceManager.get(), coordinates));
+
+  REQUIRE(apo_geometric_restraint_force_reset(restraint.get()) ==
+          APO_STATUS_OK);
+  CheckNoManagerContribution(
+      baseline, EvaluateManager(system.forceManager.get(), coordinates));
+  CheckForceManagerNativeError(
+      apo_force_manager_subscribe_geometric_restraint_force(
+          system.forceManager.get(), restraint.get(), "mmfp"),
+      SUBSCRIBE_FUNCTION_NAME,
+      "Force is already subscribed to this ForceManager", "subscribe");
+
+  REQUIRE(apo_geometric_restraint_force_set_masses(
+              restraint.get(), unequal.masses.data(), unequal.masses.size()) ==
+          APO_STATUS_OK);
+  AddOracleTerms(restraint.get(), system.psf.get(), unequal, unequal.phases[0],
+                 AtomRoute::SELECTION);
+  CheckManagerOracle(unequal, unequal.phases[0], baseline,
+                     EvaluateManager(system.forceManager.get(), coordinates));
+
+  apo_test::CheckNativeError(
+      apo_force_manager_set_periodic_boundary_condition(
+          system.forceManager.get(), APO_PBC_P21),
+      APO_STATUS_INVALID_ARGUMENT, "InvalidArgument", SET_PBC_FUNCTION_NAME,
+      "Subscribed force does not support periodic boundary condition value 2",
+      FORCE_MANAGER_SOURCE_FILE, "checkPBCCompatibility");
+  CheckManagerOracle(unequal, unequal.phases[0], baseline,
+                     EvaluateManager(system.forceManager.get(), coordinates));
+
+  REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get()) == APO_STATUS_OK);
+  CheckNoManagerContribution(
+      baseline, EvaluateManager(system.forceManager.get(), coordinates));
+  CHECK(restraint->object->getNumTerms() == 1);
+
+  REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get(), "mmfp") ==
+          APO_STATUS_OK);
+  CheckManagerOracle(unequal, unequal.phases[0], baseline,
+                     EvaluateManager(system.forceManager.get(), coordinates));
+}
+
+TEST_CASE("CapiGeometricRestraintForceManagerRejectsAtomCountMismatch") {
+  ZeroInteractionSystem system = MakeSystem();
+  InitializeSystem(system);
+
+  CharmmPsfHandle smallPsf = MakePsf(3);
+  GeometricRestraintForceHandle restraint = MakeRestraint(smallPsf.get());
+
+  CheckMmfpNativeError(apo_force_manager_subscribe_geometric_restraint_force(
+                           system.forceManager.get(), restraint.get(), "mmfp"),
+                       SUBSCRIBE_FUNCTION_NAME,
+                       "Initialization atom count mismatch; expected 3, "
+                       "observed 12",
+                       "initialize");
+
+  CheckForceManagerNativeError(
+      apo_force_manager_unsubscribe_geometric_restraint_force(
+          system.forceManager.get(), restraint.get()),
+      UNSUBSCRIBE_FUNCTION_NAME, "Force is not subscribed to this ForceManager",
+      "unsubscribe");
+  CHECK(restraint->object.use_count() == 1);
+}
+
+TEST_CASE("CapiGeometricRestraintForceManagerRetainsNativeOwnership") {
+  const OracleCase test = FindOracleCase("r12_b047_plane_outside_zero_general");
+  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+      EvaluatedCoordinates(test);
+
+  ZeroInteractionSystem system = MakeSystem();
+  InitializeSystem(system);
+  const ManagerOutput baseline =
+      EvaluateManager(system.forceManager.get(), coordinates);
+
+  GeometricRestraintForceHandle restraint = MakeRestraint(system.psf.get());
+  const std::weak_ptr<GeometricRestraintForce<long long int, float>>
+      weakRestraint = restraint->object;
+  const std::weak_ptr<cudaStream_t> weakStream = restraint->object->getStream();
+  const std::weak_ptr<Force<long long int>> weakForce =
+      restraint->object->getForce();
+  const std::weak_ptr<CudaEnergyVirial> weakEnergyVirial =
+      restraint->object->getEnergyVirial();
+  const std::weak_ptr<ForceManager> weakManager = system.forceManager->object;
+
+  REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get(), "mmfp") ==
+          APO_STATUS_OK);
+  AddOracleTerms(restraint.get(), system.psf.get(), test, test.phases[0],
+                 AtomRoute::SELECTION);
+  CheckManagerOracle(test, test.phases[0], baseline,
+                     EvaluateManager(system.forceManager.get(), coordinates));
+
+  SECTION("RestraintHandleDestroyedBeforeForceManager") {
+    apo_geometric_restraint_force_destroy(restraint.release());
+
+    CHECK(weakRestraint.expired() == false);
+    CHECK(weakStream.expired() == false);
+    CHECK(weakForce.expired() == false);
+    CHECK(weakEnergyVirial.expired() == false);
+    CHECK(weakRestraint.use_count() == 1);
+    CheckManagerOracle(test, test.phases[0], baseline,
+                       EvaluateManager(system.forceManager.get(), coordinates));
+
+    system.context.reset();
+    system.forceManager.reset();
+    CHECK(weakManager.expired());
+  }
+
+  SECTION("ForceManagerDestroyedBeforeRestraintHandle") {
+    system.context.reset();
+    system.forceManager.reset();
+    CHECK(weakManager.expired());
+    CHECK(restraint->object.use_count() == 1);
+
+    ZeroInteractionSystem replacement = MakeSystem();
+    InitializeSystem(replacement);
+    const ManagerOutput replacementBaseline =
+        EvaluateManager(replacement.forceManager.get(), coordinates);
+
+    REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+                replacement.forceManager.get(), restraint.get(), "mmfp") ==
+            APO_STATUS_OK);
+    CheckManagerOracle(
+        test, test.phases[0], replacementBaseline,
+        EvaluateManager(replacement.forceManager.get(), coordinates));
+    REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
+                replacement.forceManager.get(), restraint.get()) ==
+            APO_STATUS_OK);
+
+    restraint.reset();
+  }
+
+  CHECK(weakRestraint.expired());
+  CHECK(weakStream.expired());
+  CHECK(weakForce.expired());
+  CHECK(weakEnergyVirial.expired());
+}
+
+TEST_CASE("CapiGeometricRestraintForceManagerReleasesBorrowedHandles") {
+  const OracleCase mixed = FindOracleCase("virial_mixed_ordinary_rcm");
+  const OracleCase plane = FindOracleCase("plane_general_nonunit");
+  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+      EvaluatedCoordinates(mixed);
+
+  ZeroInteractionSystem system = MakeSystem();
+  InitializeSystem(system);
+  const ManagerOutput baseline =
+      EvaluateManager(system.forceManager.get(), coordinates);
+
+  std::weak_ptr<CharmmPSF> weakMassPsf;
+  GeometricRestraintForceHandle restraint;
+  {
+    CharmmPsfHandle massPsf = MakePsf(ORACLE_NUM_ATOMS);
+    std::copy(mixed.masses.begin(), mixed.masses.end(),
+              massPsf->object->getMasses().begin());
+    weakMassPsf = massPsf->object;
+    restraint = MakeRestraint(massPsf.get());
+  }
+  CHECK(weakMassPsf.expired());
+
+  std::vector<std::weak_ptr<AtomSelection>> weakSelections;
+  for (const OracleTerm &term : mixed.phases[0].terms) {
+    AtomSelectionHandle selection = MakeSelection(ORACLE_NUM_ATOMS, term.atoms);
+    weakSelections.push_back(selection->object);
+
+    if (term.geometry == Geometry::PLANE) {
+      REQUIRE(apo_geometric_restraint_force_add_plane_from_selection(
+                  restraint.get(), selection.get(), term.origin.data(), 3,
+                  term.direction.data(), 3, term.forceConstant, term.offset,
+                  term.activation, term.selectionMode) == APO_STATUS_OK);
+    } else if (term.geometry == Geometry::CYLINDER) {
+      REQUIRE(apo_geometric_restraint_force_add_cylinder_from_selection(
+                  restraint.get(), selection.get(), term.origin.data(), 3,
+                  term.direction.data(), 3, term.forceConstant, term.offset,
+                  term.activation, term.selectionMode) == APO_STATUS_OK);
+    } else {
+      REQUIRE(apo_geometric_restraint_force_add_sphere_from_selection(
+                  restraint.get(), selection.get(), term.origin.data(), 3,
+                  term.forceConstant, term.offset, term.activation,
+                  term.selectionMode) == APO_STATUS_OK);
+    }
+  }
+
+  for (const std::weak_ptr<AtomSelection> &weakSelection : weakSelections)
+    CHECK(weakSelection.expired());
+
+  REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get(), "mmfp") ==
+          APO_STATUS_OK);
+  CheckManagerOracle(mixed, mixed.phases[0], baseline,
+                     EvaluateManager(system.forceManager.get(), coordinates));
+
+  REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get()) == APO_STATUS_OK);
+  REQUIRE(apo_geometric_restraint_force_reset(restraint.get()) ==
+          APO_STATUS_OK);
+
+  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> planeCoordinates =
+      EvaluatedCoordinates(plane);
+  const ManagerOutput planeBaseline =
+      EvaluateManager(system.forceManager.get(), planeCoordinates);
+
+  std::weak_ptr<CharmmPSF> weakReferencePsf;
+  {
+    CharmmPsfHandle referencePsf = MakePsf(ORACLE_NUM_ATOMS);
+    weakReferencePsf = referencePsf->object;
+
+    AddOracleTerms(restraint.get(), referencePsf.get(), plane, plane.phases[0],
+                   AtomRoute::ATOM_REFERENCE);
+  }
+  CHECK(weakReferencePsf.expired());
+
+  REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get(), "mmfp") ==
+          APO_STATUS_OK);
+  CheckManagerOracle(
+      plane, plane.phases[0], planeBaseline,
+      EvaluateManager(system.forceManager.get(), planeCoordinates));
+}
+
+TEST_CASE("CapiGeometricRestraintForceManagerReproducesCharmmOracleSubset") {
+  ZeroInteractionSystem system = MakeSystem();
+  InitializeSystem(system);
+
+  const std::vector<OracleCase> cases = MakeOracleCases();
+  REQUIRE(cases.size() == 23);
+
+  for (const OracleCase &test : cases) {
+    RunOracleCase(system, test, AtomRoute::SELECTION);
+
+    bool singleAtomTerms = true;
+    for (const OraclePhase &phase : test.phases) {
+      for (const OracleTerm &term : phase.terms)
+        singleAtomTerms = singleAtomTerms && (term.atoms.size() == 1);
+    }
+
+    if (singleAtomTerms)
+      RunOracleCase(system, test, AtomRoute::ATOM_REFERENCE);
+  }
+}
+
+TEST_CASE("CapiGeometricRestraintForceManagerPreservesStateAfterRejections") {
+  const OracleCase plane =
+      FindOracleCase("law_planar_symmetric_force_positive_above");
+  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+      EvaluatedCoordinates(plane);
+  const std::array<double, 3> noShift = {0.0, 0.0, 0.0};
+
+  ZeroInteractionSystem system = MakeSystem();
+  InitializeSystem(system);
+  GeometricRestraintForceHandle restraint = MakeRestraint(system.psf.get());
+
+  REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
+              system.forceManager.get(), restraint.get(), "mmfp") ==
+          APO_STATUS_OK);
+
+  const ManagerOutput baseline =
+      EvaluateManager(system.forceManager.get(), coordinates);
+  AddOracleTerms(restraint.get(), system.psf.get(), plane, plane.phases[0],
+                 AtomRoute::SELECTION);
+  CheckManagerOracle(plane, plane.phases[0], baseline,
+                     EvaluateManager(system.forceManager.get(), coordinates));
+
+  SECTION("validity_plane_zero_direction") {
+    OracleTerm zeroDirection = plane.phases[0].terms[0];
+    zeroDirection.direction = {0.0, 0.0, 0.0};
+
+    CheckMmfpNativeError(
+        AddOracleTerm(restraint.get(), system.psf.get(), zeroDirection, noShift,
+                      AtomRoute::SELECTION),
+        "apo_geometric_restraint_force_add_plane_from_selection",
+        "Direction must have a positive finite norm", "appendTerm");
+    CheckMmfpNativeError(
+        AddOracleTerm(restraint.get(), system.psf.get(), zeroDirection, noShift,
+                      AtomRoute::ATOM_REFERENCE),
+        "apo_geometric_restraint_force_add_plane_from_atom_reference",
+        "Direction must have a positive finite norm", "appendTerm");
+  }
+
+  SECTION("rcm_zero_total_mass") {
+    const OracleTerm zeroTotalMass =
+        FindOracleCase("rcm_unequal_masses").phases[0].terms[0];
+
+    REQUIRE(apo_geometric_restraint_force_set_masses(
+                restraint.get(), ZERO_TOTAL_MASSES.data(),
+                ZERO_TOTAL_MASSES.size()) == APO_STATUS_OK);
+    CheckMmfpNativeError(
+        AddOracleTerm(restraint.get(), system.psf.get(), zeroTotalMass, noShift,
+                      AtomRoute::SELECTION),
+        "apo_geometric_restraint_force_add_plane_from_selection",
+        "RCM total mass must be finite and nonzero; observed " +
+            std::to_string(0.0),
+        "validateRcmMasses");
+  }
+
+  CHECK(restraint->object->getNumTerms() == 1);
+  CheckManagerOracle(plane, plane.phases[0], baseline,
+                     EvaluateManager(system.forceManager.get(), coordinates));
 }

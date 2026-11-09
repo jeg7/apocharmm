@@ -14,6 +14,7 @@
 #include "apocharmm_c/detail/CharmmPsfHandle.h"
 #include "apocharmm_c/detail/EnumConversion.h"
 #include "apocharmm_c/detail/ErrorInternal.h"
+#include "apocharmm_c/detail/ForceManagerHandle.h"
 #include "apocharmm_c/detail/GeometricRestraintForceHandle.h"
 #include "apocharmm_c/detail/Validation.h"
 
@@ -427,6 +428,58 @@ apo_geometric_restraint_force_reset(apo_geometric_restraint_force *restraint) {
                 restraint, function_name, "GeometricRestraintForce"));
 
         restraint->object->reset();
+
+        return APO_STATUS_OK;
+      },
+      function_name);
+}
+
+extern "C" apo_status apo_force_manager_subscribe_geometric_restraint_force(
+    apo_force_manager *force_manager, apo_geometric_restraint_force *restraint,
+    const char *force_tag) {
+  const char *function_name =
+      "apo_force_manager_subscribe_geometric_restraint_force";
+
+  return apocharmm_c::guard(
+      [&](void) -> apo_status {
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_force_manager>(
+                force_manager, function_name, "ForceManager"));
+
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_geometric_restraint_force>(
+                restraint, function_name, "GeometricRestraintForce"));
+
+        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_pointer<char>(
+            force_tag, function_name, "force_tag"));
+
+        force_manager->object->subscribe(
+            restraint->object, std::string(force_tag),
+            restraint->object->getStream(), restraint->object->getForce(),
+            restraint->object->getEnergyVirial());
+
+        return APO_STATUS_OK;
+      },
+      function_name);
+}
+
+extern "C" apo_status apo_force_manager_unsubscribe_geometric_restraint_force(
+    apo_force_manager *force_manager,
+    apo_geometric_restraint_force *restraint) {
+  const char *function_name =
+      "apo_force_manager_unsubscribe_geometric_restraint_force";
+
+  return apocharmm_c::guard(
+      [&](void) -> apo_status {
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_force_manager>(
+                force_manager, function_name, "ForceManager"));
+
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_geometric_restraint_force>(
+                restraint, function_name, "GeometricRestraintForce"));
+
+        force_manager->object->unsubscribe(restraint->object);
 
         return APO_STATUS_OK;
       },

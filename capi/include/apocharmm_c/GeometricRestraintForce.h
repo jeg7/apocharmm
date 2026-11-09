@@ -20,6 +20,7 @@
 #include "apocharmm_c/CharmmPsf.h"
 #include "apocharmm_c/Enums.h"
 #include "apocharmm_c/Export.h"
+#include "apocharmm_c/ForceManager.h"
 #include "apocharmm_c/Status.h"
 
 #include <stddef.h>
@@ -63,16 +64,26 @@ extern "C" {
  * @ref geometric_restraint_force for the geometry, activation, RCM, and virial
  * definitions.
  *
+ * A successful force-manager subscription retains independent native shared
+ * ownership of the restraint, CUDA stream holder, force array, and
+ * energy-virial object. Destroying this C handle therefore does not remove an
+ * existing subscription. Unsubscribe before destruction when later explicit
+ * unsubscription is needed. Term addition, mass replacement, and reset remain
+ * available while subscribed and take effect at the next manager evaluation
+ * without resubscription.
+ *
  * This header exposes construction, term addition, force-wide mass
- * replacement, and reset. It does not expose kernel invocation, output access,
- * or force-manager subscription.
+ * replacement, reset, and force-manager subscription. It does not expose
+ * kernel invocation or output access; use `ForceManager` or `CharmmContext` to
+ * drive calculation.
  *
  * A non-NULL pointer must designate a live handle created by apoCHARMM.
  * Passing a dangling, already-destroyed, or foreign pointer has undefined
  * behavior. The handle and native object provide no internal synchronization.
  * Callers must serialize every call that uses the same restraint handle,
- * including destruction, and must not destroy or mutate a borrowed PSF,
- * selection, or reference while a call borrows it.
+ * including subscription, unsubscription, destruction, and manager
+ * calculations that evaluate the restraint, and must not destroy or mutate a
+ * borrowed PSF, selection, or reference while a call borrows it.
  *
  * Every status-returning function clears the calling thread's previous
  * diagnostic at entry. Success leaves it empty. On failure, call
@@ -126,9 +137,12 @@ APOCHARMM_C_API apo_status apo_geometric_restraint_force_create(
 /**
  * @brief Destroys an owned geometric restraint handle.
  *
- * Deleting the handle releases its shared native owner. No other function in
- * this header retains the native restraint, so destruction also releases the
- * native restraint, its private CUDA stream, and its output storage.
+ * Deleting the handle releases its shared native owner. A force manager that
+ * already subscribed the restraint retains an independent owner of the
+ * restraint, its CUDA stream holder, its force array, and its energy-virial
+ * object, so the restraint can remain active after this call. Without another
+ * owner, destruction also releases the native restraint, its private CUDA
+ * stream, and its output storage.
  *
  * @param[in] restraint Owned handle to release. `NULL` is accepted and is a
  * no-op. A non-NULL pointer is invalid after this call returns.
@@ -138,6 +152,8 @@ APOCHARMM_C_API apo_status apo_geometric_restraint_force_create(
  * existing @ref apo_last_error diagnostic. An internally caught destruction
  * failure can replace that diagnostic but cannot be returned by this void API.
  * @warning Do not destroy the same handle twice or use it after destruction.
+ * @warning Unsubscribe before destroying the handle when later explicit
+ * unsubscription is required.
  */
 APOCHARMM_C_API void
 apo_geometric_restraint_force_destroy(apo_geometric_restraint_force *restraint);
@@ -543,6 +559,92 @@ APOCHARMM_C_API apo_status apo_geometric_restraint_force_set_masses(
  */
 APOCHARMM_C_API apo_status
 apo_geometric_restraint_force_reset(apo_geometric_restraint_force *restraint);
+
+/**
+ * @brief Subscribes a geometric restraint to a force manager.
+ *
+ * On success, the manager retains native shared ownership of the restraint,
+ * its CUDA stream holder, its force array, and its energy-virial object. The
+ * two C handles remain owned by their callers.
+ *
+ * The manager accepts this restraint only under `APO_PBC_P1`. Before changing
+ * subscription state, native code requires the manager's current periodic
+ * boundary condition to be `APO_PBC_P1` or `APO_PBC_P21` and supported by
+ * every existing subscription, then rejects the restraint unless the condition
+ * is `APO_PBC_P1`. While the restraint is subscribed,
+ * @ref apo_force_manager_set_periodic_boundary_condition rejects `APO_PBC_P21`
+ * without changing the manager.
+ *
+ * If the manager is initialized, subscription first initializes the restraint
+ * with the manager atom count and box dimensions and synchronizes pending term
+ * data to the device. Otherwise, manager initialization performs that hook
+ * later. Duplicate tags are permitted, but the same native restraint may not
+ * be subscribed twice to one manager.
+ *
+ * @param[in,out] force_manager Borrowed live manager handle. The handle is not
+ * retained.
+ * @param[in] restraint Borrowed live restraint handle. The manager retains the
+ * underlying native object on success but does not retain this C handle.
+ * @param[in] force_tag Borrowed non-NULL, nonempty, null-terminated byte
+ * string used as the manager's diagnostic and energy-print label. Native code
+ * copies the bytes and retains no caller pointer.
+ * @retval APO_STATUS_OK The manager retained the restraint and its resources.
+ * @retval APO_STATUS_INVALID_ARGUMENT Either handle is `NULL`, either handle
+ * contains no native object, `force_tag` is `NULL` or empty, the restraint is
+ * already subscribed, the manager's periodic boundary condition is not
+ * `APO_PBC_P1`, or immediate initialization rejects the manager atom count or
+ * box.
+ * @retval APO_STATUS_CUDA_ERROR Immediate initialization failed while
+ * synchronizing, allocating, or transferring restraint term data.
+ * @retval APO_STATUS_RUNTIME_ERROR Copying the tag, growing manager
+ * subscription storage, constructing a diagnostic, or another standard or
+ * nonstandard C++ operation failed.
+ *
+ * @post On success, destroying the restraint C handle alone does not remove the
+ * subscribed native object.
+ * @post On failure, manager subscription state is unchanged.
+ * @note The function clears the calling thread's previous diagnostic at entry.
+ * Success leaves it empty; failure leaves text available through
+ * @ref apo_last_error.
+ */
+APOCHARMM_C_API apo_status
+apo_force_manager_subscribe_geometric_restraint_force(
+    apo_force_manager *force_manager, apo_geometric_restraint_force *restraint,
+    const char *force_tag);
+
+/**
+ * @brief Unsubscribes a geometric restraint by object identity.
+ *
+ * The manager removes the subscription whose retained native object is the
+ * restraint owned by `restraint` and releases its shared references to the
+ * restraint, CUDA stream holder, force array, and energy-virial object. It
+ * does not reset, clear, deinitialize, or destroy the restraint. Terms,
+ * masses, and existing outputs are preserved, and the restraint may be
+ * subscribed again.
+ *
+ * @param[in,out] force_manager Borrowed live manager handle. The handle is not
+ * retained.
+ * @param[in] restraint Borrowed live restraint handle identifying the native
+ * object to remove. The handle itself is not retained or destroyed.
+ * @retval APO_STATUS_OK The matching subscription was removed.
+ * @retval APO_STATUS_INVALID_ARGUMENT Either handle is `NULL`, either handle
+ * contains no native object, or the restraint is not subscribed to the manager.
+ * @retval APO_STATUS_RUNTIME_ERROR Diagnostic construction or another standard
+ * or nonstandard C++ operation failed.
+ *
+ * @post On success, the restraint no longer participates in manager box
+ * propagation, clearing, force evaluation, force aggregation, energy
+ * aggregation, or virial aggregation, and it no longer constrains the
+ * manager's periodic boundary condition.
+ * @post On lookup or validation failure, manager subscription state is
+ * unchanged.
+ * @note The function clears the calling thread's previous diagnostic at entry.
+ * Success leaves it empty; failure leaves text available through
+ * @ref apo_last_error.
+ */
+APOCHARMM_C_API apo_status
+apo_force_manager_unsubscribe_geometric_restraint_force(
+    apo_force_manager *force_manager, apo_geometric_restraint_force *restraint);
 
 #ifdef __cplusplus
 }

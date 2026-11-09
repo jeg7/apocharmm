@@ -230,9 +230,10 @@ the caller or manager. CUDA failures do not provide an output rollback guarantee
 ## C ABI
 
 `capi/include/apocharmm_c/GeometricRestraintForce.h` exposes construction, term
-addition, force-wide mass replacement, and reset for the
-`GeometricRestraintForce<long long int, float>` specialization. It does not
-expose calculation, output access, or force-manager subscription.
+addition, force-wide mass replacement, reset, and force-manager subscription
+for the `GeometricRestraintForce<long long int, float>` specialization. It does
+not expose direct calculation or output access; a subscribed manager evaluates
+the restraint.
 
 ### Ownership, borrowing, and lifetime
 
@@ -245,7 +246,8 @@ handle only on success; with a non-NULL `out`, every failure leaves
 `*out == NULL`. Construction and mass replacement use synchronous device
 transfers, so they can wait for other work on the device.
 [apo_geometric_restraint_force_destroy](@ref apo_geometric_restraint_force_destroy)
-accepts `NULL` and releases the native restraint, its CUDA stream, and its
+accepts `NULL` and releases the handle's native owner. Without a subscribing
+manager, this also releases the native restraint, its CUDA stream, and its
 outputs.
 
 Each geometry has one entry point for a borrowed `apo_atom_selection` and one
@@ -278,21 +280,44 @@ replacement leaves the previous masses in effect.
 [apo_geometric_restraint_force_reset](@ref apo_geometric_restraint_force_reset)
 removes every term while preserving the active masses and existing output.
 
+### Force-manager subscription
+
+[apo_force_manager_subscribe_geometric_restraint_force](@ref apo_force_manager_subscribe_geometric_restraint_force)
+copies a nonempty tag and makes the manager retain shared owners of the native
+restraint, its stream holder, its force array, and its energy-virial object.
+Neither C handle is retained. Subscription is accepted before or after manager
+initialization; an initialized manager immediately initializes the restraint
+with its atom count and box. The manager must use `APO_PBC_P1`; while the
+restraint is subscribed, changing the manager to `APO_PBC_P21` is rejected and
+leaves the manager unchanged. The same restraint cannot be subscribed twice to
+one manager, although tags need not be unique.
+[apo_force_manager_unsubscribe_geometric_restraint_force](@ref apo_force_manager_unsubscribe_geometric_restraint_force)
+removes the subscription by restraint identity without resetting the restraint,
+which can then be subscribed again.
+
+Term addition, mass replacement, and reset remain available while subscribed
+and take effect at the next manager evaluation. Destroying the restraint handle
+does not unsubscribe it: the manager continues to evaluate the retained native
+restraint, and the C ABI can no longer remove it, until the manager is
+destroyed. Unsubscribe first when later explicit removal is needed.
+
 ### Statuses and thread safety
 
 Every status-returning function clears the calling thread's diagnostic at entry
 and leaves it empty on success. `APO_STATUS_INVALID_ARGUMENT` covers invalid
 handles, pointers, lengths, and enum values and every native argument
 rejection. `APO_STATUS_NOT_INITIALIZED` reports a PSF with a negative atom
-count. `APO_STATUS_CUDA_ERROR` reports CUDA failures during construction or
-mass replacement; term addition and reset perform no CUDA work.
+count. `APO_STATUS_CUDA_ERROR` reports CUDA failures during construction, mass
+replacement, or immediate initialization on subscription; term addition, reset,
+and unsubscription perform no CUDA work.
 `APO_STATUS_RUNTIME_ERROR` covers an inconsistent PSF mass count, host
 allocation failures, and other C++ exceptions. Read failure text with
 [apo_last_error](@ref apo_last_error) on the same thread.
 
 The handle and native object provide no internal synchronization. Serialize
-every call that uses one restraint handle, including destruction, and do not
-destroy or mutate a borrowed PSF, selection, or reference during a call.
+every call that uses one restraint handle, including subscription,
+unsubscription, destruction, and manager evaluations of the restraint, and do
+not destroy or mutate a borrowed PSF, selection, or reference during a call.
 
 ## Important Behavior and Limitations
 
@@ -393,7 +418,9 @@ lifecycle, accumulation, dynamic capacity, and stable derivative checks.
 `test/unittests/unittest-forceManager.cpp` covers the shared manager machinery.
 `test/unittests/unittest-capiGeometricRestraintForce.cpp` covers C ABI
 construction, ownership, borrowing, typed atom inputs, enumeration and array
-validation, status mapping, mass replacement, and reset.
+validation, status mapping, mass replacement, reset, manager subscription, tags,
+P1 enforcement, ownership and lifecycle, and a CHARMM c52a1 oracle subset
+evaluated through `ForceManager` in a zero-interaction twelve-atom system.
 The public potential enum contains only `HARMONIC`. Changes to representations,
 imaging, ordering, or tensor handling require corresponding numerical and
 lifecycle review; they are not additional modes implied by the current API.
@@ -403,4 +430,4 @@ lifecycle review; they are not additional modes implied by the current API.
 - Native C++: [GeometricRestraintForce](@ref GeometricRestraintForce).
 - Typed inputs: [AtomSelection](@ref AtomSelection), [AtomReference](@ref AtomReference), and [CharmmPSF](@ref CharmmPSF).
 - Integration: [ForceManager](@ref ForceManager), [ForceView](@ref ForceView), and [PBC](@ref PBC).
-- C ABI: [apo_geometric_restraint_force](@ref apo_geometric_restraint_force), [apo_geometric_restraint_activation](@ref apo_geometric_restraint_activation), [apo_geometric_restraint_selection_mode](@ref apo_geometric_restraint_selection_mode), [apo_geometric_restraint_force_create](@ref apo_geometric_restraint_force_create), [apo_geometric_restraint_force_destroy](@ref apo_geometric_restraint_force_destroy), [apo_geometric_restraint_force_set_masses](@ref apo_geometric_restraint_force_set_masses), and [apo_geometric_restraint_force_reset](@ref apo_geometric_restraint_force_reset); the six term-addition functions are linked in the C ABI section.
+- C ABI: [apo_geometric_restraint_force](@ref apo_geometric_restraint_force), [apo_geometric_restraint_activation](@ref apo_geometric_restraint_activation), [apo_geometric_restraint_selection_mode](@ref apo_geometric_restraint_selection_mode), [apo_geometric_restraint_force_create](@ref apo_geometric_restraint_force_create), [apo_geometric_restraint_force_destroy](@ref apo_geometric_restraint_force_destroy), [apo_geometric_restraint_force_set_masses](@ref apo_geometric_restraint_force_set_masses), [apo_geometric_restraint_force_reset](@ref apo_geometric_restraint_force_reset), [apo_force_manager_subscribe_geometric_restraint_force](@ref apo_force_manager_subscribe_geometric_restraint_force), and [apo_force_manager_unsubscribe_geometric_restraint_force](@ref apo_force_manager_unsubscribe_geometric_restraint_force); the six term-addition functions are linked in the C ABI section.
