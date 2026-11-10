@@ -56,20 +56,20 @@ enum class DistanceRestraintCondition : int {
  * require the two endpoints of a pair to originate from the same topology. Only
  * the extracted integer indices are stored.
  *
- * The controlling characterization requires raw primary-coordinate pair
- * distances for the characterized nonperiodic and orthorhombic P1 cases.
- * Stored box dimensions satisfy the `ForceManager` lifecycle and do not imply
- * minimum-image replacement of those pair distances.
+ * Like CHARMM, the force uses raw primary-coordinate pair distances for
+ * nonperiodic systems and orthorhombic P1 boxes. Stored box dimensions exist
+ * for the `ForceManager` lifecycle and never cause minimum-image replacement of
+ * those pair distances.
  *
  * @tparam AT Device force-accumulator representation. The supported public
  * specializations use apoCHARMM's fixed-point force representation.
  * @tparam CT Arithmetic representation used for pair-gradient conversion to
  * the device force accumulator.
  *
- * @warning The complete accepted ranges of the distance and energy exponents
- * remain unresolved outside the characterized values.
- * @warning Nonorthorhombic, non-P1, and other uncharacterized periodic or image
- * configurations remain unsupported and must not be inferred.
+ * @warning Only exponent values whose CHARMM behavior has been verified are
+ * accepted, although CHARMM itself accepts a wider range.
+ * @warning Nonorthorhombic, non-P1, and other periodic or image configurations
+ * whose CHARMM behavior has not been verified are unsupported.
  * @warning Every evaluated exact zero-distance pair is rejected before
  * exponentiation or gradient formation.
  * @warning The class provides no internal host-thread synchronization. Callers
@@ -93,8 +93,9 @@ public:
   /**
    * @brief Constructs a distance-restraint force for a fixed atom count.
    *
-   * The object initially owns no restraint terms. The confirmed initial global
-   * scale is one. The atom count remains fixed for the lifetime of the object.
+   * The object initially owns no restraint terms, and its global scale starts
+   * at one, as in CHARMM. The atom count remains fixed for the lifetime of the
+   * object.
    *
    * @param[in] numAtoms Dimensionless number of atoms represented by coordinate
    * and force arrays.
@@ -132,8 +133,8 @@ public:
   /**
    * @brief Sets the global scale applied to every active restraint term.
    *
-   * The characterized behavior accepts positive, zero, and negative finite
-   * scale values. The scale is host scalar state and does not alter stored term
+   * As in CHARMM, positive, zero, and negative finite scale values are
+   * accepted. The scale is host scalar state and does not alter stored term
    * definitions.
    *
    * @param[in] scale Global multiplicative scale.
@@ -163,9 +164,10 @@ public:
    * Pair order and coefficient correspondence are preserved exactly. Repeated
    * pairs remain accepted.
    *
-   * The distance exponent remains a required argument because the following
-   * energy exponent has no confirmed default. The activation condition defaults
-   * to `NONE`, corresponding to the confirmed absence of a one-sided selector.
+   * Both exponents are required arguments; apoCHARMM does not reproduce
+   * CHARMM's parser defaults for them. The activation condition defaults to
+   * `NONE`, which matches a CHARMM definition with neither `POSITIVE` nor
+   * `NEGATIVE`.
    *
    * @param[in] atomReferencePairs Atom-reference endpoint pairs belonging to
    * this term.
@@ -195,9 +197,9 @@ public:
   /**
    * @brief Stores the current three box dimensions.
    *
-   * The dimensions are retained for `ForceManager` compatibility. They must not
-   * cause the characterized raw primary-coordinate pair distances to be
-   * replaced by minimum-image distances.
+   * The dimensions are retained for `ForceManager` compatibility. They never
+   * cause the raw primary-coordinate pair distances, which CHARMM also uses, to
+   * be replaced by minimum-image distances.
    *
    * @param[in] boxDimensions Three box lengths in `[x, y, z]` order.
    */

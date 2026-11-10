@@ -706,7 +706,7 @@ TEST_CASE("DistanceRestraintForceRejectsUnsupportedDistanceExponent") {
         restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 1.0, 3, 2);
       },
       ApoCharmmErrorCode::InvalidArgument,
-      "Distance exponent must be one of the characterized values {-2, -1, 0, "
+      "Distance exponent must be one of the supported values {-2, -1, 0, "
       "1, 2, 6, 7}; observed 3");
 }
 
@@ -720,7 +720,7 @@ TEST_CASE("DistanceRestraintForceRejectsInvalidEnergyExponent") {
                                  -1);
         },
         ApoCharmmErrorCode::InvalidArgument,
-        "Energy exponent must be one of the characterized values {1, 2, 3, "
+        "Energy exponent must be one of the supported values {1, 2, 3, "
         "4}; observed -1");
   }
 
@@ -730,7 +730,7 @@ TEST_CASE("DistanceRestraintForceRejectsInvalidEnergyExponent") {
           restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 1.0, 1, 0);
         },
         ApoCharmmErrorCode::InvalidArgument,
-        "Energy exponent must be one of the characterized values {1, 2, 3, "
+        "Energy exponent must be one of the supported values {1, 2, 3, "
         "4}; observed 0");
   }
 }
@@ -1209,7 +1209,7 @@ TEST_CASE("DistanceRestraintForceAccumulatesMultipleTermsSharingAtoms") {
                          EXACT_GRADIENT_TOLERANCE);
 }
 
-TEST_CASE("DistanceRestraintForceCalculatesCharacterizedDistanceExponents") {
+TEST_CASE("DistanceRestraintForceCalculatesSupportedDistanceExponents") {
   SECTION("IVALOne") {
     ResdForce restraint(NUM_ATOMS);
     restraint.setBoxDimensions(BOX_DIMENSIONS);
@@ -1270,7 +1270,7 @@ TEST_CASE("DistanceRestraintForceCalculatesCharacterizedDistanceExponents") {
   }
 }
 
-TEST_CASE("DistanceRestraintForceCalculatesCharacterizedEnergyExponents") {
+TEST_CASE("DistanceRestraintForceCalculatesSupportedEnergyExponents") {
   SECTION("EVALOne") {
     ResdForce restraint(NUM_ATOMS);
     restraint.setBoxDimensions(BOX_DIMENSIONS);
@@ -2071,7 +2071,7 @@ TEST_CASE("DistanceRestraintForceVirialMatchesFiniteStrainDerivative") {
   }
 }
 
-TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
+TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   SECTION("OddNegativeDeviation") {
     ResdForce restraint(2);
     restraint.setBoxDimensions(BOX_DIMENSIONS);
@@ -2085,10 +2085,10 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
                                                   0.0,  0.0, 0.0, 0.0};
 
     ClearAndCalculate(restraint, xyzq);
-    CheckResdOutput(restraint, "CHARMM case 15", -0.666666667,
+    CheckResdOutput(restraint, "CHARMM odd EVAL below RVAL", -0.666666667,
                     expectedGradients, CHARMM_ENERGY_TOLERANCE,
                     CHARMM_GRADIENT_TOLERANCE);
-    CheckVirial("CHARMM case 15 internal virial",
+    CheckVirial("CHARMM odd EVAL below RVAL internal virial",
                 CalculateManagerStyleVirial(restraint, xyzq, BOX_DIMENSIONS),
                 expectedVirial, CHARMM_VIRIAL_TOLERANCE);
   }
@@ -2106,9 +2106,10 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
                                                   0.0, 0.0, 0.0, 0.0};
 
     ClearAndCalculate(restraint, xyzq);
-    CheckResdOutput(restraint, "CHARMM case 16", 0.5, expectedGradients,
-                    CHARMM_ENERGY_TOLERANCE, CHARMM_GRADIENT_TOLERANCE);
-    CheckVirial("CHARMM case 16 internal virial",
+    CheckResdOutput(restraint, "CHARMM even EVAL below RVAL", 0.5,
+                    expectedGradients, CHARMM_ENERGY_TOLERANCE,
+                    CHARMM_GRADIENT_TOLERANCE);
+    CheckVirial("CHARMM even EVAL below RVAL internal virial",
                 CalculateManagerStyleVirial(restraint, xyzq, BOX_DIMENSIONS),
                 expectedVirial, CHARMM_VIRIAL_TOLERANCE);
   }
@@ -2127,9 +2128,10 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
                                                   0.0,  0.0, 0.0, 0.0};
 
     ClearAndCalculate(restraint, xyzq);
-    CheckResdOutput(restraint, "CHARMM case 18", 0.0, expectedGradients,
-                    CHARMM_ENERGY_TOLERANCE, CHARMM_GRADIENT_TOLERANCE);
-    CheckVirial("CHARMM case 18 internal virial",
+    CheckResdOutput(restraint, "CHARMM POSITIVE term at D=0", 0.0,
+                    expectedGradients, CHARMM_ENERGY_TOLERANCE,
+                    CHARMM_GRADIENT_TOLERANCE);
+    CheckVirial("CHARMM POSITIVE term at D=0 internal virial",
                 CalculateManagerStyleVirial(restraint, xyzq, BOX_DIMENSIONS),
                 expectedVirial, CHARMM_VIRIAL_TOLERANCE);
   }
@@ -2148,9 +2150,10 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
                                                   0.0,  0.0, 0.0, 0.0};
 
     ClearAndCalculate(restraint, xyzq);
-    CheckResdOutput(restraint, "CHARMM case 21", 0.0, expectedGradients,
-                    CHARMM_ENERGY_TOLERANCE, CHARMM_GRADIENT_TOLERANCE);
-    CheckVirial("CHARMM case 21 internal virial",
+    CheckResdOutput(restraint, "CHARMM NEGATIVE term at D=0", 0.0,
+                    expectedGradients, CHARMM_ENERGY_TOLERANCE,
+                    CHARMM_GRADIENT_TOLERANCE);
+    CheckVirial("CHARMM NEGATIVE term at D=0 internal virial",
                 CalculateManagerStyleVirial(restraint, xyzq, BOX_DIMENSIONS),
                 expectedVirial, CHARMM_VIRIAL_TOLERANCE);
   }
@@ -2168,11 +2171,13 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
                                                   0.0,     0.0, 0.0, 0.0};
 
     ClearAndCalculate(restraint, xyzq);
-    CheckResdOutput(restraint, "CHARMM case 31", 1521.0, expectedGradients,
-                    CHARMM_ENERGY_TOLERANCE, CHARMM_GRADIENT_TOLERANCE);
-    CheckShiftedForcesAreZero(restraint, "CHARMM case 31 shifted-force records",
+    CheckResdOutput(restraint, "CHARMM box-face crossing", 1521.0,
+                    expectedGradients, CHARMM_ENERGY_TOLERANCE,
+                    CHARMM_GRADIENT_TOLERANCE);
+    CheckShiftedForcesAreZero(restraint,
+                              "CHARMM box-face crossing shifted-force records",
                               CHARMM_VIRIAL_TOLERANCE);
-    CheckVirial("CHARMM case 31 internal virial",
+    CheckVirial("CHARMM box-face crossing internal virial",
                 CalculateManagerStyleVirial(restraint, xyzq, BOX_DIMENSIONS),
                 expectedVirial, CHARMM_VIRIAL_TOLERANCE);
   }
@@ -2189,10 +2194,10 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
                                                   0.0, 0.0, 0.0, 0.0};
 
     ClearAndCalculate(restraint, xyzq);
-    CheckResdOutput(restraint, "CHARMM case 35", 1.0, expectedGradients,
-                    CHARMM_ENERGY_TOLERANCE,
+    CheckResdOutput(restraint, "CHARMM signed two-pair term", 1.0,
+                    expectedGradients, CHARMM_ENERGY_TOLERANCE,
                     CHARMM_MULTIPAIR_GRADIENT_TOLERANCE);
-    CheckVirial("CHARMM case 35 internal virial",
+    CheckVirial("CHARMM signed two-pair term internal virial",
                 CalculateManagerStyleVirial(restraint, xyzq, BOX_DIMENSIONS),
                 expectedVirial, CHARMM_VIRIAL_TOLERANCE);
   }
@@ -2210,11 +2215,12 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
         -2.0, -4.0, -6.0, -4.0, -8.0, -12.0, -6.0, -12.0, -18.0};
 
     ClearAndCalculate(restraint, xyzq);
-    CheckResdOutput(restraint, "CHARMM case 63", 14.0, expectedGradients,
+    CheckResdOutput(restraint, "CHARMM off-axis pair", 14.0, expectedGradients,
                     CHARMM_ENERGY_TOLERANCE, CHARMM_GRADIENT_TOLERANCE);
-    CheckShiftedForcesAreZero(restraint, "CHARMM case 63 shifted-force records",
+    CheckShiftedForcesAreZero(restraint,
+                              "CHARMM off-axis pair shifted-force records",
                               CHARMM_VIRIAL_TOLERANCE);
-    CheckVirial("CHARMM case 63 internal virial",
+    CheckVirial("CHARMM off-axis internal virial",
                 CalculateManagerStyleVirial(restraint, xyzq, BOX_DIMENSIONS),
                 expectedVirial, CHARMM_VIRIAL_TOLERANCE);
   }
@@ -2232,11 +2238,13 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
         -2.0, -4.0, -6.0, -4.0, -8.0, -12.0, -6.0, -12.0, -18.0};
 
     ClearAndCalculate(restraint, xyzq);
-    CheckResdOutput(restraint, "CHARMM case 64", 14.0, expectedGradients,
-                    CHARMM_ENERGY_TOLERANCE, CHARMM_GRADIENT_TOLERANCE);
-    CheckShiftedForcesAreZero(restraint, "CHARMM case 64 shifted-force records",
-                              CHARMM_VIRIAL_TOLERANCE);
-    CheckVirial("CHARMM case 64 internal virial",
+    CheckResdOutput(restraint, "CHARMM translated off-axis pair", 14.0,
+                    expectedGradients, CHARMM_ENERGY_TOLERANCE,
+                    CHARMM_GRADIENT_TOLERANCE);
+    CheckShiftedForcesAreZero(
+        restraint, "CHARMM translated off-axis pair shifted-force records",
+        CHARMM_VIRIAL_TOLERANCE);
+    CheckVirial("CHARMM translated off-axis pair internal virial",
                 CalculateManagerStyleVirial(restraint, xyzq, BOX_DIMENSIONS),
                 expectedVirial, CHARMM_VIRIAL_TOLERANCE);
   }
@@ -2255,11 +2263,13 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
                                                   -3198.0, -3280.0, -3362.0};
 
     ClearAndCalculate(restraint, xyzq);
-    CheckResdOutput(restraint, "CHARMM case 66", 4802.0, expectedGradients,
-                    CHARMM_ENERGY_TOLERANCE, CHARMM_GRADIENT_TOLERANCE);
-    CheckShiftedForcesAreZero(restraint, "CHARMM case 66 shifted-force records",
-                              CHARMM_VIRIAL_TOLERANCE);
-    CheckVirial("CHARMM case 66 internal virial",
+    CheckResdOutput(restraint, "CHARMM diagonal box-face crossing", 4802.0,
+                    expectedGradients, CHARMM_ENERGY_TOLERANCE,
+                    CHARMM_GRADIENT_TOLERANCE);
+    CheckShiftedForcesAreZero(
+        restraint, "CHARMM diagonal box-face crossing shifted-force records",
+        CHARMM_VIRIAL_TOLERANCE);
+    CheckVirial("CHARMM diagonal box-face crossing internal virial",
                 CalculateManagerStyleVirial(restraint, xyzq, BOX_DIMENSIONS),
                 expectedVirial, CHARMM_LARGE_VIRIAL_TOLERANCE);
   }
@@ -2283,9 +2293,10 @@ TEST_CASE("DistanceRestraintForceMatchesCharacterizedCharmmReferences") {
                                                   0.0,   0.0, 0.0, 0.0};
 
     ClearAndCalculate(restraint, xyzq);
-    CheckResdOutput(restraint, "CHARMM case 70", 3.0, expectedGradients,
-                    CHARMM_ENERGY_TOLERANCE, CHARMM_GRADIENT_TOLERANCE);
-    CheckVirial("CHARMM case 70 internal virial",
+    CheckResdOutput(restraint, "CHARMM four mixed terms", 3.0,
+                    expectedGradients, CHARMM_ENERGY_TOLERANCE,
+                    CHARMM_GRADIENT_TOLERANCE);
+    CheckVirial("CHARMM four mixed terms internal virial",
                 CalculateManagerStyleVirial(restraint, xyzq, BOX_DIMENSIONS),
                 expectedVirial, CHARMM_VIRIAL_TOLERANCE);
   }

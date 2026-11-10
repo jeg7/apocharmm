@@ -30,6 +30,7 @@ set(PYTHON_API_TESTS
   python_api_harmonic_restraint_force.py
   python_api_harmonic_center_of_mass_restraint_force.py
   python_api_distance_restraint_force.py
+  python_api_geometric_restraint_force.py
 )
 
 # Python files that are imported by tests, but should not be registered as tests.

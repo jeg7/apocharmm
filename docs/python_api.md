@@ -22,6 +22,12 @@ units, errors, limitations, and implementation details.
   selects no gate, exact `D >= 0` activation, or exact `D <= 0` activation for
   one distance-restraint term. See the
   [DistanceRestraintForce subsystem](@ref distance_restraint_force).
+- [apocharmm.GeometricRestraintActivation](@ref python_geometric_restraint_activation)
+  selects `SYMMETRIC`, `INSIDE`, or `OUTSIDE` activation for one geometric
+  restraint term, and
+  [apocharmm.GeometricRestraintSelectionMode](@ref python_geometric_restraint_selection_mode)
+  selects independent atom evaluations or one mass-weighted center. See the
+  [GeometricRestraintForce subsystem](@ref geometric_restraint_force).
 - [apocharmm.PeriodicBoundaryCondition](@ref python_periodic_boundary_condition)
   selects the periodic boundary model used by contexts and force managers. See
   the [CharmmContext subsystem](@ref charmm_context) and
@@ -69,6 +75,11 @@ Their meanings and Python exception mapping are documented in the
   See the [DistanceRestraintForce subsystem](@ref distance_restraint_force).
 - [apocharmm.ForceManager](@ref python_force_manager) configures and owns native
   force backends. See the [ForceManager subsystem](@ref force_manager).
+- [apocharmm.GeometricRestraintForce](@ref python_geometric_restraint_force)
+  configures CHARMM MMFP GEO harmonic plane, cylinder, and sphere terms, each
+  for one `AtomSelection` or `AtomReference`. Raw atom indices are not
+  accepted. See the
+  [GeometricRestraintForce subsystem](@ref geometric_restraint_force).
 - [apocharmm.HarmonicCenterOfMassRestraintForce](@ref python_harmonic_center_of_mass_restraint_force)
   configures periodic geometric-center or mass-weighted-center restraints. See
   the [HarmonicCenterOfMassRestraintForce subsystem](@ref harmonic_center_of_mass_restraint_force).

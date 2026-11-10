@@ -507,7 +507,7 @@ def check_validation() -> None:
         )
 
         apo_test.expect_invalid_argument(
-            "addRestraint rejects uncharacterized distance exponent",
+            "addRestraint rejects an unsupported distance exponent",
             lambda: restraint.addRestraint(
                 [atom_pair],
                 [1.0],
@@ -517,7 +517,7 @@ def check_validation() -> None:
                 2,
                 apo.DistanceRestraintCondition.NONE,
             ),
-            "Distance exponent must be one of the characterized values",
+            "Distance exponent must be one of the supported values",
             expected_context=ADD_RESTRAINT_CONTEXT,
         )
 
@@ -532,7 +532,7 @@ def check_validation() -> None:
                 -1,
                 apo.DistanceRestraintCondition.NONE,
             ),
-            "Energy exponent must be one of the characterized values",
+            "Energy exponent must be one of the supported values",
             expected_context=ADD_RESTRAINT_CONTEXT,
         )
 

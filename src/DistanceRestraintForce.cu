@@ -165,7 +165,7 @@ void DistanceRestraintForce<AT, CT>::addRestraint(
       (distanceExponent == 2) || (distanceExponent == 6) ||
       (distanceExponent == 7);
   APOCHARMM_REQUIRE(validDistanceExponent, ApoCharmmErrorCode::InvalidArgument,
-                    "Distance exponent must be one of the characterized values "
+                    "Distance exponent must be one of the supported values "
                     "{-2, -1, 0, 1, 2, 6, 7}; observed " +
                         std::to_string(distanceExponent));
 
@@ -173,7 +173,7 @@ void DistanceRestraintForce<AT, CT>::addRestraint(
       (energyExponent == 1) || (energyExponent == 2) || (energyExponent == 3) ||
       (energyExponent == 4);
   APOCHARMM_REQUIRE(validEnergyExponent, ApoCharmmErrorCode::InvalidArgument,
-                    "Energy exponent must be one of the characterized values "
+                    "Energy exponent must be one of the supported values "
                     "{1, 2, 3, 4}; observed " +
                         std::to_string(energyExponent));
 

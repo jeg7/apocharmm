@@ -66,7 +66,7 @@ constexpr apo_geometric_restraint_selection_mode ATOMWISE =
 constexpr apo_geometric_restraint_selection_mode RCM =
     APO_GEOMETRIC_RESTRAINT_SELECTION_MODE_RCM;
 
-constexpr int ORACLE_NUM_ATOMS = 12;
+constexpr int CHARMM_NUM_ATOMS = 12;
 constexpr char PSF_FILE[] = "tmp_capi_geometric_restraint_force_manager.psf";
 constexpr char PARAMETER_FILE[] =
     "tmp_capi_geometric_restraint_force_manager.prm";
@@ -113,22 +113,22 @@ constexpr char ZERO_INTERACTION_PARAMETER_TEXT[] = "NONBONDED\n"
                                                    "DUM 0.0 0.0 1.0\n"
                                                    "END\n";
 
-constexpr std::array<double, ORACLE_NUM_ATOMS> STANDARD_MASSES = {
+constexpr std::array<double, CHARMM_NUM_ATOMS> STANDARD_MASSES = {
     1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5};
-constexpr std::array<double, ORACLE_NUM_ATOMS> UNEQUAL_MASSES = {
+constexpr std::array<double, CHARMM_NUM_ATOMS> UNEQUAL_MASSES = {
     1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0};
-constexpr std::array<double, ORACLE_NUM_ATOMS> EQUAL_MASSES = {
+constexpr std::array<double, CHARMM_NUM_ATOMS> EQUAL_MASSES = {
     2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0};
-constexpr std::array<double, ORACLE_NUM_ATOMS> NEGATIVE_TOTAL_MASSES = {
+constexpr std::array<double, CHARMM_NUM_ATOMS> NEGATIVE_TOTAL_MASSES = {
     1.0, -3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0};
-constexpr std::array<double, ORACLE_NUM_ATOMS> ZERO_TOTAL_MASSES = {
+constexpr std::array<double, CHARMM_NUM_ATOMS> ZERO_TOTAL_MASSES = {
     1.0, -1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0};
 
 enum class Geometry { PLANE, CYLINDER, SPHERE };
 
 enum class AtomRoute { SELECTION, ATOM_REFERENCE };
 
-struct OracleTerm {
+struct CharmmTerm {
   Geometry geometry;
   apo_geometric_restraint_activation activation;
   apo_geometric_restraint_selection_mode selectionMode;
@@ -139,34 +139,34 @@ struct OracleTerm {
   double offset;
 };
 
-struct OracleForce {
+struct CharmmForce {
   int atom;
   std::array<double, 3> force;
 };
 
-struct OraclePhase {
+struct CharmmPhase {
   std::string_view name;
   bool resetFirst;
-  std::vector<OracleTerm> terms;
+  std::vector<CharmmTerm> terms;
   bool energyReported;
   double energy;
-  std::vector<OracleForce> forces;
+  std::vector<CharmmForce> forces;
   std::array<double, 9> virial;
   double energyTolerance;
   double forceTolerance;
   double virialTolerance;
 };
 
-struct OracleCase {
-  std::string_view caseId;
+struct CharmmCase {
+  std::string_view id;
   std::vector<std::array<double, 3>> coordinatePrefix;
-  std::array<double, ORACLE_NUM_ATOMS> masses;
+  std::array<double, CHARMM_NUM_ATOMS> masses;
   bool translateFirstAtomToOrigin;
-  std::vector<OraclePhase> phases;
+  std::vector<CharmmPhase> phases;
 };
 
 struct ManagerOutput {
-  std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> gradients;
+  std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> gradients;
   double energy;
   std::array<double, 9> virial;
 };
@@ -435,13 +435,13 @@ void CheckMmfpNativeError(const apo_status status,
   return;
 }
 
-std::vector<OracleCase> MakeOracleCases(void) {
-  const std::vector<OracleCase> cases = {
-      {"law_planar_symmetric_force_positive_above",
+std::vector<CharmmCase> MakeCharmmCases(void) {
+  const std::vector<CharmmCase> cases = {
+      {"Positive harmonic constant above the plane",
        {{3.0, 0.0, 0.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -458,11 +458,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          4.7000000000599994e-09}}},
-      {"plane_x_axis_negative_side",
+      {"Symmetric plane on its negative side",
        {{-3.0, 0.0, 0.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -479,11 +479,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-06,
          1e-10,
          5.100000000059999e-09}}},
-      {"plane_general_nonunit",
+      {"Plane with a nonunit oblique normal",
        {{3.0, 2.0, 4.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -502,11 +502,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-08,
          1e-10,
          5.08250039777e-09}}},
-      {"r13_b008_plane_inside_negd_zero_general",
+      {"INSIDE plane with negative offset at zero distance",
        {},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            INSIDE,
@@ -523,11 +523,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          4.660356745205e-09}}},
-      {"r12_b047_plane_outside_zero_general",
+      {"OUTSIDE plane at zero signed distance",
        {},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            OUTSIDE,
@@ -544,11 +544,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          4.660356745205e-09}}},
-      {"law_default_potential_and_activation_omitted_delta_2",
+      {"Default harmonic potential and INSIDE activation",
        {{4.0, 0.0, 0.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            INSIDE,
@@ -565,11 +565,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          4.900000000059999e-09}}},
-      {"cylinder_general_nonunit",
+      {"Cylinder with a nonunit oblique axis",
        {{4.0, 1.0, -1.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::CYLINDER,
            SYMMETRIC,
@@ -588,11 +588,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-08,
          1e-10,
          4.924130339544999e-09}}},
-      {"r11_b045_negd_cyl_in",
+      {"INSIDE cylinder off its axis with a negative offset",
        {{1.0, 0.0, 5.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::CYLINDER,
            INSIDE,
@@ -609,11 +609,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          5.30000000006e-09}}},
-      {"r13_b016_cylinder_outside_active",
+      {"OUTSIDE cylinder active inside its offset",
        {{1.0, 0.0, 5.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::CYLINDER,
            OUTSIDE,
@@ -630,11 +630,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          5.10000000006e-09}}},
-      {"r11_sphere_transition_last_suppressed",
+      {"Sphere distance just below the radial cutoff",
        {{1.2500099999, -2.5, 3.75}},
        STANDARD_MASSES,
        true,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::SPHERE,
            SYMMETRIC,
@@ -651,11 +651,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          4.87500000006e-09}}},
-      {"r11_sphere_transition_first_ordinary",
+      {"Sphere distance just above the radial cutoff",
        {{1.25001, -2.5, 3.75}},
        STANDARD_MASSES,
        true,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::SPHERE,
            SYMMETRIC,
@@ -672,11 +672,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          5.07499900006e-09}}},
-      {"accumulation_multiple_spheres",
+      {"Two sphere terms on different atoms",
        {{3.0, 2.0, 1.0}, {4.0, 1.0, 2.0}, {5.0, 3.0, 1.0}},
        UNEQUAL_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::SPHERE,
            SYMMETRIC,
@@ -704,11 +704,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-09,
          1e-10,
          5.663759566419999e-09}}},
-      {"p1_sphere_crosses_x_boundary_b",
+      {"Sphere at the negative P1 image coordinate",
        {{-10.5, 0.0, 0.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::SPHERE,
            SYMMETRIC,
@@ -725,11 +725,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-05,
          1e-10,
          7.1000000000599994e-09}}},
-      {"r11_b029_cancel_p_n_s",
+      {"Large terms cancel before the small term",
        {{3.0, 0.0, 0.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -762,11 +762,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-08,
          1e-10,
          4.650000000059999e-09}}},
-      {"r11_b029_cancel_p_s_n",
+      {"Small term added before large cancellation",
        {{3.0, 0.0, 0.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -799,11 +799,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          4.600000000059999e-09}}},
-      {"ordinary_different_coordinates_three_selected",
+      {"Three atoms restrained independently",
        {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {8.0, 8.0, 8.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -820,11 +820,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          6.20000000006e-09}}},
-      {"ordinary_overlapping_selections_two_terms",
+      {"Terms with overlapping selections",
        {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {8.0, 8.0, 8.0}},
        STANDARD_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -849,11 +849,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          6.1750000000599994e-09}}},
-      {"rcm_unequal_masses",
+      {"RCM with unequal positive masses",
        {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
        UNEQUAL_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -870,11 +870,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          5.9000000000599994e-09}}},
-      {"rcm_negative_total_mass",
+      {"RCM with a negative selected total",
        {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
        NEGATIVE_TOTAL_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -891,11 +891,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-06,
          1e-10,
          6.70000000006e-09}}},
-      {"r12_b022_rcm_sphere_cross_x_boundary",
+      {"RCM sphere acrosss a P1 boundary",
        {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
        EQUAL_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::SPHERE,
            SYMMETRIC,
@@ -912,11 +912,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-05,
          1e-10,
          8.05000000006e-09}}},
-      {"virial_rcm_cylinder",
+      {"External tensor for an RCM cylinder",
        {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
        UNEQUAL_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::CYLINDER,
            SYMMETRIC,
@@ -935,11 +935,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-08,
          1e-10,
          6.066666666725e-09}}},
-      {"virial_mixed_ordinary_rcm",
+      {"External tensor for mixed atomwise and RCM terms",
        {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
        UNEQUAL_MASSES,
        false,
-       {{"restrained",
+       {{"Restraint evaluated",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -975,11 +975,11 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-09,
          1e-10,
          5.95685289811e-09}}},
-      {"r11_b033_reset_reuse_rcm",
+      {"Reset then reuse with an RCM term",
        {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}},
        UNEQUAL_MASSES,
        false,
-       {{"pre_reset",
+       {{"Before reset",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -996,7 +996,7 @@ std::vector<OracleCase> MakeOracleCases(void) {
          5e-07,
          1e-10,
          4.9000000000599996e-09},
-        {"post_reset",
+        {"After reset",
          true,
          {},
          false,
@@ -1006,7 +1006,7 @@ std::vector<OracleCase> MakeOracleCases(void) {
          0.0,
          1e-10,
          4.8000000000599995e-09},
-        {"post_new_rcm",
+        {"New RCM term after reset",
          false,
          {{Geometry::PLANE,
            SYMMETRIC,
@@ -1027,19 +1027,19 @@ std::vector<OracleCase> MakeOracleCases(void) {
   return cases;
 }
 
-OracleCase FindOracleCase(const std::string_view caseId) {
-  for (const OracleCase &test : MakeOracleCases()) {
-    if (test.caseId == caseId)
+CharmmCase FindCharmmCase(const std::string_view id) {
+  for (const CharmmCase &test : MakeCharmmCases()) {
+    if (test.id == id)
       return test;
   }
 
-  FAIL("Unknown MMFP oracle case_id: " << caseId);
+  FAIL("Unknown CHARMM case: " << id);
   return {};
 }
 
-std::array<std::array<double, 3>, ORACLE_NUM_ATOMS>
-EvaluatedCoordinates(const OracleCase &test) {
-  std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates = {{
+std::array<std::array<double, 3>, CHARMM_NUM_ATOMS>
+EvaluatedCoordinates(const CharmmCase &test) {
+  std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> coordinates = {{
       {0.0, 0.0, 0.0},
       {1.0, 0.0, 0.0},
       {0.0, 1.0, 0.0},
@@ -1062,7 +1062,7 @@ EvaluatedCoordinates(const OracleCase &test) {
   return coordinates;
 }
 
-std::array<double, 3> OriginShift(const OracleCase &test) {
+std::array<double, 3> OriginShift(const CharmmCase &test) {
   if (!test.translateFirstAtomToOrigin)
     return {0.0, 0.0, 0.0};
 
@@ -1124,8 +1124,8 @@ void InitializeSystem(ZeroInteractionSystem &system) {
   return;
 }
 
-apo_status AddOracleTerm(apo_geometric_restraint_force *restraint,
-                         const apo_charmm_psf *psf, const OracleTerm &term,
+apo_status AddCharmmTerm(apo_geometric_restraint_force *restraint,
+                         const apo_charmm_psf *psf, const CharmmTerm &term,
                          const std::array<double, 3> &originShift,
                          const AtomRoute route) {
   const double origin[3] = {term.origin[0] - originShift[0],
@@ -1155,7 +1155,7 @@ apo_status AddOracleTerm(apo_geometric_restraint_force *restraint,
         term.activation, term.selectionMode);
   }
 
-  AtomSelectionHandle selection = MakeSelection(ORACLE_NUM_ATOMS, term.atoms);
+  AtomSelectionHandle selection = MakeSelection(CHARMM_NUM_ATOMS, term.atoms);
 
   if (term.geometry == Geometry::PLANE) {
     return apo_geometric_restraint_force_add_plane_from_selection(
@@ -1174,17 +1174,17 @@ apo_status AddOracleTerm(apo_geometric_restraint_force *restraint,
       term.activation, term.selectionMode);
 }
 
-void AddOracleTerms(apo_geometric_restraint_force *restraint,
-                    const apo_charmm_psf *psf, const OracleCase &test,
-                    const OraclePhase &phase, const AtomRoute route) {
+void AddCharmmTerms(apo_geometric_restraint_force *restraint,
+                    const apo_charmm_psf *psf, const CharmmCase &test,
+                    const CharmmPhase &phase, const AtomRoute route) {
   const std::array<double, 3> originShift = OriginShift(test);
 
-  for (const OracleTerm &term : phase.terms) {
+  for (const CharmmTerm &term : phase.terms) {
     if (test.translateFirstAtomToOrigin)
       REQUIRE(term.atoms == std::vector<int>{0});
 
     const apo_status status =
-        AddOracleTerm(restraint, psf, term, originShift, route);
+        AddCharmmTerm(restraint, psf, term, originShift, route);
     INFO("term-addition diagnostic: " << apo_last_error());
     REQUIRE(status == APO_STATUS_OK);
   }
@@ -1194,7 +1194,7 @@ void AddOracleTerms(apo_geometric_restraint_force *restraint,
 
 ManagerOutput EvaluateManager(
     const apo_force_manager *forceManager,
-    const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> &coordinates) {
+    const std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> &coordinates) {
   std::vector<float4> xyzq;
   xyzq.reserve(coordinates.size());
 
@@ -1214,15 +1214,15 @@ ManagerOutput EvaluateManager(
                     true);
 
   const std::shared_ptr<Force<double>> forces = manager.getForces();
-  REQUIRE(forces->size() == ORACLE_NUM_ATOMS);
+  REQUIRE(forces->size() == CHARMM_NUM_ATOMS);
 
-  std::vector<double> x(ORACLE_NUM_ATOMS);
-  std::vector<double> y(ORACLE_NUM_ATOMS);
-  std::vector<double> z(ORACLE_NUM_ATOMS);
+  std::vector<double> x(CHARMM_NUM_ATOMS);
+  std::vector<double> y(CHARMM_NUM_ATOMS);
+  std::vector<double> z(CHARMM_NUM_ATOMS);
   forces->getXYZ(x.data(), y.data(), z.data());
 
   ManagerOutput result;
-  for (int atom = 0; atom < ORACLE_NUM_ATOMS; atom++)
+  for (int atom = 0; atom < CHARMM_NUM_ATOMS; atom++)
     result.gradients[atom] = {x[atom], y[atom], z[atom]};
 
   CudaContainer<double> &energy = manager.getPotentialEnergy();
@@ -1237,15 +1237,15 @@ ManagerOutput EvaluateManager(
   return result;
 }
 
-void CheckManagerOracle(const OracleCase &test, const OraclePhase &phase,
+void CheckManagerOutput(const CharmmCase &test, const CharmmPhase &phase,
                         const ManagerOutput &baseline,
                         const ManagerOutput &observed) {
   constexpr std::array<const char *, 9> components = {
       "XX", "XY", "XZ", "YX", "YY", "YZ", "ZX", "ZY", "ZZ"};
 
-  std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> expectedForces{};
+  std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> expectedForces{};
   double forceMagnitude = 0.0;
-  for (const OracleForce &force : phase.forces) {
+  for (const CharmmForce &force : phase.forces) {
     expectedForces[force.atom] = force.force;
     for (const double component : force.force)
       forceMagnitude = std::max(forceMagnitude, std::abs(component));
@@ -1259,7 +1259,7 @@ void CheckManagerOracle(const OracleCase &test, const OraclePhase &phase,
       ARITHMETIC_TOLERANCE * std::max(1.0, forceMagnitude);
   const std::array<double, 3> originShift = OriginShift(test);
 
-  INFO(test.caseId << ", phase " << phase.name);
+  INFO(test.id << ", phase " << phase.name);
 
   const double energy = observed.energy - baseline.energy;
   {
@@ -1268,7 +1268,7 @@ void CheckManagerOracle(const OracleCase &test, const OraclePhase &phase,
     CHECK(std::abs(energy - phase.energy) <= energyTolerance);
   }
 
-  for (int atom = 0; atom < ORACLE_NUM_ATOMS; atom++) {
+  for (int atom = 0; atom < CHARMM_NUM_ATOMS; atom++) {
     for (std::size_t k = 0; k < 3; k++) {
       const double force =
           -(observed.gradients[atom][k] - baseline.gradients[atom][k]);
@@ -1309,19 +1309,19 @@ void CheckNoManagerContribution(const ManagerOutput &baseline,
   return;
 }
 
-void RunOracleCase(const ZeroInteractionSystem &system, const OracleCase &test,
+void RunCharmmCase(const ZeroInteractionSystem &system, const CharmmCase &test,
                    const AtomRoute route) {
-  INFO(test.caseId << ((route == AtomRoute::SELECTION)
-                           ? " through AtomSelection handles"
-                           : " through AtomReference handles"));
+  INFO(test.id << ((route == AtomRoute::SELECTION)
+                       ? " through AtomSelection handles"
+                       : " through AtomReference handles"));
 
-  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+  const std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> coordinates =
       EvaluatedCoordinates(test);
   GeometricRestraintForceHandle restraint = MakeRestraint(system.psf.get());
 
   REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
               system.forceManager.get(), restraint.get(),
-              std::string(test.caseId).c_str()) == APO_STATUS_OK);
+              std::string(test.id).c_str()) == APO_STATUS_OK);
 
   const ManagerOutput baseline =
       EvaluateManager(system.forceManager.get(), coordinates);
@@ -1330,13 +1330,13 @@ void RunOracleCase(const ZeroInteractionSystem &system, const OracleCase &test,
               restraint.get(), test.masses.data(), test.masses.size()) ==
           APO_STATUS_OK);
 
-  for (const OraclePhase &phase : test.phases) {
+  for (const CharmmPhase &phase : test.phases) {
     if (phase.resetFirst)
       REQUIRE(apo_geometric_restraint_force_reset(restraint.get()) ==
               APO_STATUS_OK);
 
-    AddOracleTerms(restraint.get(), system.psf.get(), test, phase, route);
-    CheckManagerOracle(test, phase, baseline,
+    AddCharmmTerms(restraint.get(), system.psf.get(), test, phase, route);
+    CheckManagerOutput(test, phase, baseline,
                        EvaluateManager(system.forceManager.get(), coordinates));
   }
 
@@ -2176,7 +2176,7 @@ TEST_CASE("CapiGeometricRestraintForceReplacesMasses") {
     }
   }
 
-  SECTION("AcceptsCharmmCharacterizedUnusualMasses") {
+  SECTION("AcceptsUnusualMassesThatCharmmAccepts") {
     AtomSelectionHandle tinyPartner = MakeSelection(NUM_ATOMS, {0, 2});
     AtomSelectionHandle hugePartner = MakeSelection(NUM_ATOMS, {0, 3});
     AtomReferenceHandle negativeAtom = MakeReference(psf.get(), 1);
@@ -2591,13 +2591,14 @@ TEST_CASE("CapiGeometricRestraintForceManagerRequiresP1") {
 }
 
 TEST_CASE("CapiGeometricRestraintForceManagerSubscribesBeforeAndAfterInit") {
-  const OracleCase test = FindOracleCase("cylinder_general_nonunit");
-  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+  const CharmmCase test =
+      FindCharmmCase("Cylinder with a nonunit oblique axis");
+  const std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> coordinates =
       EvaluatedCoordinates(test);
 
   ZeroInteractionSystem system = MakeSystem();
   GeometricRestraintForceHandle restraint = MakeRestraint(system.psf.get());
-  AddOracleTerms(restraint.get(), system.psf.get(), test, test.phases[0],
+  AddCharmmTerms(restraint.get(), system.psf.get(), test, test.phases[0],
                  AtomRoute::ATOM_REFERENCE);
 
   SECTION("SubscribeBeforeInitialization") {
@@ -2620,15 +2621,16 @@ TEST_CASE("CapiGeometricRestraintForceManagerSubscribesBeforeAndAfterInit") {
   REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
               system.forceManager.get(), restraint.get()) == APO_STATUS_OK);
 
-  CheckManagerOracle(test, test.phases[0],
+  CheckManagerOutput(test, test.phases[0],
                      EvaluateManager(system.forceManager.get(), coordinates),
                      restrained);
 }
 
 TEST_CASE("CapiGeometricRestraintForceManagerAppliesMutationsWhileSubscribed") {
-  const OracleCase unequal = FindOracleCase("rcm_unequal_masses");
-  const OracleCase negative = FindOracleCase("rcm_negative_total_mass");
-  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+  const CharmmCase unequal = FindCharmmCase("RCM with unequal positive masses");
+  const CharmmCase negative =
+      FindCharmmCase("RCM with a negative selected total");
+  const std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> coordinates =
       EvaluatedCoordinates(unequal);
 
   REQUIRE(EvaluatedCoordinates(negative) == coordinates);
@@ -2659,15 +2661,15 @@ TEST_CASE("CapiGeometricRestraintForceManagerAppliesMutationsWhileSubscribed") {
   REQUIRE(apo_geometric_restraint_force_set_masses(
               restraint.get(), unequal.masses.data(), unequal.masses.size()) ==
           APO_STATUS_OK);
-  AddOracleTerms(restraint.get(), system.psf.get(), unequal, unequal.phases[0],
+  AddCharmmTerms(restraint.get(), system.psf.get(), unequal, unequal.phases[0],
                  AtomRoute::SELECTION);
-  CheckManagerOracle(unequal, unequal.phases[0], baseline,
+  CheckManagerOutput(unequal, unequal.phases[0], baseline,
                      EvaluateManager(system.forceManager.get(), coordinates));
 
   REQUIRE(apo_geometric_restraint_force_set_masses(
               restraint.get(), negative.masses.data(),
               negative.masses.size()) == APO_STATUS_OK);
-  CheckManagerOracle(negative, negative.phases[0], baseline,
+  CheckManagerOutput(negative, negative.phases[0], baseline,
                      EvaluateManager(system.forceManager.get(), coordinates));
 
   REQUIRE(apo_geometric_restraint_force_reset(restraint.get()) ==
@@ -2683,9 +2685,9 @@ TEST_CASE("CapiGeometricRestraintForceManagerAppliesMutationsWhileSubscribed") {
   REQUIRE(apo_geometric_restraint_force_set_masses(
               restraint.get(), unequal.masses.data(), unequal.masses.size()) ==
           APO_STATUS_OK);
-  AddOracleTerms(restraint.get(), system.psf.get(), unequal, unequal.phases[0],
+  AddCharmmTerms(restraint.get(), system.psf.get(), unequal, unequal.phases[0],
                  AtomRoute::SELECTION);
-  CheckManagerOracle(unequal, unequal.phases[0], baseline,
+  CheckManagerOutput(unequal, unequal.phases[0], baseline,
                      EvaluateManager(system.forceManager.get(), coordinates));
 
   apo_test::CheckNativeError(
@@ -2694,7 +2696,7 @@ TEST_CASE("CapiGeometricRestraintForceManagerAppliesMutationsWhileSubscribed") {
       APO_STATUS_INVALID_ARGUMENT, "InvalidArgument", SET_PBC_FUNCTION_NAME,
       "Subscribed force does not support periodic boundary condition value 2",
       FORCE_MANAGER_SOURCE_FILE, "checkPBCCompatibility");
-  CheckManagerOracle(unequal, unequal.phases[0], baseline,
+  CheckManagerOutput(unequal, unequal.phases[0], baseline,
                      EvaluateManager(system.forceManager.get(), coordinates));
 
   REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
@@ -2706,7 +2708,7 @@ TEST_CASE("CapiGeometricRestraintForceManagerAppliesMutationsWhileSubscribed") {
   REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
               system.forceManager.get(), restraint.get(), "mmfp") ==
           APO_STATUS_OK);
-  CheckManagerOracle(unequal, unequal.phases[0], baseline,
+  CheckManagerOutput(unequal, unequal.phases[0], baseline,
                      EvaluateManager(system.forceManager.get(), coordinates));
 }
 
@@ -2733,8 +2735,9 @@ TEST_CASE("CapiGeometricRestraintForceManagerRejectsAtomCountMismatch") {
 }
 
 TEST_CASE("CapiGeometricRestraintForceManagerRetainsNativeOwnership") {
-  const OracleCase test = FindOracleCase("r12_b047_plane_outside_zero_general");
-  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+  const CharmmCase test =
+      FindCharmmCase("OUTSIDE plane at zero signed distance");
+  const std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> coordinates =
       EvaluatedCoordinates(test);
 
   ZeroInteractionSystem system = MakeSystem();
@@ -2755,9 +2758,9 @@ TEST_CASE("CapiGeometricRestraintForceManagerRetainsNativeOwnership") {
   REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
               system.forceManager.get(), restraint.get(), "mmfp") ==
           APO_STATUS_OK);
-  AddOracleTerms(restraint.get(), system.psf.get(), test, test.phases[0],
+  AddCharmmTerms(restraint.get(), system.psf.get(), test, test.phases[0],
                  AtomRoute::SELECTION);
-  CheckManagerOracle(test, test.phases[0], baseline,
+  CheckManagerOutput(test, test.phases[0], baseline,
                      EvaluateManager(system.forceManager.get(), coordinates));
 
   SECTION("RestraintHandleDestroyedBeforeForceManager") {
@@ -2768,7 +2771,7 @@ TEST_CASE("CapiGeometricRestraintForceManagerRetainsNativeOwnership") {
     CHECK(weakForce.expired() == false);
     CHECK(weakEnergyVirial.expired() == false);
     CHECK(weakRestraint.use_count() == 1);
-    CheckManagerOracle(test, test.phases[0], baseline,
+    CheckManagerOutput(test, test.phases[0], baseline,
                        EvaluateManager(system.forceManager.get(), coordinates));
 
     system.context.reset();
@@ -2790,7 +2793,7 @@ TEST_CASE("CapiGeometricRestraintForceManagerRetainsNativeOwnership") {
     REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
                 replacement.forceManager.get(), restraint.get(), "mmfp") ==
             APO_STATUS_OK);
-    CheckManagerOracle(
+    CheckManagerOutput(
         test, test.phases[0], replacementBaseline,
         EvaluateManager(replacement.forceManager.get(), coordinates));
     REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
@@ -2807,9 +2810,11 @@ TEST_CASE("CapiGeometricRestraintForceManagerRetainsNativeOwnership") {
 }
 
 TEST_CASE("CapiGeometricRestraintForceManagerReleasesBorrowedHandles") {
-  const OracleCase mixed = FindOracleCase("virial_mixed_ordinary_rcm");
-  const OracleCase plane = FindOracleCase("plane_general_nonunit");
-  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+  const CharmmCase mixed =
+      FindCharmmCase("External tensor for mixed atomwise and RCM terms");
+  const CharmmCase plane =
+      FindCharmmCase("Plane with a nonunit oblique normal");
+  const std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> coordinates =
       EvaluatedCoordinates(mixed);
 
   ZeroInteractionSystem system = MakeSystem();
@@ -2820,7 +2825,7 @@ TEST_CASE("CapiGeometricRestraintForceManagerReleasesBorrowedHandles") {
   std::weak_ptr<CharmmPSF> weakMassPsf;
   GeometricRestraintForceHandle restraint;
   {
-    CharmmPsfHandle massPsf = MakePsf(ORACLE_NUM_ATOMS);
+    CharmmPsfHandle massPsf = MakePsf(CHARMM_NUM_ATOMS);
     std::copy(mixed.masses.begin(), mixed.masses.end(),
               massPsf->object->getMasses().begin());
     weakMassPsf = massPsf->object;
@@ -2829,8 +2834,8 @@ TEST_CASE("CapiGeometricRestraintForceManagerReleasesBorrowedHandles") {
   CHECK(weakMassPsf.expired());
 
   std::vector<std::weak_ptr<AtomSelection>> weakSelections;
-  for (const OracleTerm &term : mixed.phases[0].terms) {
-    AtomSelectionHandle selection = MakeSelection(ORACLE_NUM_ATOMS, term.atoms);
+  for (const CharmmTerm &term : mixed.phases[0].terms) {
+    AtomSelectionHandle selection = MakeSelection(CHARMM_NUM_ATOMS, term.atoms);
     weakSelections.push_back(selection->object);
 
     if (term.geometry == Geometry::PLANE) {
@@ -2857,7 +2862,7 @@ TEST_CASE("CapiGeometricRestraintForceManagerReleasesBorrowedHandles") {
   REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
               system.forceManager.get(), restraint.get(), "mmfp") ==
           APO_STATUS_OK);
-  CheckManagerOracle(mixed, mixed.phases[0], baseline,
+  CheckManagerOutput(mixed, mixed.phases[0], baseline,
                      EvaluateManager(system.forceManager.get(), coordinates));
 
   REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
@@ -2865,17 +2870,17 @@ TEST_CASE("CapiGeometricRestraintForceManagerReleasesBorrowedHandles") {
   REQUIRE(apo_geometric_restraint_force_reset(restraint.get()) ==
           APO_STATUS_OK);
 
-  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> planeCoordinates =
+  const std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> planeCoordinates =
       EvaluatedCoordinates(plane);
   const ManagerOutput planeBaseline =
       EvaluateManager(system.forceManager.get(), planeCoordinates);
 
   std::weak_ptr<CharmmPSF> weakReferencePsf;
   {
-    CharmmPsfHandle referencePsf = MakePsf(ORACLE_NUM_ATOMS);
+    CharmmPsfHandle referencePsf = MakePsf(CHARMM_NUM_ATOMS);
     weakReferencePsf = referencePsf->object;
 
-    AddOracleTerms(restraint.get(), referencePsf.get(), plane, plane.phases[0],
+    AddCharmmTerms(restraint.get(), referencePsf.get(), plane, plane.phases[0],
                    AtomRoute::ATOM_REFERENCE);
   }
   CHECK(weakReferencePsf.expired());
@@ -2883,36 +2888,36 @@ TEST_CASE("CapiGeometricRestraintForceManagerReleasesBorrowedHandles") {
   REQUIRE(apo_force_manager_subscribe_geometric_restraint_force(
               system.forceManager.get(), restraint.get(), "mmfp") ==
           APO_STATUS_OK);
-  CheckManagerOracle(
+  CheckManagerOutput(
       plane, plane.phases[0], planeBaseline,
       EvaluateManager(system.forceManager.get(), planeCoordinates));
 }
 
-TEST_CASE("CapiGeometricRestraintForceManagerReproducesCharmmOracleSubset") {
+TEST_CASE("CapiGeometricRestraintForceManagerMatchesCharmm") {
   ZeroInteractionSystem system = MakeSystem();
   InitializeSystem(system);
 
-  const std::vector<OracleCase> cases = MakeOracleCases();
+  const std::vector<CharmmCase> cases = MakeCharmmCases();
   REQUIRE(cases.size() == 23);
 
-  for (const OracleCase &test : cases) {
-    RunOracleCase(system, test, AtomRoute::SELECTION);
+  for (const CharmmCase &test : cases) {
+    RunCharmmCase(system, test, AtomRoute::SELECTION);
 
     bool singleAtomTerms = true;
-    for (const OraclePhase &phase : test.phases) {
-      for (const OracleTerm &term : phase.terms)
+    for (const CharmmPhase &phase : test.phases) {
+      for (const CharmmTerm &term : phase.terms)
         singleAtomTerms = singleAtomTerms && (term.atoms.size() == 1);
     }
 
     if (singleAtomTerms)
-      RunOracleCase(system, test, AtomRoute::ATOM_REFERENCE);
+      RunCharmmCase(system, test, AtomRoute::ATOM_REFERENCE);
   }
 }
 
 TEST_CASE("CapiGeometricRestraintForceManagerPreservesStateAfterRejections") {
-  const OracleCase plane =
-      FindOracleCase("law_planar_symmetric_force_positive_above");
-  const std::array<std::array<double, 3>, ORACLE_NUM_ATOMS> coordinates =
+  const CharmmCase plane =
+      FindCharmmCase("Positive harmonic constant above the plane");
+  const std::array<std::array<double, 3>, CHARMM_NUM_ATOMS> coordinates =
       EvaluatedCoordinates(plane);
   const std::array<double, 3> noShift = {0.0, 0.0, 0.0};
 
@@ -2926,36 +2931,36 @@ TEST_CASE("CapiGeometricRestraintForceManagerPreservesStateAfterRejections") {
 
   const ManagerOutput baseline =
       EvaluateManager(system.forceManager.get(), coordinates);
-  AddOracleTerms(restraint.get(), system.psf.get(), plane, plane.phases[0],
+  AddCharmmTerms(restraint.get(), system.psf.get(), plane, plane.phases[0],
                  AtomRoute::SELECTION);
-  CheckManagerOracle(plane, plane.phases[0], baseline,
+  CheckManagerOutput(plane, plane.phases[0], baseline,
                      EvaluateManager(system.forceManager.get(), coordinates));
 
-  SECTION("validity_plane_zero_direction") {
-    OracleTerm zeroDirection = plane.phases[0].terms[0];
+  SECTION("ZeroPlaneDirection") {
+    CharmmTerm zeroDirection = plane.phases[0].terms[0];
     zeroDirection.direction = {0.0, 0.0, 0.0};
 
     CheckMmfpNativeError(
-        AddOracleTerm(restraint.get(), system.psf.get(), zeroDirection, noShift,
+        AddCharmmTerm(restraint.get(), system.psf.get(), zeroDirection, noShift,
                       AtomRoute::SELECTION),
         "apo_geometric_restraint_force_add_plane_from_selection",
         "Direction must have a positive finite norm", "appendTerm");
     CheckMmfpNativeError(
-        AddOracleTerm(restraint.get(), system.psf.get(), zeroDirection, noShift,
+        AddCharmmTerm(restraint.get(), system.psf.get(), zeroDirection, noShift,
                       AtomRoute::ATOM_REFERENCE),
         "apo_geometric_restraint_force_add_plane_from_atom_reference",
         "Direction must have a positive finite norm", "appendTerm");
   }
 
-  SECTION("rcm_zero_total_mass") {
-    const OracleTerm zeroTotalMass =
-        FindOracleCase("rcm_unequal_masses").phases[0].terms[0];
+  SECTION("ZeroRcmTotalMass") {
+    const CharmmTerm zeroTotalMass =
+        FindCharmmCase("RCM with unequal positive masses").phases[0].terms[0];
 
     REQUIRE(apo_geometric_restraint_force_set_masses(
                 restraint.get(), ZERO_TOTAL_MASSES.data(),
                 ZERO_TOTAL_MASSES.size()) == APO_STATUS_OK);
     CheckMmfpNativeError(
-        AddOracleTerm(restraint.get(), system.psf.get(), zeroTotalMass, noShift,
+        AddCharmmTerm(restraint.get(), system.psf.get(), zeroTotalMass, noShift,
                       AtomRoute::SELECTION),
         "apo_geometric_restraint_force_add_plane_from_selection",
         "RCM total mass must be finite and nonzero; observed " +
@@ -2964,6 +2969,6 @@ TEST_CASE("CapiGeometricRestraintForceManagerPreservesStateAfterRejections") {
   }
 
   CHECK(restraint->object->getNumTerms() == 1);
-  CheckManagerOracle(plane, plane.phases[0], baseline,
+  CheckManagerOutput(plane, plane.phases[0], baseline,
                      EvaluateManager(system.forceManager.get(), coordinates));
 }

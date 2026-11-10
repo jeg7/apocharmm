@@ -85,11 +85,12 @@ current apoCHARMM API also requires `KVAL` to be finite.
 `RVAL` is the reference value subtracted from the coefficient-weighted reaction
 coordinate.
 
-The characterized behavior includes negative, zero, positive, fractional, and
-near-boundary floating-point values. The current apoCHARMM API requires `RVAL`
-to be finite.
+Negative, zero, positive, fractional, and near-boundary floating-point values
+all behave as they do in CHARMM. The apoCHARMM API also requires `RVAL` to be
+finite.
 
-No omitted-value default for `RVAL` has been established.
+CHARMM reads an omitted `RVAL` as zero. apoCHARMM has no omitted form: every
+term-creation API takes `RVAL` explicitly.
 
 ### IVAL
 
@@ -106,12 +107,13 @@ The supported typed values are:
 -2, -1, 0, 1, 2, 6, 7
 ```
 
-In the characterized CHARMM syntax, omitting `IVAL` stores `IVAL=1`. The
-apoCHARMM C++, C, and Python term-creation APIs require an explicit distance
-exponent and do not expose an omitted `IVAL` argument.
+CHARMM stores `IVAL=1` when the keyword is omitted. The apoCHARMM C++, C, and
+Python term-creation APIs require an explicit distance exponent and do not
+expose an omitted `IVAL` argument.
 
-The complete CHARMM integer range is unresolved. Values outside the listed
-characterized set are rejected by the current typed API rather than inferred.
+CHARMM accepts any integer `IVAL`. apoCHARMM accepts only the values listed
+above, whose CHARMM behavior has been verified, and rejects other values instead
+of extrapolating.
 
 ### EVAL
 
@@ -124,8 +126,9 @@ The supported typed values are:
 1, 2, 3, 4
 ```
 
-Zero and negative values are rejected. No omitted-value default for `EVAL` has
-been established, so every apoCHARMM term-creation API requires it explicitly.
+Zero and negative values are rejected, as they are in CHARMM. CHARMM uses
+`EVAL=2` when the keyword is omitted; every apoCHARMM term-creation API requires
+an explicit value instead.
 
 For negative `D`, ordinary signed integer powers are used. Odd and even `EVAL`
 values therefore retain their ordinary signed-power behavior.
@@ -135,8 +138,8 @@ values therefore retain their ordinary signed-power behavior.
 `SCALE` is one global multiplicative factor applied to every stored term's
 energy, gradient, and internal virial.
 
-Positive, zero, and negative finite values are supported. Its confirmed initial
-value is:
+Positive, zero, and negative finite values are supported. As in CHARMM, the
+initial value is:
 
 ```text
 SCALE = 1
@@ -148,9 +151,10 @@ to one.
 A scale of zero produces zero contribution and may return before pair geometry
 is evaluated.
 
-The typed API stores `setScale()` as object state. It does not reproduce the
-separate CHARMM text-parser command form in which a standalone scale command
-issued before a subsequent definition was discarded by that definition.
+The typed API stores `setScale()` as object state. It does not reproduce a quirk
+of CHARMM's parser, which resets the scale to one whenever it reads a
+`RESDistance` command while no terms exist, so a standalone scale command issued
+before the first definition is discarded by that definition.
 
 ### NONE
 
@@ -185,7 +189,7 @@ be added after reset; terms that existed before reset remain absent.
 `reset()` changes restraint configuration. It does not clear force, energy, or
 virial output left by an earlier calculation.
 
-## Construction and Confirmed Defaults
+## Construction and Defaults
 
 A newly constructed apoCHARMM object has:
 
@@ -194,15 +198,11 @@ A newly constructed apoCHARMM object has:
 - a fixed positive atom count supplied to the constructor
 - the default force-manager tag `"resd"` in the Python API
 
-The confirmed CHARMM omission default for `IVAL` is one in the tested definition
-syntax.
-
-The following omission defaults remain unresolved and must not be inferred:
-
-- `EVAL`
-- `KVAL`
-- `RVAL`
-- pair coefficients
+CHARMM's `RESDistance` parser fills in omitted keywords with `IVAL=1`, `EVAL=2`,
+and `RVAL=0`. An omitted `KVAL` is read as zero, and CHARMM ignores a definition
+whose force constant is zero; every pair needs an explicit nonzero coefficient.
+apoCHARMM does not reproduce these parser defaults: its term-creation APIs
+require explicit coefficients, `KVAL`, `RVAL`, `IVAL`, and `EVAL`.
 
 The C++ `addRestraint()` condition argument defaults to
 `DistanceRestraintCondition::NONE`. The C ABI and Python API require an explicit
@@ -255,52 +255,49 @@ Pair definitions and coefficients remain separate parallel collections and must
 have matching lengths. Pair order and coefficient correspondence are preserved.
 Each term must contain at least one pair. Repeated pairs remain supported.
 
-Both extracted indices in one pair must be distinct. Rejecting identical indices
-is an intentional apoCHARMM safety policy. The characterized CHARMM
-identical-index case produced finite energy but nonfinite gradients and virials
-rather than a usable restraint.
+Both extracted indices in one pair must be distinct. apoCHARMM rejects identical
+indices deliberately: in CHARMM, a pair that names the same atom twice gives a
+finite energy but nonfinite gradients and virials, not a usable restraint.
 
 ## Periodic Coordinates and Images
 
 RESD uses the raw primary-coordinate displacement and distance. It does not
 replace a pair displacement with a minimum-image displacement.
 
-This behavior is established for:
+This matches CHARMM for:
 
 - nonperiodic calculations
 - orthorhombic P1 boxes with 90-degree angles
-- characterized BYATOM image activation
-- characterized BYRESIDUE image activation
+- BYATOM image activation
+- BYRESIDUE image activation
 
 In those cases, image activation does not alter the pair distance used by RESD.
 The internal virial uses the same raw displacement, and no image-shift
-correction is added to make it minimum-image invariant. The characterized
-external RESD virial is zero.
+correction is added to make it minimum-image invariant. The external RESD virial
+is zero.
 
-Compatibility is not claimed for an uncharacterized periodic configuration. The
-following are unsupported for CHARMM-compatible RESD behavior:
+CHARMM's behavior has not been verified for other periodic configurations, so
+CHARMM-compatible RESD behavior is not supported for:
 
 - P21
 - triclinic cells
 - monoclinic cells
 - nonorthorhombic cells
 - non-P1 cells
-- other uncharacterized image modes or periodic configurations
+- other image modes or periodic configurations
 
-The current object stores force-manager box dimensions for lifecycle
-compatibility, but those dimensions do not cause minimum-image replacement of
-the characterized raw pair displacement.
+The object stores force-manager box dimensions only for lifecycle compatibility;
+they never cause a pair displacement to be replaced by its minimum image.
 
 ## Exact Zero-Distance Behavior
 
-The current apoCHARMM implementation rejects every evaluated pair whose exact
-distance is zero. Detection occurs before negative-power evaluation or gradient
-formation.
+apoCHARMM rejects every evaluated pair whose exact distance is zero. Detection
+occurs before negative-power evaluation or gradient formation.
 
-This is a deliberate safety narrowing of the characterized CHARMM behavior. The
-supplied CHARMM testing showed:
+This is deliberately stricter than CHARMM, whose zero-distance result depends on
+`IVAL`:
 
-| IVAL | Characterized exact-zero result |
+| IVAL | CHARMM result at zero distance |
 |---:|---|
 | `-2` | Infinite deviation and energy; NaN Cartesian values and virial |
 | `-1` | Infinite deviation and energy; NaN Cartesian values and virial |
@@ -310,17 +307,17 @@ supplied CHARMM testing showed:
 | `6` | Finite energy; exact zero Cartesian values and virial |
 | `7` | Finite energy; exact zero Cartesian values and virial |
 
-apoCHARMM does not reproduce these exponent-dependent exact-zero branches. It
-rejects all evaluated exact-zero pairs instead.
+Rather than reproduce these exponent-dependent branches, several of which
+produce infinities or NaNs, apoCHARMM rejects every evaluated zero-distance
+pair.
 
 When `SCALE=0`, evaluation may return zero before reading pair geometry, so an
 otherwise singular pair need not be evaluated.
 
-Exact-zero behavior for uncharacterized `IVAL` values remains unresolved.
-
 ## Exact One-Sided Boundaries
 
-There is no nonzero selector tolerance in the characterized behavior.
+Neither selector has a tolerance: like CHARMM, apoCHARMM compares `D` with zero
+exactly.
 
 `POSITIVE` includes equality at `D=0`. `NEGATIVE` also includes equality at
 `D=0`.
@@ -330,8 +327,8 @@ term can have a nonzero gradient and internal virial at that boundary. The first
 derivative is therefore discontinuous when crossing between the inactive and
 active sides.
 
-The characterized adjacent binary64 deviations were distinguished by their exact
-signs:
+Deviations at the limit of double precision are still classified by their exact
+sign, for example:
 
 ```text
 D = +2.220446049250313e-16
@@ -354,38 +351,38 @@ drive output clearing and force evaluation.
 
 ## Numerical Scope and Limitations
 
-The public typed API deliberately restricts exponents to the characterized sets:
+The typed API accepts only the exponents whose CHARMM behavior has been
+verified:
 
 ```text
 IVAL in {-2, -1, 0, 1, 2, 6, 7}
 EVAL in {1, 2, 3, 4}
 ```
 
-This restriction must not be described as the complete accepted CHARMM range.
+CHARMM accepts any integer `IVAL` and any positive `EVAL`, so these sets are a
+deliberate subset of CHARMM's range.
 
-The CHARMM text parser converted the tested token `1.5` to stored integer `1`.
-The typed apoCHARMM API does not silently reproduce that parser conversion;
-exponents are integer API values, and unsupported values are rejected.
+CHARMM's parser truncates a non-integer exponent such as `1.5` to `1` and prints
+only a warning. The typed apoCHARMM API takes integer exponents directly and
+rejects unsupported values instead of converting them.
 
 At finite nonzero distance, `IVAL=0` gives a coordinate-independent `r^0`
 contribution and zero pair gradient.
 
-`IVAL=6` and `IVAL=7` remained finite at distance two in the characterized
-cases. That observation does not establish general overflow or underflow limits.
+CHARMM gives finite results for `IVAL=6` and `IVAL=7` at a pair distance of two,
+but overflow and underflow limits at other distances are not specified.
 
-The following remain unresolved:
+This page does not specify:
 
-- accepted `IVAL` values outside the characterized set
-- accepted positive `EVAL` values above four
 - numerical overflow and underflow thresholds
 - magnitude limits for coefficients, `KVAL`, `RVAL`, and `SCALE`
-- external CHARMM behavior for nonfinite values
-- maximum term and pair counts
-- exact-zero behavior for uncharacterized `IVAL` values
+- CHARMM's handling of nonfinite input
+- CHARMM's maximum term and pair counts (apoCHARMM's own limit is the `int`
+  index range)
 
-The current apoCHARMM API requires finite coefficients, `KVAL`, `RVAL`, and
-`SCALE`. These finite-value checks are API safety policies, not claims about
-unrestricted CHARMM behavior.
+The apoCHARMM API requires finite coefficients, `KVAL`, `RVAL`, and `SCALE`.
+These checks are apoCHARMM safety policies, not statements about CHARMM's own
+limits.
 
 ## Python Use and Lifetime
 

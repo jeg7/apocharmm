@@ -396,6 +396,9 @@ in `capi/private_include/apocharmm_c/detail/GeometricRestraintForceHandle.h`,
 and the enumeration conversions are in
 `capi/private_include/apocharmm_c/detail/EnumConversion.h`, and guarded entry
 points are implemented in `capi/src/apocharmm_c/GeometricRestraintForce.cpp`.
+The Python wrapper is implemented in
+`python/apocharmm/geometric_restraint_force.py`; its activation and
+selection-mode enumerations are in `python/apocharmm/enums.py`.
 
 ### Evaluation and aggregation
 
@@ -419,8 +422,12 @@ lifecycle, accumulation, dynamic capacity, and stable derivative checks.
 `test/unittests/unittest-capiGeometricRestraintForce.cpp` covers C ABI
 construction, ownership, borrowing, typed atom inputs, enumeration and array
 validation, status mapping, mass replacement, reset, manager subscription, tags,
-P1 enforcement, ownership and lifecycle, and a CHARMM c52a1 oracle subset
-evaluated through `ForceManager` in a zero-interaction twelve-atom system.
+P1 enforcement, ownership and lifecycle, and comparisons with CHARMM c52a1
+energies, forces, and virials, evaluated through `ForceManager` in a
+twelve-atom system with no other interactions.
+`test/pytest/python_api_geometric_restraint_force.py` covers Python
+construction, ownership and closure, typed atom inputs, enumeration and
+argument validation, mass conversion and replacement, and reset.
 The public potential enum contains only `HARMONIC`. Changes to representations,
 imaging, ordering, or tensor handling require corresponding numerical and
 lifecycle review; they are not additional modes implied by the current API.
@@ -431,3 +438,4 @@ lifecycle review; they are not additional modes implied by the current API.
 - Typed inputs: [AtomSelection](@ref AtomSelection), [AtomReference](@ref AtomReference), and [CharmmPSF](@ref CharmmPSF).
 - Integration: [ForceManager](@ref ForceManager), [ForceView](@ref ForceView), and [PBC](@ref PBC).
 - C ABI: [apo_geometric_restraint_force](@ref apo_geometric_restraint_force), [apo_geometric_restraint_activation](@ref apo_geometric_restraint_activation), [apo_geometric_restraint_selection_mode](@ref apo_geometric_restraint_selection_mode), [apo_geometric_restraint_force_create](@ref apo_geometric_restraint_force_create), [apo_geometric_restraint_force_destroy](@ref apo_geometric_restraint_force_destroy), [apo_geometric_restraint_force_set_masses](@ref apo_geometric_restraint_force_set_masses), [apo_geometric_restraint_force_reset](@ref apo_geometric_restraint_force_reset), [apo_force_manager_subscribe_geometric_restraint_force](@ref apo_force_manager_subscribe_geometric_restraint_force), and [apo_force_manager_unsubscribe_geometric_restraint_force](@ref apo_force_manager_unsubscribe_geometric_restraint_force); the six term-addition functions are linked in the C ABI section.
+- Python: [apocharmm.GeometricRestraintForce](@ref python_geometric_restraint_force), [apocharmm.GeometricRestraintActivation](@ref python_geometric_restraint_activation), and [apocharmm.GeometricRestraintSelectionMode](@ref python_geometric_restraint_selection_mode).

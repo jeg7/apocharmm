@@ -20,6 +20,8 @@ from .error import (
 from .enums import (
     CrystalType,
     DistanceRestraintCondition,
+    GeometricRestraintActivation,
+    GeometricRestraintSelectionMode,
     PeriodicBoundaryCondition,
     VdwType,
 )
@@ -38,6 +40,7 @@ from .charmm_psf import CharmmPsf
 from .harmonic_restraint_force import HarmonicRestraintForce
 from .harmonic_center_of_mass_restraint_force import HarmonicCenterOfMassRestraintForce
 from .distance_restraint_force import DistanceRestraintForce
+from .geometric_restraint_force import GeometricRestraintForce
 
 from .cuda_integrator import CudaIntegrator
 from .cuda_langevin_piston_integrator import CudaLangevinPistonIntegrator
@@ -60,6 +63,8 @@ __all__: list[str] = [
     # Enums
     "CrystalType",
     "DistanceRestraintCondition",
+    "GeometricRestraintActivation",
+    "GeometricRestraintSelectionMode",
     "PeriodicBoundaryCondition",
     "VdwType",
     # Atom selection
@@ -77,6 +82,7 @@ __all__: list[str] = [
     "HarmonicRestraintForce",
     "HarmonicCenterOfMassRestraintForce",
     "DistanceRestraintForce",
+    "GeometricRestraintForce",
     # Integrators
     "CudaIntegrator",
     "CudaLangevinPistonIntegrator",

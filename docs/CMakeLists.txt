@@ -112,6 +112,7 @@ set(APOCHARMM_DOCUMENTATION_PYTHON_API
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/enums.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/error.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/force_manager.py"
+  "${apoCHARMM_SOURCE_DIR}/python/apocharmm/geometric_restraint_force.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/harmonic_center_of_mass_restraint_force.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/harmonic_restraint_force.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/restart_subscriber.py"

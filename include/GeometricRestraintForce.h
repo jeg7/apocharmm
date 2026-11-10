@@ -60,9 +60,10 @@
  * `INSIDE` is active for `Delta > 0`; `OUTSIDE` is active for `Delta < 0`;
  * `SYMMETRIC` has no one-sided gate. Equality contributes zero. Finite
  * positive, zero, and negative force constants and offsets are accepted.
- * To preserve the characterized arithmetic, energy is evaluated as
- * `(0.5 * K) * (Delta * Delta)`. A computed zero energy suppresses the
- * gradient even when energy output is disabled.
+ * Energy is evaluated as `(0.5 * K) * (Delta * Delta)`, the operation order
+ * CHARMM uses, so both programs round the energy identically. As in CHARMM, a
+ * computed zero energy suppresses the gradient, even when energy output is
+ * disabled.
  *
  * `ATOMWISE` evaluates each selected atom independently. `RCM` evaluates
  * once at a signed mass-weighted center and distributes its gradient:

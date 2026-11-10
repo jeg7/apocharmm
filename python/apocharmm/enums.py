@@ -57,6 +57,47 @@ class DistanceRestraintCondition(IntEnum):
     NEGATIVE = -1
 
 
+class GeometricRestraintActivation(IntEnum):
+    """
+    @anchor python_geometric_restraint_activation
+    @brief Selects the activation predicate of one geometric-restraint term.
+
+    For reaction coordinate `q` and offset `D`, an active evaluation uses
+    `Delta = q - D`, and equality contributes zero. A plane uses its signed
+    distance for `SYMMETRIC` and its absolute slab distance for `INSIDE` and
+    `OUTSIDE`; cylinder and sphere coordinates are nonnegative radii. The values
+    equal the C ABI `apo_geometric_restraint_activation` enumerators. CHARMM
+    defaults to `INSIDE`, but every Python term-addition method requires an
+    explicit member and rejects plain integers.
+    """
+
+    ## @brief Applies the harmonic law on both sides of the offset.
+    SYMMETRIC = 0
+    ## @brief Activates when the reaction coordinate is greater than the offset.
+    INSIDE = 1
+    ## @brief Activates when the reaction coordinate is less than the offset.
+    OUTSIDE = -1
+
+
+class GeometricRestraintSelectionMode(IntEnum):
+    """
+    @anchor python_geometric_restraint_selection_mode
+    @brief Selects independent atom evaluations or one mass-weighted center.
+
+    `ATOMWISE` evaluates every selected atom independently and ignores masses.
+    `RCM` evaluates once at the signed mass-weighted center of the selected
+    atoms, using the restraint's force-wide mass vector, and distributes the
+    center gradient by signed mass fraction. The values equal the C ABI
+    `apo_geometric_restraint_selection_mode` enumerators. Every Python
+    term-addition method requires an explicit member and rejects plain integers.
+    """
+
+    ## @brief Evaluates every selected atom independently and ignores masses.
+    ATOMWISE = 0
+    ## @brief Evaluates one signed mass-weighted center of the selected atoms.
+    RCM = 1
+
+
 class PeriodicBoundaryCondition(IntEnum):
     """
     @anchor python_periodic_boundary_condition

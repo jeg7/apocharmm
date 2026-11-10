@@ -46,12 +46,12 @@ extern "C" {
  * U_t = SCALE * (KVAL_t / EVAL_t) * D_t^EVAL_t
  * @endcode
  *
- * Stored terms accumulate additively. The supported native specialization uses
- * raw primary-coordinate pair distances for the characterized nonperiodic and
- * orthorhombic P1 behavior. A stored manager box does not replace those
- * distances with minimum-image distances. Uncharacterized exponent values are
- * rejected. Behavior for nonorthorhombic, non-P1, and other uncharacterized
- * periodic configurations is not claimed.
+ * Stored terms accumulate additively. Like CHARMM, the supported native
+ * specialization uses raw primary-coordinate pair distances for nonperiodic
+ * systems and orthorhombic P1 boxes, and a stored manager box does not replace
+ * those distances with minimum-image distances. Exponent values whose CHARMM
+ * behavior has not been verified are rejected. Nonorthorhombic, non-P1, and
+ * other periodic configurations are not supported.
  *
  * Every evaluated exact zero-distance pair is rejected before exponentiation
  * or gradient formation. A zero global scale returns zero contribution before
@@ -168,8 +168,8 @@ apo_distance_restraint_force_destroy(apo_distance_restraint_force *restraint);
  * or nonstandard C++ operation failed.
  *
  * @post On validation failure, the prior scale remains unchanged.
- * @note Requiring a finite value is the current apoCHARMM API policy. External
- * CHARMM magnitude limits remain unresolved outside the characterized cases.
+ * @note Requiring a finite value is an apoCHARMM API policy; it does not
+ * describe CHARMM's own limits on the scale.
  * @note The function clears the calling thread's previous diagnostic at entry.
  * Success leaves it empty; failure leaves text available through
  * @ref apo_last_error.
