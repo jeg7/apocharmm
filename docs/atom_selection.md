@@ -402,6 +402,9 @@ ASCII keywords, operators, and field patterns.
   choose restrained atoms.
 - `HarmonicCenterOfMassRestraintForce` consumes a nonempty
   [AtomSelection](@ref AtomSelection) to define its restrained center.
+- [GeometricRestraintForce](@ref geometric_restraint_force) consumes an
+  [AtomSelection](@ref AtomSelection) or an
+  [AtomReference](@ref AtomReference) for each plane, cylinder, or sphere term.
 - [ApoCharmmError](@ref apocharmm_error) defines native and C ABI failure
   reporting.
 
@@ -474,7 +477,9 @@ Relevant tests are:
 - `test/pytest/python_api_atom_selection.py` for set-valued Python selection.
 
 The restraint example `example/cons_harm.py` demonstrates using a selection as a
-collaborating object.
+collaborating object. `example/geometric_restraint.py` passes both an
+`AtomSelection` from `select()` and an `AtomReference` from `selectAtom()`
+directly to restraint terms.
 
 Visible technical debt includes copy-like const-rvalue overloads in
 `AtomSelection`, nontransactional copy assignment, incomplete validation of

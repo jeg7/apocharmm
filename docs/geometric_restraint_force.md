@@ -136,6 +136,13 @@ gradient; the restraint adds nothing to the virial. The printed energy table
 includes the ordinary force field as well as MMFP; it is not an isolated
 restraint-energy report.
 
+The Python example `example/geometric_restraint.py` uses the same pair and
+also runs from the repository root. One restraint holds an RCM plane term, an
+atomwise cylinder term for both ions, and a sphere term for the chloride
+selected with `selectAtom()`. The example subscribes the restraint once and
+reports its energy and forces as the change in the `ForceManager` aggregates
+from an unrestrained evaluation.
+
 ## Construction and Required State
 
 Construction requires a non-null PSF with a positive atom count and a complete
@@ -379,7 +386,7 @@ resetting their CUDA device.
 - [HarmonicRestraintForce](@ref harmonic_restraint_force) restrains individual
   Cartesian references.
 - [HarmonicCenterOfMassRestraintForce](@ref harmonic_center_of_mass_restraint_force)
-  provides a periodically imaged group-center restraint.
+  restrains the raw geometric or mass-weighted center of a selection.
 - [ApoCharmmError](@ref apocharmm_error) describes native error categories.
 
 ## Developer Architecture
@@ -441,6 +448,7 @@ subscription with default, explicit, and invalid tags, wrapper and native
 retention, lifecycle and P1 enforcement, more than 100 terms, and comparisons
 with CHARMM c52a1 energies and forces, with an unchanged aggregate virial, read
 through `ForceManager`.
+`example/geometric_restraint.py` is the user-facing Python example.
 The public potential enum contains only `HARMONIC`. Changes to representations,
 imaging, ordering, or virial handling require corresponding numerical and
 lifecycle review; they are not additional modes implied by the current API.

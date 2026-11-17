@@ -102,7 +102,7 @@ The base defaults are:
 | VDW model | `VDW_VFSW` | native model code `3` |
 | Energy printing | disabled | standard output side effect |
 
-`UNSET` is reserved as an invalud periodic-boundary sentinel. It does not
+`UNSET` is reserved as an invalid periodic-boundary sentinel. It does not
 represent an aperiodic force calculation. `ForceManager` accepts only `P1` and
 `P21`, and initialization verifies that the stored value is one of those
 runnable modes.
@@ -492,6 +492,8 @@ calculation path when possible.
 - `test/pytest/python_api_charmm_context.py` exercises ForceManager through the
   higher-level Python context.
 - `example/energy.py` demonstrates the context-centered energy workflow.
+- `example/geometric_restraint.py` subscribes a restraint and reads the
+  aggregate energy and forces through the Python output getters.
 
 ### Visible architectural constraints
 

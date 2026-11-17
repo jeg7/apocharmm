@@ -1,6 +1,7 @@
 # apoCHARMM
 
-Start with the Python API index or browse the mainted subsystem documentation.
+Start with the Python API index or browse the maintained subsystem
+documentation.
 
 ## API by Language
 
