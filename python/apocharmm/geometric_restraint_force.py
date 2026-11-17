@@ -241,8 +241,11 @@ class GeometricRestraintForce(_ApoObject):
     `PeriodicBoundaryCondition.P1`, uses `default_force_tag` unless a tag is
     given, and rejects a later change to `P21` while the restraint is
     subscribed. Under P1, atom positions, `RCM` centers, and reference
-    displacements come from raw Cartesian coordinates, without unwrapping or
-    minimum-image replacement, exactly as in CHARMM. The manager retains this
+    displacements come from the raw Cartesian coordinates the manager supplies,
+    without unwrapping or minimum-image replacement, as in CHARMM. A
+    `CharmmContext` moves PSF groups whose center leaves the half-box range by
+    one box length when it updates coordinates or rebuilds the neighbor list,
+    and the restraint sees those coordinates. The manager retains this
     Python wrapper while it is subscribed, and the native subscription retains
     independent shared ownership of the restraint and its calculation
     resources, so term addition, `setMasses()`, and `reset()` remain available

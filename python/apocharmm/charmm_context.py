@@ -778,9 +778,12 @@ class CharmmContext(_ApoObject):
         @throws TypeError If `pbc` cannot be interpreted by the enumeration.
         @throws ValueError If the integer is not a declared enum value.
         @throws RuntimeError If this context is closed.
-        @throws ApoCharmmError If `pbc` is `PeriodicBoundaryCondition.UNSET`, or
-        native propagation, initialization, imaging, or neighbor-list rebuilding
-        fails.
+        @throws ApoCharmmError If `pbc` is `PeriodicBoundaryCondition.UNSET`, a
+        force subscribed to the manager does not support `pbc`, or native
+        propagation, initialization, imaging, or neighbor-list rebuilding fails.
+
+        @post If the manager rejects `pbc`, the context and the manager keep
+        their previous condition.
         """
         _initialize_prototypes()
 

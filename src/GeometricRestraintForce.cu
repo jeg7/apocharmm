@@ -435,7 +435,7 @@ EvaluateGeometricPoint(CT3 &gradient, double &energy, int *error,
     if (!isfinite(deviation))
       atomicOr(error, NONFINITE_EVALUATION);
     else if (active && deviation != ZERO) {
-      // JEG261020: CHARMM squares the devition before scaling the harmonic
+      // JEG261020: CHARMM squares the deviation before scaling the harmonic
       // energy, then accumulates gradients only when that energy is nonzero.
       // This gate applies even when energy output is disabled.
       const CT squaredDeviation = deviation * deviation;
@@ -899,8 +899,21 @@ void GeometricRestraintForce<AT, CT>::appendTerm(
                       ApoCharmmErrorCode::InvalidArgument,
                       "Direction must have a positive finite norm");
 
-    normal = make_double3(direction[0] / norm, direction[1] / norm,
-                          direction[2] / norm);
+    // A subnormal norm keeps too few significant bits to normalize the
+    // components directly. Dividing them by their largest magnitude first keeps
+    // the copied direction at unit length. Larger norms are used unchanged.
+    double scale = 1.0;
+    double scaledNorm = norm;
+    if (norm < std::numeric_limits<double>::min()) {
+      scale = std::max({std::abs(direction[0]), std::abs(direction[1]),
+                        std::abs(direction[2])});
+      scaledNorm = std::hypot(direction[0] / scale, direction[1] / scale,
+                              direction[2] / scale);
+    }
+
+    normal = make_double3(direction[0] / scale / scaledNorm,
+                          direction[1] / scale / scaledNorm,
+                          direction[2] / scale / scaledNorm);
   }
 
   APOCHARMM_REQUIRE((selectionMode == SelectionMode::ATOMWISE) ||

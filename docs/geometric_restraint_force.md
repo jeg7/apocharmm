@@ -71,6 +71,14 @@ atom-to-reference or center-to-reference displacements are not minimum-imaged.
 Changing only the stored box lengths leaves the geometric contribution
 unchanged. Other force-field contributions can still change with the box.
 
+Through [CharmmContext](@ref charmm_context), coordinate updates and
+neighbor-list rebuilds first move each PSF group whose arithmetic center lies
+outside the half-box range by one box length, so the restraint sees those
+image-centered coordinates. CHARMM moves primary coordinates this way only when
+image centering is requested with `IMAGE BYSEG`, `IMAGE BYRES`,
+`IMAGE BYGROUP`, or `IMAGE BYATOM`; otherwise its GEO terms use the
+coordinates as given.
+
 The restraint contributes no virial. CHARMM forms its internal virial before it
 evaluates GEO restraints, so their forces enter neither that virial nor the
 pressure derived from it. The terms are also anchored at fixed points in space,
@@ -166,7 +174,11 @@ does not require stored box lengths for its geometry.
 The manager accepts this force only under `PBC::P1`. Its
 `ForceManager::setPeriodicBoundaryCondition()` validates compatibility before
 changing its state, so a rejected PBC mutation preserves the manager's previous
-configuration. `PBC::UNSET` is an invalid sentinel, not an aperiodic mode.
+configuration. `CharmmContext::setPeriodicBoundaryCondition()` forwards the
+value to its manager before storing it, and `CharmmContext::setForceManager()`
+applies a stored condition to the incoming manager first, so a rejection leaves
+the context unchanged as well. `PBC::UNSET` is an invalid sentinel, not an
+aperiodic mode.
 
 ## Ownership and Lifetime
 
@@ -430,9 +442,10 @@ nor adds its virial storage to the aggregate.
 `test/unittests/unittest-geometricRestraintForce.cpp` covers native geometry,
 activation, signed masses, output controls, the absent virial contribution,
 mutation, manager ownership and lifecycle, accumulation, dynamic capacity, and
-stable derivative checks. Its float variants use single-precision tolerances,
-and the precision-envelope tests (near-cancelling or extreme masses,
-double-precision origins, and finite differences) run for `CT = double` only.
+stable derivative checks. Its float variants use single-precision tolerances
+and skip parameters and masses that float cannot represent, and the
+precision-envelope tests (near-cancelling masses, double-precision origins, and
+finite differences) run for `CT = double` only.
 `test/unittests/unittest-forceManager.cpp` covers the shared manager machinery.
 `test/unittests/unittest-capiGeometricRestraintForce.cpp` covers C ABI
 construction, ownership, borrowing, typed atom inputs, enumeration and array

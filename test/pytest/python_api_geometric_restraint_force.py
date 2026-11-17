@@ -1399,7 +1399,7 @@ def check_enum_validation(psf: apo.CharmmPsf) -> None:
                         "selection_mode must be a GeometricRestraintSelectionMode",
                     )
 
-        assert_no_rcm_term("rejected enum values install no term", restraint)
+        assert_no_rcm_term("rejected enum values install no RCM term", restraint)
 
         for atoms in (pair, atom):
             for activation in apo.GeometricRestraintActivation:
@@ -1447,7 +1447,7 @@ def check_atom_inputs(psf: apo.CharmmPsf, second_psf: apo.CharmmPsf) -> None:
         restraint.addPlane(pair, ORIGIN, X_DIRECTION, 2.0, 1.0, SYMMETRIC, RCM)
 
         apo_test.expect_invalid_argument(
-            "pair RCM terms from both topologies use copied indices 0 and 1",
+            "pair RCM terms use copied indices 0 and 1",
             lambda: restraint.setMasses(masses_with(0, -1.5)),
             f"{RCM_TOTAL_DIAGNOSTIC}; observed 0.000000",
             expected_context=SET_MASSES_CONTEXT,
@@ -1730,7 +1730,9 @@ def check_input_lifetime(psf_path: Path, psf: apo.CharmmPsf) -> None:
         )
 
         restraint.reset()
-        assert_no_rcm_term("reset removes terms added from closed inputs", restraint)
+        assert_no_rcm_term(
+            "reset removes RCM terms added from closed inputs", restraint
+        )
     finally:
         restraint.close()
 
@@ -2041,7 +2043,7 @@ def check_reset(psf: apo.CharmmPsf) -> None:
         )
 
         restraint.reset()
-        assert_no_rcm_term("reset removes every installed term", restraint)
+        assert_no_rcm_term("reset removes every installed RCM term", restraint)
 
         restraint.addSphere(first, ORIGIN, 2.0, 1.0, INSIDE, RCM)
 
@@ -2412,7 +2414,7 @@ def check_geometry_arguments(psf: apo.CharmmPsf) -> None:
         for label, exception_type, action in conversion_cases:
             apo_test.expect_exception(label, exception_type, action)
 
-        assert_no_rcm_term("rejected geometry arguments install no term", restraint)
+        assert_no_rcm_term("rejected geometry arguments install no RCM term", restraint)
 
         restraint.addSphere(first, (0, 0, 0), 2, 1, SYMMETRIC, ATOMWISE)
         restraint.addPlane(first, ORIGIN, (0, 0, 1), 2.0, 1.0, INSIDE, ATOMWISE)
@@ -3171,13 +3173,23 @@ def check_periodic_boundary_conditions(
                         f"invalid pbc: {value!r}",
                     )
 
-                force_manager.setPeriodicBoundaryCondition(
-                    apo.PeriodicBoundaryCondition.P1
+                apo_test.expect_invalid_argument(
+                    "a subscribed restraint rejects P21 through CharmmContext",
+                    lambda: context.setPeriodicBoundaryCondition(
+                        apo.PeriodicBoundaryCondition.P21
+                    ),
+                    p21_diagnostic,
+                    expected_context="CharmmContext.setPeriodicBoundaryCondition(pbc)",
                 )
 
                 apo_test.assert_equal(
                     "rejected changes leave the manager in P1",
                     force_manager.getPeriodicBoundaryCondition(),
+                    apo.PeriodicBoundaryCondition.P1,
+                )
+                apo_test.assert_equal(
+                    "rejected changes leave the context in P1",
+                    context.getPeriodicBoundaryCondition(),
                     apo.PeriodicBoundaryCondition.P1,
                 )
                 check_manager_output(

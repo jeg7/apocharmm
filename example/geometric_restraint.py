@@ -30,7 +30,7 @@ def main(argc, argv):
     ctx.setBoxDimensions(box_dims)
     ctx.setCoordinates(crd)
 
-    # Evaluate the unrestraint system for comparison
+    # Evaluate the unrestrained system for comparison
     ctx.calculatePotentialEnergy()
     fm = ctx.getForceManager()
     unrestrained_energy = fm.getPotentialEnergy()
@@ -53,7 +53,7 @@ def main(argc, argv):
     geo = apo.GeometricRestraintForce(psf)
 
     # Plane z = 0 with its normal along z. RCM evaluates the term once at the
-    # mass-weighted center of the selection (PSF masses) and shared the force by
+    # mass-weighted center of the selection (PSF masses) and shares the force by
     # mass fraction, so this term holds the center of mass of the pair on the
     # plane.
     geo.addPlane(

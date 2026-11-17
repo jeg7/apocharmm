@@ -1161,9 +1161,11 @@ public:
    * @throws ApoCharmmError With code @ref ApoCharmmErrorCode::Cuda if a virial
    * copy or transfer fails.
    *
-   * @note The public component-to-matrix mapping and sign convention are not
-   * established by the current repository; see the unresolved documentation
-   * question in the ForceManager documentation work item.
+   * @note The nine components are stored in row-major `xx, xy, xz, yx, yy, yz,
+   * zx, zy, zz` order. The bonded, direct-space, and subscribed contributions
+   * follow the sign of CHARMM's internal virial, `W_ab = -sum_i r_i,a * g_i,b`
+   * for positions `r` and potential-energy gradients `g`, with periodic shift
+   * terms where a force records them.
    */
   virtual CudaContainer<double> &getVirial(void);
 

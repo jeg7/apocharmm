@@ -202,6 +202,12 @@ void CharmmContext::setForceManager(std::shared_ptr<ForceManager> fm) {
         "Box dimensions are incompatible with the crystal type");
   }
 
+  // Apply a stored periodic boundary condition to the incoming manager first: a
+  // manager whose subscribed forces reject it is refused before the context
+  // replaces its manager or pushes any other state into it.
+  if (m_HasPbc)
+    fm->setPeriodicBoundaryCondition(m_Pbc);
+
   m_ForceManager = fm;
 
   this->syncForceManagerFromState();
@@ -663,13 +669,13 @@ void CharmmContext::setPeriodicBoundaryCondition(const PBC pbc) {
       "Periodic boundary condition must be PBC::P1 or PBC::P21; observed " +
           std::to_string(static_cast<int>(pbc)));
 
+  // The manager validates the value against its subscribed forces before the
+  // context stores it, so a rejected change leaves the context unchanged.
+  if (m_ForceManager != nullptr)
+    m_ForceManager->setPeriodicBoundaryCondition(pbc);
+
   m_Pbc = pbc;
   m_HasPbc = true;
-
-  if (m_ForceManager != nullptr) {
-    m_ForceManager->setPeriodicBoundaryCondition(m_Pbc);
-    m_Pbc = m_ForceManager->getPeriodicBoundaryCondition();
-  }
 
   // JEG260707: This is done to prevent building the neighbor list twice.
   const bool forceManagerWasInitialized =

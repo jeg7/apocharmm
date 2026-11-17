@@ -239,6 +239,9 @@ public: // Setters
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if native
    * force initialization fails for another runtime condition.
    *
+   * @post If the context stores a periodic boundary condition that a force
+   * subscribed to `fm` does not support, the call fails before the context
+   * replaces its manager.
    * @warning Replacing the manager can invalidate force, energy, virial,
    * constraint, and stride references obtained from the previous manager.
    */
@@ -642,12 +645,16 @@ public: // Setters
    * are `PBC::P1` and `PBC::P21`. `PBC::UNSET` is an invalid sentinel and does
    * not select an aperiodic system.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `pbc` is `PBC::UNSET`, is not a
-   * recognized enumerator, or the completed force configuration is rejected.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `pbc` is `PBC::UNSET`, is not a recognized enumerator, is not supported by
+   * a force subscribed to the attached manager, or the completed force
+   * configuration is rejected.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if
    * initialization, image centering, synchronization, or neighbor-list
    * rebuilding fails in CUDA.
+   *
+   * @post If the attached manager rejects `pbc`, the context keeps its previous
+   * condition.
    */
   void setPeriodicBoundaryCondition(const PBC pbc);
 

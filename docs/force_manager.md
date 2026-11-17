@@ -122,10 +122,12 @@ initializes already subscribed forces, allocates aggregate force and energy
 storage, performs a device-wide synchronization, and builds SHAKE records. The
 initialized flag becomes true only after every phase succeeds.
 
-Use configuration setters before the first initialization. Replacing the PSF,
-parameters, or PBC clears the initialized flag but does not deallocate existing
-CUDA resources. Other scalar setters generally update only stored
-configuration and do not rebuild an active backend.
+Use configuration setters before the first initialization. Replacing the PSF
+clears the initialized flag but does not deallocate existing CUDA resources.
+Replacing the parameters or the PBC of an initialized manager keeps it
+initialized and marks the affected backends for rebuilding before the next
+force calculation, as do the kappa, cutoff, switching, FFT-grid, spline-order,
+and van der Waals setters.
 
 ## Ownership and Lifetime
 
@@ -390,9 +392,10 @@ aggregate phases. Destruction explicitly destroys CUDA streams and graph
 objects through non-throwing cleanup before ordinary member destruction
 releases remaining owners.
 
-Changing the PSF, parameters, or PBC clears the initialized flag but does not
-call the cleanup routine. Reinitialization therefore requires architectural
-work before it can be considered a supported state transition.
+Changing the PSF clears the initialized flag but does not call the cleanup
+routine. Reinitialization therefore requires architectural work before it can
+be considered a supported state transition. Changing the parameters or the PBC
+leaves the manager initialized and rebuilds the affected backends lazily.
 
 ### Internal invariants
 

@@ -240,7 +240,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceConstruction", "[mmfp]", float,
         ApoCharmmErrorCode::InvalidArgument, "CharmmPSF must not be null");
   }
 
-  SECTION("UnintializedPsf") {
+  SECTION("UninitializedPsf") {
     apo_test::CheckApoCharmmError(
         [](void) -> void {
           GeoForce<TestType> force(std::make_shared<CharmmPSF>());
@@ -738,7 +738,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceActivationAndSignedParameters",
                                           1.0f,  2.0f,  3.0f};
 
   // JEG261006: Reference values collected from CHARMM establish the plane
-  // activation, cusp, and boundary-equality behavoir. These exactly
+  // activation, cusp, and boundary-equality behavior. These exactly
   // representable native controls supplement the collected near-boundary
   // reference values.
   const std::array<std::array<double, 7>, 3> energies = {
@@ -1385,6 +1385,35 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerIntegration", "[mmfp]", float,
       "Periodic boundary condition must be PBC::P1 or PBC::P21; observed 0");
 
   CHECK(fm->getPeriodicBoundaryCondition() == PBC::P1);
+
+  // The context forwards a new condition to its manager before storing it, so
+  // the rejection leaves the context in P1 as well.
+  apo_test::CheckApoCharmmError(
+      [&](void) -> void {
+        ctx->setPeriodicBoundaryCondition(PBC::P21);
+        return;
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Subscribed force does not support periodic boundary condition value 2");
+  CHECK(ctx->getPeriodicBoundaryCondition() == PBC::P1);
+  CHECK(fm->getPeriodicBoundaryCondition() == PBC::P1);
+
+  // A context that already stores P21 refuses this manager before it replaces
+  // its own manager or changes this one.
+  auto p21Context = std::make_shared<CharmmContext>(psf, prm);
+  p21Context->setPeriodicBoundaryCondition(PBC::P21);
+  const auto p21Manager = p21Context->getForceManager();
+  apo_test::CheckApoCharmmError(
+      [&](void) -> void {
+        p21Context->setForceManager(fm);
+        return;
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Subscribed force does not support periodic boundary condition value 2");
+  CHECK(p21Context->getForceManager() == p21Manager);
+  CHECK(p21Context->getPeriodicBoundaryCondition() == PBC::P21);
+  CHECK(fm->isInitialized());
+  CHECK(fm->getPeriodicBoundaryCondition() == PBC::P1);
   force->reset();
   CheckManagerDelta(baseline, EvaluateManager(ctx), 0.0,
                     {make_double3(0.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
@@ -1942,7 +1971,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRadialSingularNeighborhood",
                                            rounding * std::abs(expected[0].x);
 
         CheckOutput(
-            "native float4 threshold breacket", Evaluate(force, coordinates),
+            "native float4 threshold bracket", Evaluate(force, coordinates),
             suppressed ? 0.0 : deviation * deviation, expected,
             suppressed ? 0.0 : 1.0e-12 + rounding * deviation * deviation,
             tolerance);
@@ -5777,6 +5806,26 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmDirectionCompatibility",
                 1.0e-10 + 0.5 * INV_FORCE_SCALE_TEST);
     CheckVirial(test.id, observed.virial, {});
   }
+}
+
+TEST_CASE("GeometricRestraintForceNormalizesSubnormalDirections", "[mmfp]") {
+  // A direction whose norm is subnormal must still be copied at unit length.
+  // The normal (1, 1, 0) / sqrt(2) puts an atom at x = 3 at signed distance
+  // 3 / sqrt(2), so K = 2 and offset 0 give E = 4.5 and F = (-3, -3, 0).
+  auto psf = MakePsf();
+  const AtomReference atom(psf, 0);
+  GeoForce<double> force(psf);
+  force.addPlane(atom, ORIGIN, {5e-324, 5e-324, 0.0}, 2.0, 0.0,
+                 GeoForce<double>::Activation::SYMMETRIC);
+
+  std::vector<float4> coordinates(NUM_ATOMS,
+                                  make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+  coordinates[0].x = 3.0f;
+  std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+  expected[0] = make_double3(-3.0, -3.0, 0.0);
+
+  CheckOutput("subnormal plane direction", Evaluate(force, coordinates), 4.5,
+              expected, 1.0e-12, 1.0e-12 + 0.5 * INV_FORCE_SCALE_TEST);
 }
 
 TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmInputValidation",

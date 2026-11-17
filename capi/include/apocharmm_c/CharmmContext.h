@@ -385,10 +385,14 @@ APOCHARMM_C_API apo_status apo_charmm_context_set_temperature(
  *
  * @retval APO_STATUS_OK The boundary condition was stored and propagated.
  * @retval APO_STATUS_INVALID_ARGUMENT A handle or native object is NULL, `pbc`
- * is `APO_PBC_UNSET`, `pbc` is not a declared value, or completed force
- * configuration is invalid.
+ * is `APO_PBC_UNSET`, `pbc` is not a declared value, a force subscribed to the
+ * attached manager does not support `pbc`, or completed force configuration
+ * is invalid.
  * @retval APO_STATUS_CUDA_ERROR Triggered initialization, image centering,
  * synchronization, or neighbor-list rebuilding failed.
+ *
+ * @post If the attached manager rejects `pbc`, the context and the manager
+ * keep their previous condition.
  */
 APOCHARMM_C_API apo_status apo_charmm_context_set_periodic_boundary_condition(
     apo_charmm_context *context, const apo_pbc pbc);

@@ -826,7 +826,7 @@ std::vector<CharmmCase> MakeCharmmCases(void) {
          {{0, {5.0, 0.0, 0.0}}, {1, {-15.0, 0.0, 0.0}}},
          5e-06,
          1e-10}}},
-      {"RCM sphere acrosss a P1 boundary",
+      {"RCM sphere across a P1 boundary",
        {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
        EQUAL_MASSES,
        false,
@@ -1170,7 +1170,8 @@ void CheckManagerOutput(const CharmmCase &test, const CharmmPhase &phase,
       0.5 * std::numeric_limits<float>::epsilon() * forceMagnitude +
       ARITHMETIC_TOLERANCE * std::max(1.0, forceMagnitude);
 
-  INFO(test.id << ", phase " << phase.name);
+  INFO(test.id << ", phase " << phase.name << ", energy reported by CHARMM "
+               << phase.energyReported);
 
   const double energy = observed.energy - baseline.energy;
   {
@@ -1793,6 +1794,7 @@ TEST_CASE("CapiGeometricRestraintForceMapsNativeTermValidation") {
             ATOMWISE),
         "apo_geometric_restraint_force_add_sphere_from_selection",
         expectedMessage, "getSelectionIndices");
+    CHECK(restraint->object->getNumTerms() == 0);
   }
 
   SECTION("EmptySelectionIsAcceptedWithoutAddingTerms") {
@@ -2592,6 +2594,18 @@ TEST_CASE("CapiGeometricRestraintForceManagerAppliesMutationsWhileSubscribed") {
       FORCE_MANAGER_SOURCE_FILE, "checkPBCCompatibility");
   CheckManagerOutput(unequal, unequal.phases[0], baseline,
                      EvaluateManager(system.forceManager.get(), coordinates));
+
+  apo_pbc contextPbc = APO_PBC_UNSET;
+  apo_test::CheckNativeError(
+      apo_charmm_context_set_periodic_boundary_condition(system.context.get(),
+                                                         APO_PBC_P21),
+      APO_STATUS_INVALID_ARGUMENT, "InvalidArgument",
+      "apo_charmm_context_set_periodic_boundary_condition",
+      "Subscribed force does not support periodic boundary condition value 2",
+      FORCE_MANAGER_SOURCE_FILE, "checkPBCCompatibility");
+  REQUIRE(apo_charmm_context_get_periodic_boundary_condition(
+              &contextPbc, system.context.get()) == APO_STATUS_OK);
+  CHECK(contextPbc == APO_PBC_P1);
 
   REQUIRE(apo_force_manager_unsubscribe_geometric_restraint_force(
               system.forceManager.get(), restraint.get()) == APO_STATUS_OK);
