@@ -16,6 +16,7 @@
 #define __APOCHARMM_C_HARMONIC_RESTRAINT_FORCE_H__
 
 #include "apocharmm_c/AtomSelection.h"
+#include "apocharmm_c/CharmmPsf.h"
 #include "apocharmm_c/Export.h"
 #include "apocharmm_c/ForceManager.h"
 #include "apocharmm_c/Status.h"
@@ -59,22 +60,27 @@ extern "C" {
 typedef struct apo_harmonic_restraint_force apo_harmonic_restraint_force;
 
 /**
- * @brief Creates an owned harmonic-restraint handle.
+ * @brief Creates an owned harmonic-restraint handle from a PSF atom count.
  *
- * The created native restraint uses fixed-point `long long int` force storage
- * and single-precision kernel arithmetic. All atoms begin selected, force
- * constants and reference positions begin at zero, per-atom weights begin at
- * one, and stored box dimensions begin at zero.
+ * The native constructor copies only the PSF atom count; PSF masses are not
+ * read. The created native restraint uses fixed-point `long long int` force
+ * storage, single-precision arithmetic for forces and per-atom energies, and
+ * double-precision energy sums. All atoms begin selected, force constants
+ * and reference positions begin at zero, per-atom weights begin at one, the
+ * exponent is two, every scale factor is one, and stored box dimensions
+ * begin at zero.
  *
  * @param[out] out Non-NULL pointer to the caller's handle slot. The function
- * stores `NULL` in `*out` before native construction and stores a newly owned
+ * stores `NULL` in `*out` before validating `psf` and stores a newly owned
  * handle on success.
- * @param[in] num_atoms Dimensionless atom count. The value must be greater than
- * zero and fit in C `int`.
+ * @param[in] psf Borrowed live PSF handle with an initialized positive atom
+ * count. The handle is borrowed only for this call; neither it nor its native
+ * PSF is retained.
  * @retval APO_STATUS_OK `*out` contains a newly owned handle that must be
  * released with @ref apo_harmonic_restraint_force_destroy.
- * @retval APO_STATUS_INVALID_ARGUMENT `out` is `NULL` or `num_atoms` is not
- * positive.
+ * @retval APO_STATUS_INVALID_ARGUMENT `out` or `psf` is `NULL`, the PSF handle
+ * contains no native object, or the atom count is zero.
+ * @retval APO_STATUS_NOT_INITIALIZED The native PSF atom count is negative.
  * @retval APO_STATUS_CUDA_ERROR Native CUDA allocation, initialization,
  * transfer, synchronization, force allocation, or stream creation failed.
  * @retval APO_STATUS_RUNTIME_ERROR Handle allocation, shared ownership,
@@ -83,12 +89,14 @@ typedef struct apo_harmonic_restraint_force apo_harmonic_restraint_force;
  *
  * @post On every failure after a valid `out` pointer is accepted,
  * `*out == NULL`.
+ * @post On success, destroying the PSF handle or mutating its native PSF does
+ * not change the restraint's atom count.
  * @note The function clears the calling thread's previous diagnostic at entry.
  * Success leaves it empty; failure leaves nonempty text available through
  * @ref apo_last_error.
  */
 APOCHARMM_C_API apo_status apo_harmonic_restraint_force_create(
-    apo_harmonic_restraint_force **out, const int num_atoms);
+    apo_harmonic_restraint_force **out, const apo_charmm_psf *psf);
 
 /**
  * @brief Destroys an owned harmonic-restraint handle.
@@ -123,12 +131,10 @@ apo_harmonic_restraint_force_destroy(apo_harmonic_restraint_force *restraint);
  * @param[in] selection Borrowed live atom-selection handle with the same atom
  * count as `restraint`. The native selection is copied and no ownership is
  * transferred or retained.
- * @retval APO_STATUS_OK The selection was copied and updated constants were
- * transferred to the device.
+ * @retval APO_STATUS_OK The selection was copied and the host constants were
+ * updated; the next initialization or calculation transfers them.
  * @retval APO_STATUS_INVALID_ARGUMENT Either handle is `NULL`, either handle
  * contains no native object, or the two atom counts differ.
- * @retval APO_STATUS_CUDA_ERROR Updating or synchronizing the device
- * force-constant array failed.
  * @retval APO_STATUS_RUNTIME_ERROR Copying selection storage, constructing a
  * diagnostic, or another standard or nonstandard C++ operation failed.
  *
@@ -137,7 +143,7 @@ apo_harmonic_restraint_force_destroy(apo_harmonic_restraint_force *restraint);
  * Success leaves it empty; failure leaves text available through
  * @ref apo_last_error.
  * @warning Failure after native mutation begins can leave selection state and
- * host/device force constants representing different stages.
+ * host force constants representing different stages.
  */
 APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_selection(
     apo_harmonic_restraint_force *restraint,
@@ -154,20 +160,19 @@ APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_selection(
  * retained.
  * @param[in] force_constant Finite, non-negative scalar applied to every
  * selected atom.
- * @retval APO_STATUS_OK Host and device constants were updated.
+ * @retval APO_STATUS_OK Host constants were updated; the next initialization
+ * or calculation transfers them.
  * @retval APO_STATUS_INVALID_ARGUMENT `restraint` is `NULL`, the handle
  * contains no native object, or `force_constant` is negative, NaN, or
  * infinite.
- * @retval APO_STATUS_CUDA_ERROR Clearing, transferring, or synchronizing
- * device constants failed.
  * @retval APO_STATUS_RUNTIME_ERROR Selected-index allocation, diagnostic
  * construction, or another standard or nonstandard C++ operation failed.
  *
  * @note The function clears the calling thread's previous diagnostic at entry.
  * Success leaves it empty; failure leaves text available through
  * @ref apo_last_error.
- * @warning Failure after native mutation begins can leave all constants zero
- * or leave host and device constants divergent.
+ * @warning Failure after native mutation begins can leave all host constants
+ * zero.
  */
 APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_force_constant(
     apo_harmonic_restraint_force *restraint, const double force_constant);
@@ -176,8 +181,9 @@ APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_force_constant(
  * @brief Copies one force constant per atom.
  *
  * The input is indexed in atom order. Only values at selected indices are
- * validated and used; unselected input values are ignored and the
- * corresponding stored constants are zero.
+ * validated and used; unselected input values are ignored and the corresponding
+ * stored constants are zero. As with CHARMM's WEIGhting option, a selected
+ * value may have either sign.
  *
  * @param[in,out] restraint Borrowed live restraint handle. The handle is not
  * retained.
@@ -186,12 +192,11 @@ APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_force_constant(
  * the call and copied.
  * @param[in] force_constants_len Dimensionless number of elements in
  * `force_constants`. It must equal the restraint atom count.
- * @retval APO_STATUS_OK The selected constants were copied and transferred.
+ * @retval APO_STATUS_OK The selected constants were copied; the next
+ * initialization or calculation transfers them.
  * @retval APO_STATUS_INVALID_ARGUMENT `restraint` or `force_constants` is
  * `NULL`, the handle contains no native object, the length differs from the
- * atom count, or a selected value is negative, NaN, or infinite.
- * @retval APO_STATUS_CUDA_ERROR Clearing, transferring, or synchronizing
- * device constants failed.
+ * atom count, or a selected value is NaN or infinite.
  * @retval APO_STATUS_RUNTIME_ERROR Copying the C array, allocating selected
  * indices, constructing a diagnostic, or another standard or nonstandard C++
  * operation failed.
@@ -201,8 +206,6 @@ APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_force_constant(
  * @note The function clears the calling thread's previous diagnostic at entry.
  * Success leaves it empty; failure leaves text available through
  * @ref apo_last_error.
- * @warning Failure after native mutation begins can leave host and device
- * constants at different stages.
  */
 APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_force_constants(
     apo_harmonic_restraint_force *restraint, const double *force_constants,
@@ -223,14 +226,12 @@ APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_force_constants(
  * @param[in] reference_coordinates_len Dimensionless scalar-element count. It
  * must be nonzero, an exact multiple of three, and exactly
  * `3 * atom_count`.
- * @retval APO_STATUS_OK Reference coordinates were copied and transferred to
- * the device.
+ * @retval APO_STATUS_OK Reference coordinates were copied; the next
+ * initialization or calculation transfers them.
  * @retval APO_STATUS_INVALID_ARGUMENT `restraint` or
  * `reference_coordinates` is `NULL`, the handle contains no native object,
  * the length is zero or not a multiple of three, the derived atom count is
  * wrong, or a coordinate is NaN or infinite.
- * @retval APO_STATUS_CUDA_ERROR Transferring or synchronizing reference
- * coordinates failed.
  * @retval APO_STATUS_RUNTIME_ERROR Allocating the nested native copy,
  * constructing a diagnostic, or another standard or nonstandard C++ operation
  * failed.
@@ -241,8 +242,7 @@ APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_force_constants(
  * Success leaves it empty; failure leaves text available through
  * @ref apo_last_error.
  * @warning Native finite-value validation and host mutation are interleaved.
- * A later invalid coordinate can leave an earlier host prefix changed while
- * the device mirror remains old.
+ * A later invalid coordinate can leave an earlier host prefix changed.
  */
 APOCHARMM_C_API apo_status
 apo_harmonic_restraint_force_set_reference_coordinates(
@@ -251,10 +251,11 @@ apo_harmonic_restraint_force_set_reference_coordinates(
     const size_t reference_coordinates_len);
 
 /**
- * @brief Copies one non-negative mass or weight per atom.
+ * @brief Copies one mass or weight per atom.
  *
- * Values normally use atomic mass units. A zero value is accepted and
- * suppresses that atom's harmonic contribution.
+ * Values normally use atomic mass units. As with CHARMM's MASS option, a value
+ * may have either sign. A zero value is accepted and suppresses that atom's
+ * harmonic contribution.
  *
  * @param[in,out] restraint Borrowed live restraint handle. The handle is not
  * retained.
@@ -262,26 +263,78 @@ apo_harmonic_restraint_force_set_reference_coordinates(
  * values in atom order. The array is borrowed for the call and copied.
  * @param[in] masses_len Dimensionless number of elements in `masses`. It must
  * equal the restraint atom count.
- * @retval APO_STATUS_OK Masses were copied and transferred to the device.
+ * @retval APO_STATUS_OK Masses were copied; the next initialization or
+ * calculation transfers them.
  * @retval APO_STATUS_INVALID_ARGUMENT `restraint` or `masses` is `NULL`, the
  * handle contains no native object, the length differs from the atom count, or
- * a mass is negative, NaN, or infinite.
- * @retval APO_STATUS_CUDA_ERROR Transferring or synchronizing masses failed.
+ * a mass is NaN or infinite.
  * @retval APO_STATUS_RUNTIME_ERROR Copying the C array, constructing a
  * diagnostic, or another standard or nonstandard C++ operation failed.
  *
- * @post On success, the restraint retains no caller pointer and existing
- * reference-position components are preserved.
+ * @post On success, the restraint retains no caller pointer and the
+ * reference positions are unchanged.
  * @note The function clears the calling thread's previous diagnostic at entry.
  * Success leaves it empty; failure leaves text available through
  * @ref apo_last_error.
  * @warning Native validation and host mutation are interleaved. A later
- * invalid mass can leave an earlier host prefix changed while the device
- * mirror remains old.
+ * invalid mass can leave an earlier host prefix changed.
  */
 APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_masses(
     apo_harmonic_restraint_force *restraint, const double *masses,
     const size_t masses_len);
+
+/**
+ * @brief Sets the exponent applied to every atom.
+ *
+ * Two gives the harmonic form, and zero or a negative value makes every
+ * contribution zero. As with CHARMM's EXPOnent option, every integer is
+ * accepted.
+ *
+ * @param[in,out] restraint Borrowed live restraint handle. The handle is not
+ * retained.
+ * @param[in] exponent Dimensionless integer exponent.
+ * @retval APO_STATUS_OK The exponent was stored.
+ * @retval APO_STATUS_INVALID_ARGUMENT `restraint` is `NULL` or the handle
+ * contains no native object.
+ * @retval APO_STATUS_RUNTIME_ERROR Diagnostic construction or another
+ * standard or nonstandard C++ operation failed.
+ *
+ * @note The function clears the calling thread's previous diagnostic at entry.
+ * Success leaves it empty; failure leaves text available through
+ * @ref apo_last_error.
+ */
+APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_exponent(
+    apo_harmonic_restraint_force *restraint, const int exponent);
+
+/**
+ * @brief Copies the Cartesian scale factors applied to every atom.
+ *
+ * The factors multiply the squared X, Y, and Z displacements and the
+ * corresponding gradient components, like CHARMM's XSCAle, YSCAle, and ZSCAle
+ * options. A factor may be zero or negative.
+ *
+ * @param[in,out] restraint Borrowed live restraint handle. The handle is not
+ * retained.
+ * @param[in] scale_factors Non-NULL pointer to three contiguous dimensionless
+ * `double` factors in `[x, y, z]` order. The array is borrowed for the call
+ * and copied.
+ * @param[in] scale_factors_len Dimensionless number of elements in
+ * `scale_factors`. It must equal three.
+ * @retval APO_STATUS_OK The scale factors were stored.
+ * @retval APO_STATUS_INVALID_ARGUMENT `restraint` or `scale_factors` is
+ * `NULL`, the handle contains no native object, the length is not three, or a
+ * factor is NaN or infinite.
+ * @retval APO_STATUS_RUNTIME_ERROR Copying the C array, constructing a
+ * diagnostic, or another standard or nonstandard C++ operation failed.
+ *
+ * @post On success, no caller pointer is retained.
+ * @note The function clears the calling thread's previous diagnostic at entry.
+ * Success leaves it empty; failure leaves text available through
+ * @ref apo_last_error.
+ */
+APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_scale_factors(
+    apo_harmonic_restraint_force *restraint, const double *scale_factors,
+    const size_t scale_factors_len);
 
 /**
  * @brief Copies three orthogonal box lengths.
@@ -297,12 +350,10 @@ APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_masses(
  * the call and copied.
  * @param[in] box_dimensions_len Dimensionless number of elements in
  * `box_dimensions`. It must equal three.
- * @retval APO_STATUS_OK The box dimensions were stored; an unchanged box may
- * complete without a CUDA transfer.
+ * @retval APO_STATUS_OK The box dimensions were stored in host memory.
  * @retval APO_STATUS_INVALID_ARGUMENT `restraint` or `box_dimensions` is
  * `NULL`, the handle contains no native object, the length is not three, or a
  * length is non-positive, NaN, or infinite.
- * @retval APO_STATUS_CUDA_ERROR Copying or synchronizing a changed box failed.
  * @retval APO_STATUS_RUNTIME_ERROR Copying the C array, constructing a
  * diagnostic, or another standard or nonstandard C++ operation failed.
  *
@@ -310,8 +361,6 @@ APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_masses(
  * @note The function clears the calling thread's previous diagnostic at entry.
  * Success leaves it empty; failure leaves text available through
  * @ref apo_last_error.
- * @warning A CUDA failure after host assignment can leave native host and
- * device box mirrors divergent.
  */
 APOCHARMM_C_API apo_status apo_harmonic_restraint_force_set_box_dimensions(
     apo_harmonic_restraint_force *restraint, const double *box_dimensions,

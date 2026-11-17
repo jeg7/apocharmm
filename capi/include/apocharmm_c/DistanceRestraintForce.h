@@ -16,6 +16,7 @@
 #define __APOCHARMM_C_DISTANCE_RESTRAINT_FORCE_H__
 
 #include "apocharmm_c/AtomReference.h"
+#include "apocharmm_c/CharmmPsf.h"
 #include "apocharmm_c/Export.h"
 #include "apocharmm_c/ForceManager.h"
 #include "apocharmm_c/Status.h"
@@ -98,23 +99,26 @@ typedef enum apo_distance_restraint_condition {
 } apo_distance_restraint_condition;
 
 /**
- * @brief Creates an owned distance-restraint handle.
+ * @brief Creates an owned distance-restraint handle from a PSF atom count.
  *
- * The native object uses fixed-point `long long int` force storage and
- * single-precision pair-gradient conversion. It has the requested fixed atom
- * count, no restraint terms, global scale one, unset box dimensions, an
- * atom-sized force array, one energy-virial object, and one private CUDA
- * stream.
+ * The native constructor copies only the PSF atom count; PSF masses are not
+ * read. The native object uses fixed-point `long long int` force storage,
+ * single-precision arithmetic for forces and term energies, and
+ * double-precision energy sums. It has the PSF atom count, no restraint
+ * terms, global scale one, unset box dimensions, an atom-sized force array,
+ * one energy-virial object, and one private CUDA stream.
  *
  * @param[out] out Non-NULL pointer to the caller's handle slot. The function
- * stores `NULL` in `*out` before native construction and stores a newly owned
+ * stores `NULL` in `*out` before validating `psf` and stores a newly owned
  * handle on success.
- * @param[in] num_atoms Dimensionless atom count. The value must be greater than
- * zero and is already represented as C `int` by the function signature.
+ * @param[in] psf Borrowed live PSF handle with an initialized positive atom
+ * count. The handle is borrowed only for this call; neither it nor its native
+ * PSF is retained.
  * @retval APO_STATUS_OK `*out` contains a newly owned handle that must be
  * released with @ref apo_distance_restraint_force_destroy.
- * @retval APO_STATUS_INVALID_ARGUMENT `out` is `NULL` or `num_atoms` is not
- * positive.
+ * @retval APO_STATUS_INVALID_ARGUMENT `out` or `psf` is `NULL`, the PSF handle
+ * contains no native object, or the atom count is zero.
+ * @retval APO_STATUS_NOT_INITIALIZED The native PSF atom count is negative.
  * @retval APO_STATUS_CUDA_ERROR Native CUDA-backed output allocation, force
  * allocation, or stream creation failed.
  * @retval APO_STATUS_RUNTIME_ERROR Handle allocation, native shared ownership,
@@ -123,12 +127,14 @@ typedef enum apo_distance_restraint_condition {
  *
  * @post On every failure after a valid `out` pointer is accepted,
  * `*out == NULL`.
+ * @post On success, destroying the PSF handle or mutating its native PSF does
+ * not change the restraint's atom count.
  * @note The function clears the calling thread's previous diagnostic at entry.
  * Success leaves it empty; failure leaves nonempty text available through
  * @ref apo_last_error.
  */
 APOCHARMM_C_API apo_status apo_distance_restraint_force_create(
-    apo_distance_restraint_force **out, const int num_atoms);
+    apo_distance_restraint_force **out, const apo_charmm_psf *psf);
 
 /**
  * @brief Destroys an owned distance-restraint handle.

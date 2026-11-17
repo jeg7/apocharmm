@@ -8,12 +8,14 @@
 // ENDLICENSE
 
 #include "AtomSelection.h"
+#include "CharmmPSF.h"
 #include "ForceManager.h"
 #include "apo_test_helpers.h"
 #include "apocharmm_c/Error.h"
 #include "apocharmm_c/HarmonicCenterOfMassRestraintForce.h"
 #include "apocharmm_c/Status.h"
 #include "apocharmm_c/detail/AtomSelectionHandle.h"
+#include "apocharmm_c/detail/CharmmPsfHandle.h"
 #include "apocharmm_c/detail/ForceManagerHandle.h"
 #include "apocharmm_c/detail/HarmonicCenterOfMassRestraintForceHandle.h"
 #include "catch.hpp"
@@ -41,11 +43,19 @@ using HarmonicCenterOfMassRestraintForceHandle =
     std::unique_ptr<apo_harmonic_center_of_mass_restraint_force,
                     HarmonicCenterOfMassRestraintForceDeleter>;
 
+apo_charmm_psf MakePsf(const int numAtoms) {
+  apo_charmm_psf psf;
+  psf.object = std::make_shared<CharmmPSF>();
+  psf.object->setNumAtoms(numAtoms);
+  return psf;
+}
+
 HarmonicCenterOfMassRestraintForceHandle MakeRestraint(void) {
+  apo_charmm_psf psf = MakePsf(NUM_ATOMS);
   apo_harmonic_center_of_mass_restraint_force *restraint = nullptr;
 
   REQUIRE(apo_harmonic_center_of_mass_restraint_force_create(
-              &restraint, NUM_ATOMS) == APO_STATUS_OK);
+              &restraint, &psf) == APO_STATUS_OK);
   REQUIRE(restraint != nullptr);
 
   return HarmonicCenterOfMassRestraintForceHandle(restraint);
@@ -121,8 +131,10 @@ void CheckForceManagerNativeError(const apo_status status,
 } // namespace
 
 TEST_CASE("CapiHarmonicCenterOfMassRestraintForceCreatesAndDestroys") {
+  apo_charmm_psf psf = MakePsf(NUM_ATOMS);
+
   apo_test::CheckStatusAndDiagnostic(
-      apo_harmonic_center_of_mass_restraint_force_create(nullptr, NUM_ATOMS),
+      apo_harmonic_center_of_mass_restraint_force_create(nullptr, &psf),
       APO_STATUS_INVALID_ARGUMENT,
       "apo_harmonic_center_of_mass_restraint_force_create: out pointer is "
       "NULL");
@@ -131,8 +143,39 @@ TEST_CASE("CapiHarmonicCenterOfMassRestraintForceCreatesAndDestroys") {
   apo_harmonic_center_of_mass_restraint_force *restraint = &staleRestraint;
   apo_status status = APO_STATUS_OK;
 
+  apo_test::CheckStatusAndDiagnostic(
+      apo_harmonic_center_of_mass_restraint_force_create(&restraint, nullptr),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_harmonic_center_of_mass_restraint_force_create: CharmmPsf is "
+      "NULL");
+  CHECK(restraint == nullptr);
+
+  apo_charmm_psf emptyPsf;
+  restraint = &staleRestraint;
+  apo_test::CheckStatusAndDiagnostic(
+      apo_harmonic_center_of_mass_restraint_force_create(&restraint, &emptyPsf),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_harmonic_center_of_mass_restraint_force_create: CharmmPsf object "
+      "is NULL");
+  CHECK(restraint == nullptr);
+
+  apo_charmm_psf uninitializedPsf;
+  uninitializedPsf.object = std::make_shared<CharmmPSF>();
+  restraint = &staleRestraint;
   CHECK_NOTHROW((status = apo_harmonic_center_of_mass_restraint_force_create(
-                     &restraint, 0)));
+                     &restraint, &uninitializedPsf)));
+
+  apo_test::CheckNativeError(
+      status, APO_STATUS_NOT_INITIALIZED, "NotInitialized",
+      "apo_harmonic_center_of_mass_restraint_force_create",
+      "CharmmPSF atom count is not initialized; observed -1", HMCM_SOURCE_FILE,
+      "HarmonicCenterOfMassRestraintForce");
+  CHECK(restraint == nullptr);
+
+  apo_charmm_psf emptyAtomPsf = MakePsf(0);
+  restraint = &staleRestraint;
+  CHECK_NOTHROW((status = apo_harmonic_center_of_mass_restraint_force_create(
+                     &restraint, &emptyAtomPsf)));
 
   CheckHmcmNativeError(status,
                        "apo_harmonic_center_of_mass_restraint_force_create",
@@ -140,20 +183,40 @@ TEST_CASE("CapiHarmonicCenterOfMassRestraintForceCreatesAndDestroys") {
                        "HarmonicCenterOfMassRestraintForce");
   CHECK(restraint == nullptr);
 
+  apo_charmm_psf shortMassPsf = MakePsf(NUM_ATOMS);
+  shortMassPsf.object->getMasses().pop_back();
   restraint = &staleRestraint;
   CHECK_NOTHROW((status = apo_harmonic_center_of_mass_restraint_force_create(
-                     &restraint, -1)));
+                     &restraint, &shortMassPsf)));
 
-  CheckHmcmNativeError(status,
-                       "apo_harmonic_center_of_mass_restraint_force_create",
-                       "Atom count must be positive; observed -1",
-                       "HarmonicCenterOfMassRestraintForce");
+  apo_test::CheckNativeError(
+      status, APO_STATUS_RUNTIME_ERROR, "Runtime",
+      "apo_harmonic_center_of_mass_restraint_force_create",
+      "PSF mass count mismatch; expected 2, observed 1", HMCM_SOURCE_FILE,
+      "HarmonicCenterOfMassRestraintForce");
   CHECK(restraint == nullptr);
 
-  CHECK(apo_harmonic_center_of_mass_restraint_force_create(
-            &restraint, NUM_ATOMS) == APO_STATUS_OK);
+  const double infinity = std::numeric_limits<double>::infinity();
+  apo_charmm_psf infiniteMassPsf = MakePsf(NUM_ATOMS);
+  infiniteMassPsf.object->getMasses()[1] = infinity;
+  restraint = &staleRestraint;
+  CHECK_NOTHROW((status = apo_harmonic_center_of_mass_restraint_force_create(
+                     &restraint, &infiniteMassPsf)));
+
+  CheckHmcmNativeError(
+      status, "apo_harmonic_center_of_mass_restraint_force_create",
+      "Mass at index 1 must be finite; observed " + std::to_string(infinity),
+      "HarmonicCenterOfMassRestraintForce");
+  CHECK(restraint == nullptr);
+
+  const std::weak_ptr<CharmmPSF> weakPsf = psf.object;
+  CHECK(apo_harmonic_center_of_mass_restraint_force_create(&restraint, &psf) ==
+        APO_STATUS_OK);
   REQUIRE(restraint != nullptr);
   CHECK(std::string(apo_last_error()).empty() == true);
+  CHECK(restraint->object->getForce()->size() == NUM_ATOMS);
+  psf.object.reset();
+  CHECK(weakPsf.expired());
 
   CHECK_NOTHROW(apo_harmonic_center_of_mass_restraint_force_destroy(restraint));
   CHECK(std::string(apo_last_error()).empty() == true);
@@ -165,6 +228,25 @@ TEST_CASE("CapiHarmonicCenterOfMassRestraintForceCreatesAndDestroys") {
 
   CHECK_NOTHROW(apo_harmonic_center_of_mass_restraint_force_destroy(nullptr));
   CHECK(std::string(apo_last_error()) == diagnostic);
+}
+
+TEST_CASE("CapiHarmonicCenterOfMassRestraintForceWeightsWithPsfMasses") {
+  apo_charmm_psf psf = MakePsf(NUM_ATOMS);
+  psf.object->getMasses() = {1.0, -1.0};
+
+  apo_harmonic_center_of_mass_restraint_force *restraint = nullptr;
+  REQUIRE(apo_harmonic_center_of_mass_restraint_force_create(
+              &restraint, &psf) == APO_STATUS_OK);
+  HarmonicCenterOfMassRestraintForceHandle ownedRestraint(restraint);
+  psf.object->getMasses() = {1.0, 1.0};
+
+  CheckHmcmNativeError(
+      apo_harmonic_center_of_mass_restraint_force_set_mass_weighting(
+          ownedRestraint.get(), true),
+      "apo_harmonic_center_of_mass_restraint_force_set_mass_weighting",
+      "Selected atoms must have a finite nonzero total weight; observed " +
+          std::to_string(0.0),
+      "updateSelectedAtoms");
 }
 
 TEST_CASE(
@@ -321,16 +403,10 @@ TEST_CASE("CapiHarmonicCenterOfMassRestraintForceMapsNativeValidation") {
         "setForceConstant");
   }
 
-  SECTION("ScalarForceConstantNonnegative") {
-    const apo_status status =
-        apo_harmonic_center_of_mass_restraint_force_set_force_constant(
-            restraint.get(), -1.0);
-
-    CheckHmcmNativeError(
-        status,
-        "apo_harmonic_center_of_mass_restraint_force_set_force_constant",
-        "Force constant must be non-negative; observed " + std::to_string(-1.0),
-        "setForceConstant");
+  SECTION("ScalarForceConstantAcceptsEitherSign") {
+    CHECK(apo_harmonic_center_of_mass_restraint_force_set_force_constant(
+              restraint.get(), -1.0) == APO_STATUS_OK);
+    CHECK(std::string(apo_last_error()).empty() == true);
   }
 
   SECTION("ReferencePositionArraySize") {
@@ -417,17 +493,10 @@ TEST_CASE("CapiHarmonicCenterOfMassRestraintForceMapsNativeValidation") {
         "setReferenceDistance");
   }
 
-  SECTION("ReferenceDistanceNonnegative") {
-    const apo_status status =
-        apo_harmonic_center_of_mass_restraint_force_set_reference_distance(
-            restraint.get(), -1.0);
-
-    CheckHmcmNativeError(
-        status,
-        "apo_harmonic_center_of_mass_restraint_force_set_reference_distance",
-        "Reference distance must be non-negative; observed " +
-            std::to_string(-1.0),
-        "setReferenceDistance");
+  SECTION("ReferenceDistanceAcceptsEitherSign") {
+    CHECK(apo_harmonic_center_of_mass_restraint_force_set_reference_distance(
+              restraint.get(), -1.0) == APO_STATUS_OK);
+    CHECK(std::string(apo_last_error()).empty() == true);
   }
 
   SECTION("MassArraySize") {
@@ -453,7 +522,15 @@ TEST_CASE("CapiHarmonicCenterOfMassRestraintForceMapsNativeValidation") {
         "setMasses");
   }
 
-  SECTION("MassNonnegative") {
+  SECTION("MassAcceptsEitherSign") {
+    const double masses[NUM_ATOMS] = {1.0, -3.0};
+
+    CHECK(apo_harmonic_center_of_mass_restraint_force_set_masses(
+              restraint.get(), masses, NUM_ATOMS) == APO_STATUS_OK);
+    CHECK(std::string(apo_last_error()).empty() == true);
+  }
+
+  SECTION("SelectedTotalWeightFromMasses") {
     const double masses[NUM_ATOMS] = {1.0, -1.0};
     const apo_status status =
         apo_harmonic_center_of_mass_restraint_force_set_masses(
@@ -461,20 +538,7 @@ TEST_CASE("CapiHarmonicCenterOfMassRestraintForceMapsNativeValidation") {
 
     CheckHmcmNativeError(
         status, "apo_harmonic_center_of_mass_restraint_force_set_masses",
-        "Mass at index 1 must be non-negative; observed " +
-            std::to_string(-1.0),
-        "setMasses");
-  }
-
-  SECTION("SelectedTotalWeightFromMasses") {
-    const double masses[NUM_ATOMS] = {0.0, 0.0};
-    const apo_status status =
-        apo_harmonic_center_of_mass_restraint_force_set_masses(
-            restraint.get(), masses, NUM_ATOMS);
-
-    CheckHmcmNativeError(
-        status, "apo_harmonic_center_of_mass_restraint_force_set_masses",
-        "Selected atoms must have positive total weight; observed " +
+        "Selected atoms must have a finite nonzero total weight; observed " +
             std::to_string(0.0),
         "updateSelectedAtoms");
   }
@@ -486,7 +550,7 @@ TEST_CASE("CapiHarmonicCenterOfMassRestraintForceMapsNativeValidation") {
 
     CheckHmcmNativeError(
         status, "apo_harmonic_center_of_mass_restraint_force_set_masses",
-        "Selected atoms must have positive total weight; observed " +
+        "Selected atoms must have a finite nonzero total weight; observed " +
             std::to_string(0.0),
         "updateSelectedAtoms");
 
@@ -499,7 +563,7 @@ TEST_CASE("CapiHarmonicCenterOfMassRestraintForceMapsNativeValidation") {
     CheckHmcmNativeError(
         status,
         "apo_harmonic_center_of_mass_restraint_force_set_mass_weighting",
-        "Selected atoms must have positive total weight; observed " +
+        "Selected atoms must have a finite nonzero total weight; observed " +
             std::to_string(0.0),
         "updateSelectedAtoms");
   }

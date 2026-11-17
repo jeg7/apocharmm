@@ -8,12 +8,14 @@
 // ENDLICENSE
 
 #include "AtomSelection.h"
+#include "CharmmPSF.h"
 #include "ForceManager.h"
 #include "apo_test_helpers.h"
 #include "apocharmm_c/Error.h"
 #include "apocharmm_c/HarmonicRestraintForce.h"
 #include "apocharmm_c/Status.h"
 #include "apocharmm_c/detail/AtomSelectionHandle.h"
+#include "apocharmm_c/detail/CharmmPsfHandle.h"
 #include "apocharmm_c/detail/ForceManagerHandle.h"
 #include "apocharmm_c/detail/HarmonicRestraintForceHandle.h"
 #include "catch.hpp"
@@ -40,10 +42,18 @@ using HarmonicRestraintForceHandle =
     std::unique_ptr<apo_harmonic_restraint_force,
                     HarmonicRestraintForceDeleter>;
 
+apo_charmm_psf MakePsf(const int numAtoms) {
+  apo_charmm_psf psf;
+  psf.object = std::make_shared<CharmmPSF>();
+  psf.object->setNumAtoms(numAtoms);
+  return psf;
+}
+
 HarmonicRestraintForceHandle MakeRestraint(void) {
+  apo_charmm_psf psf = MakePsf(NUM_ATOMS);
   apo_harmonic_restraint_force *restraint = nullptr;
 
-  REQUIRE(apo_harmonic_restraint_force_create(&restraint, NUM_ATOMS) ==
+  REQUIRE(apo_harmonic_restraint_force_create(&restraint, &psf) ==
           APO_STATUS_OK);
   REQUIRE(restraint != nullptr);
 
@@ -115,8 +125,10 @@ void CheckForceManagerNativeError(const apo_status status,
 } // namespace
 
 TEST_CASE("CapiHarmonicRestraintForceCreatesAndDestroys") {
+  apo_charmm_psf psf = MakePsf(NUM_ATOMS);
+
   apo_test::CheckStatusAndDiagnostic(
-      apo_harmonic_restraint_force_create(nullptr, NUM_ATOMS),
+      apo_harmonic_restraint_force_create(nullptr, &psf),
       APO_STATUS_INVALID_ARGUMENT,
       "apo_harmonic_restraint_force_create: out pointer is NULL");
 
@@ -124,17 +136,50 @@ TEST_CASE("CapiHarmonicRestraintForceCreatesAndDestroys") {
   apo_harmonic_restraint_force *restraint = &staleRestraint;
   apo_status status = APO_STATUS_OK;
 
-  CHECK_NOTHROW((status = apo_harmonic_restraint_force_create(&restraint, 0)));
+  apo_test::CheckStatusAndDiagnostic(
+      apo_harmonic_restraint_force_create(&restraint, nullptr),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_harmonic_restraint_force_create: CharmmPsf is NULL");
+  CHECK(restraint == nullptr);
+
+  apo_charmm_psf emptyPsf;
+  restraint = &staleRestraint;
+  apo_test::CheckStatusAndDiagnostic(
+      apo_harmonic_restraint_force_create(&restraint, &emptyPsf),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_harmonic_restraint_force_create: CharmmPsf object is NULL");
+  CHECK(restraint == nullptr);
+
+  apo_charmm_psf uninitializedPsf;
+  uninitializedPsf.object = std::make_shared<CharmmPSF>();
+  restraint = &staleRestraint;
+  CHECK_NOTHROW((status = apo_harmonic_restraint_force_create(
+                     &restraint, &uninitializedPsf)));
+
+  apo_test::CheckNativeError(
+      status, APO_STATUS_NOT_INITIALIZED, "NotInitialized",
+      "apo_harmonic_restraint_force_create",
+      "CharmmPSF atom count is not initialized; observed -1",
+      HARMONIC_SOURCE_FILE, "HarmonicRestraintForce");
+  CHECK(restraint == nullptr);
+
+  apo_charmm_psf emptyAtomPsf = MakePsf(0);
+  restraint = &staleRestraint;
+  CHECK_NOTHROW((
+      status = apo_harmonic_restraint_force_create(&restraint, &emptyAtomPsf)));
 
   CheckHarmonicNativeError(status, "apo_harmonic_restraint_force_create",
                            "Atom count must be positive; observed 0",
                            "HarmonicRestraintForce");
   CHECK(restraint == nullptr);
 
-  CHECK(apo_harmonic_restraint_force_create(&restraint, NUM_ATOMS) ==
-        APO_STATUS_OK);
+  const std::weak_ptr<CharmmPSF> weakPsf = psf.object;
+  CHECK(apo_harmonic_restraint_force_create(&restraint, &psf) == APO_STATUS_OK);
   REQUIRE(restraint != nullptr);
   CHECK(std::string(apo_last_error()).empty() == true);
+  CHECK(restraint->object->getForce()->size() == NUM_ATOMS);
+  psf.object.reset();
+  CHECK(weakPsf.expired());
 
   CHECK_NOTHROW(apo_harmonic_restraint_force_destroy(restraint));
   CHECK(std::string(apo_last_error()).empty() == true);
@@ -153,6 +198,7 @@ TEST_CASE("CapiHarmonicRestraintForceValidatesEveryRestraintHandle") {
   const double referenceCoordinates[3 * NUM_ATOMS] = {0.0, 0.0, 0.0,
                                                       1.0, 1.0, 1.0};
   const double masses[NUM_ATOMS] = {1.0, 2.0};
+  const double scaleFactors[3] = {1.0, 1.0, 1.0};
   const double boxDimensions[3] = {50.0, 50.0, 50.0};
   apo_atom_selection selection = MakeSelection(NUM_ATOMS);
   apo_force_manager forceManager = MakeForceManager();
@@ -190,6 +236,19 @@ TEST_CASE("CapiHarmonicRestraintForceValidatesEveryRestraintHandle") {
       [&masses](apo_harmonic_restraint_force *restraint) -> apo_status {
         return apo_harmonic_restraint_force_set_masses(restraint, masses,
                                                        NUM_ATOMS);
+      });
+
+  CheckRestraintHandleValidation(
+      "apo_harmonic_restraint_force_set_exponent",
+      [](apo_harmonic_restraint_force *restraint) -> apo_status {
+        return apo_harmonic_restraint_force_set_exponent(restraint, 2);
+      });
+
+  CheckRestraintHandleValidation(
+      "apo_harmonic_restraint_force_set_scale_factors",
+      [&scaleFactors](apo_harmonic_restraint_force *restraint) -> apo_status {
+        return apo_harmonic_restraint_force_set_scale_factors(restraint,
+                                                              scaleFactors, 3);
       });
 
   CheckRestraintHandleValidation(
@@ -266,6 +325,13 @@ TEST_CASE("CapiHarmonicRestraintForceValidatesSelectionAndArrayArguments") {
       "apo_harmonic_restraint_force_set_masses: masses is NULL");
 
   apo_test::CheckStatusAndDiagnostic(
+      apo_harmonic_restraint_force_set_scale_factors(restraint.get(), nullptr,
+                                                     3),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_harmonic_restraint_force_set_scale_factors: scale_factors is "
+      "NULL");
+
+  apo_test::CheckStatusAndDiagnostic(
       apo_harmonic_restraint_force_set_box_dimensions(restraint.get(), nullptr,
                                                       3),
       APO_STATUS_INVALID_ARGUMENT,
@@ -331,16 +397,12 @@ TEST_CASE("CapiHarmonicRestraintForceMapsNativeValidation") {
         "setForceConstants");
   }
 
-  SECTION("ForceConstantArrayNonnegative") {
+  SECTION("ForceConstantArrayAcceptsEitherSign") {
     const double forceConstants[NUM_ATOMS] = {1.0, -1.0};
-    const apo_status status = apo_harmonic_restraint_force_set_force_constants(
-        restraint.get(), forceConstants, NUM_ATOMS);
 
-    CheckHarmonicNativeError(
-        status, "apo_harmonic_restraint_force_set_force_constants",
-        "Force constant at index 1 must be non-negative; observed " +
-            std::to_string(-1.0),
-        "setForceConstants");
+    CHECK(apo_harmonic_restraint_force_set_force_constants(
+              restraint.get(), forceConstants, NUM_ATOMS) == APO_STATUS_OK);
+    CHECK(std::string(apo_last_error()).empty() == true);
   }
 
   SECTION("ReferenceCoordinateAtomCount") {
@@ -421,15 +483,51 @@ TEST_CASE("CapiHarmonicRestraintForceMapsNativeValidation") {
                              "setMasses");
   }
 
-  SECTION("MassNonnegative") {
+  SECTION("MassAcceptsEitherSign") {
     const double masses[NUM_ATOMS] = {1.0, -1.0};
-    const apo_status status = apo_harmonic_restraint_force_set_masses(
-        restraint.get(), masses, NUM_ATOMS);
 
-    CheckHarmonicNativeError(status, "apo_harmonic_restraint_force_set_masses",
-                             "Mass at index 1 must be non-negative; observed " +
-                                 std::to_string(-1.0),
-                             "setMasses");
+    CHECK(apo_harmonic_restraint_force_set_masses(restraint.get(), masses,
+                                                  NUM_ATOMS) == APO_STATUS_OK);
+    CHECK(std::string(apo_last_error()).empty() == true);
+  }
+
+  SECTION("ExponentAcceptsEveryInteger") {
+    CHECK(apo_harmonic_restraint_force_set_exponent(restraint.get(), -1) ==
+          APO_STATUS_OK);
+    CHECK(apo_harmonic_restraint_force_set_exponent(restraint.get(), 7) ==
+          APO_STATUS_OK);
+    CHECK(std::string(apo_last_error()).empty() == true);
+  }
+
+  SECTION("ScaleFactorArraySize") {
+    const double scaleFactors[2] = {1.0, 1.0};
+    const apo_status status = apo_harmonic_restraint_force_set_scale_factors(
+        restraint.get(), scaleFactors, 2);
+
+    CheckHarmonicNativeError(
+        status, "apo_harmonic_restraint_force_set_scale_factors",
+        "Scale-factor array size mismatch; expected 3, observed 2",
+        "setScaleFactors");
+  }
+
+  SECTION("ScaleFactorFinite") {
+    const double scaleFactors[3] = {1.0, infinity, 1.0};
+    const apo_status status = apo_harmonic_restraint_force_set_scale_factors(
+        restraint.get(), scaleFactors, 3);
+
+    CheckHarmonicNativeError(
+        status, "apo_harmonic_restraint_force_set_scale_factors",
+        "Scale factor at index 1 must be finite; observed " +
+            std::to_string(infinity),
+        "setScaleFactors");
+  }
+
+  SECTION("ScaleFactorAcceptsEitherSign") {
+    const double scaleFactors[3] = {2.0, 0.0, -1.0};
+
+    CHECK(apo_harmonic_restraint_force_set_scale_factors(
+              restraint.get(), scaleFactors, 3) == APO_STATUS_OK);
+    CHECK(std::string(apo_last_error()).empty() == true);
   }
 
   SECTION("BoxDimensionArraySize") {

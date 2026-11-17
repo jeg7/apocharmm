@@ -204,6 +204,24 @@ def _initialize_prototypes() -> None:
         "ForceManager.isComposite()",
     )
 
+    configure_status_function(
+        lib().apo_force_manager_get_potential_energy,
+        [ctypes.POINTER(ctypes.c_double), ctypes.c_void_p],
+        "ForceManager.getPotentialEnergy()",
+    )
+
+    configure_status_function(
+        lib().apo_force_manager_get_forces,
+        [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t, ctypes.c_void_p],
+        "ForceManager.getForces()",
+    )
+
+    configure_status_function(
+        lib().apo_force_manager_get_virial,
+        [ctypes.POINTER(ctypes.c_double), ctypes.c_size_t, ctypes.c_void_p],
+        "ForceManager.getVirial()",
+    )
+
     _prototypes_initialized = True
 
     return
@@ -219,10 +237,15 @@ class ForceManager(_ApoObject):
     retains native shared ownership of both collaborators. The Python wrapper
     also retains the collaborator wrappers.
 
-    Configuration methods copy Python scalar or sequence data through the C
-    ABI. Force backends are initialized when the manager is attached to a
+    Configuration methods copy Python scalar or sequence data through the C ABI.
+    Force backends are initialized when the manager is attached to a
     sufficiently configured `CharmmContext`, or through direct native C++
     initialization; initialization is not exposed as a Python method.
+
+    After a calculation such as `CharmmContext.calculatePotentialEnergy()`,
+    `getPotentialEnergy()`, `getForces()`, and `getVirial()` copy the aggregate
+    potential energy, physical forces, and virial tensor of the initialized
+    manager into new Python objects.
 
     `subscribe()` retains each force wrapper after its subscription callback
     succeeds. `close()` releases the manager handle, clears retained subscribed
@@ -909,3 +932,103 @@ class ForceManager(_ApoObject):
         lib().apo_force_manager_is_composite(ctypes.byref(c_flag), self.handle)
 
         return bool(c_flag.value)
+
+    def getPotentialEnergy(self) -> float:
+        """
+        @brief Returns the aggregate potential energy.
+
+        Native code transfers the manager's aggregate energy from the device and
+        copies it. The value is the sum of every built-in and subscribed energy
+        term from the latest calculation that requested energy, such as
+        `CharmmContext.calculatePotentialEnergy()`.
+
+        @return Python `float` in kilocalories per mole.
+
+        @throws RuntimeError If this wrapper is closed.
+        @throws ApoCharmmError With native status `APO_STATUS_NOT_INITIALIZED`
+        if the manager is not initialized, or `APO_STATUS_CUDA_ERROR` if the
+        device-to-host transfer fails.
+        """
+        _initialize_prototypes()
+
+        c_energy: ctypes.c_double = ctypes.c_double()
+
+        lib().apo_force_manager_get_potential_energy(
+            ctypes.byref(c_energy), self.handle
+        )
+
+        return float(c_energy.value)
+
+    def getForces(self) -> list[list[float]]:
+        """
+        @brief Returns the aggregate physical forces.
+
+        The native aggregate array stores the potential-energy gradient `g`;
+        native code writes `0.0 - g` while copying, so each row is the physical
+        force `[fx, fy, fz]` on one atom, in atom-index order, and a zero
+        component is positive zero. The values come from the latest calculation,
+        such as `CharmmContext.calculatePotentialEnergy()`.
+
+        @return Newly allocated `list[list[float]]` with shape `(N, 3)`, in
+        kilocalories per mole per angstrom.
+
+        @throws RuntimeError If this wrapper is closed.
+        @throws ApoCharmmError With native status `APO_STATUS_NOT_INITIALIZED`
+        if the manager has no PSF or is not initialized, or
+        `APO_STATUS_CUDA_ERROR` if synchronization or the device-to-host copy
+        fails.
+        """
+        _initialize_prototypes()
+
+        num_atoms: int = self.getNumAtoms()
+
+        c_buffer_type: type[ctypes.Array[ctypes.c_double]] = ctypes.c_double * (
+            num_atoms * 3
+        )
+        c_buffer: ctypes.Array[ctypes.c_double] = c_buffer_type()
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(num_atoms * 3)
+
+        lib().apo_force_manager_get_forces(c_buffer, c_buffer_len, self.handle)
+
+        forces: list[list[float]] = []
+        for i in range(num_atoms):
+            forces.append(
+                [
+                    float(c_buffer[i * 3 + 0]),
+                    float(c_buffer[i * 3 + 1]),
+                    float(c_buffer[i * 3 + 2]),
+                ]
+            )
+
+        return forces
+
+    def getVirial(self) -> list[list[float]]:
+        """
+        @brief Returns the aggregate virial tensor.
+
+        Native code sums the built-in virial contributions and those of the
+        subscribed forces that contribute one, and copies the nine components.
+        Row `a`, column `b` of the result holds component `ab`, so rows follow
+        `x`, `y`, `z`. The bonded, direct-space, and subscribed contributions
+        follow the convention of CHARMM's internal virial,
+        `-sum_i r_i,a * g_i,b` with `g` the potential-energy gradient. Forces
+        that contribute no virial, such as `GeometricRestraintForce`, are
+        excluded.
+
+        @return Newly allocated 3 x 3 `list[list[float]]` in kilocalories per
+        mole.
+
+        @throws RuntimeError If this wrapper is closed.
+        @throws ApoCharmmError With native status `APO_STATUS_NOT_INITIALIZED`
+        if the manager is not initialized, or `APO_STATUS_CUDA_ERROR` if a
+        virial copy or transfer fails.
+        """
+        _initialize_prototypes()
+
+        c_buffer_type: type[ctypes.Array[ctypes.c_double]] = ctypes.c_double * 9
+        c_buffer: ctypes.Array[ctypes.c_double] = c_buffer_type()
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(9)
+
+        lib().apo_force_manager_get_virial(c_buffer, c_buffer_len, self.handle)
+
+        return [[float(c_buffer[i * 3 + j]) for j in range(3)] for i in range(3)]

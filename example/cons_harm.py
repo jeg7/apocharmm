@@ -49,7 +49,7 @@ def main(argc, argv):
     selection = selector.select("all")
 
     # Setup harmonic restraint
-    harm = apo.HarmonicRestraintForce(psf.getNumAtoms())
+    harm = apo.HarmonicRestraintForce(psf)
     harm.setSelection(selection)
     harm.setReferenceCoordinates(crd.getCoordinates())
     # harm.setMasses(psf.getMasses())

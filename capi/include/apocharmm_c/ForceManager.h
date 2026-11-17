@@ -546,6 +546,104 @@ APOCHARMM_C_API apo_status apo_force_manager_get_vdw_type(
 APOCHARMM_C_API apo_status apo_force_manager_is_composite(
     bool *flag, const apo_force_manager *force_manager);
 
+/**
+ * @brief Copies the aggregate potential energy.
+ *
+ * The function transfers the manager's one-element aggregate energy from the
+ * device and copies it. The value is the sum of every built-in and subscribed
+ * energy term from the latest force calculation that requested energy, such as
+ * @ref apo_charmm_context_calculate_potential_energy. A later calculation
+ * without energy leaves it stale.
+ *
+ * @param[out] energy Non-null output pointer receiving the energy in
+ * kilocalories per mole.
+ * @param[in] force_manager Borrowed non-null live manager handle.
+ *
+ * @return `APO_STATUS_OK` on success.
+ * @return `APO_STATUS_INVALID_ARGUMENT` if the handle is invalid or `energy`
+ * is `NULL`.
+ * @return `APO_STATUS_NOT_INITIALIZED` if the manager is not initialized.
+ * @return `APO_STATUS_CUDA_ERROR` if the device-to-host transfer fails.
+ * @return `APO_STATUS_RUNTIME_ERROR` if an uncategorized standard operation
+ * fails.
+ *
+ * @post On failure, `*energy` remains unchanged.
+ * @post Success clears the thread-local diagnostic; failure leaves a nonempty
+ * diagnostic available through @ref apo_last_error.
+ * @note The transfer synchronizes the device.
+ */
+APOCHARMM_C_API apo_status apo_force_manager_get_potential_energy(
+    double *energy, const apo_force_manager *force_manager);
+
+/**
+ * @brief Copies the aggregate physical forces.
+ *
+ * The manager's aggregate force array stores the potential-energy gradient `g`.
+ * The function synchronizes the aggregate stream, copies the array from the
+ * device, and writes `0.0 - g`: `N` consecutive `[fx, fy, fz]` physical force
+ * records in atom-index order, where `N` is the atom count of the initialized
+ * manager. A zero gradient component is written as positive zero. Forces use
+ * kilocalories per mole per angstrom and come from the latest force
+ * calculation.
+ *
+ * @param[out] forces Caller-owned output buffer with capacity for at least
+ * `3 * N` `double` values. Elements beyond the first `3 * N` are untouched.
+ * @param[in] forces_len Capacity of `forces` in `double` elements; it must be
+ * at least `3 * N`.
+ * @param[in] force_manager Borrowed non-null live manager handle.
+ *
+ * @return `APO_STATUS_OK` on success.
+ * @return `APO_STATUS_INVALID_ARGUMENT` if the handle is invalid, `forces` is
+ * `NULL`, or `forces_len` is less than `3 * N`.
+ * @return `APO_STATUS_NOT_INITIALIZED` if the manager is not initialized.
+ * Initialization is checked before the output buffer.
+ * @return `APO_STATUS_CUDA_ERROR` if synchronization or the device-to-host
+ * copy fails.
+ * @return `APO_STATUS_RUNTIME_ERROR` if host allocation or another
+ * uncategorized standard operation fails.
+ *
+ * @post On failure, output-buffer contents remain unchanged.
+ * @post Success clears the thread-local diagnostic; failure leaves a nonempty
+ * diagnostic available through @ref apo_last_error.
+ */
+APOCHARMM_C_API apo_status
+apo_force_manager_get_forces(double *forces, const size_t forces_len,
+                             const apo_force_manager *force_manager);
+
+/**
+ * @brief Copies the aggregate virial tensor.
+ *
+ * The native manager sums the built-in virial contributions and those of the
+ * subscribed forces that contribute one, and the function copies the nine
+ * components in row-major `xx, xy, xz, yx, yy, yz, zx, zy, zz` order, in
+ * kilocalories per mole. The bonded, direct-space, and subscribed
+ * contributions follow the convention of CHARMM's internal virial,
+ * `W_ab = -sum_i r_i,a * g_i,b` for positions `r` and potential-energy
+ * gradients `g`, with periodic shift terms where a force records them. Forces
+ * that contribute no virial, such as `GeometricRestraintForce` and
+ * `HarmonicRestraintForce`, are excluded.
+ *
+ * @param[out] virial Caller-owned output buffer with capacity for at least
+ * nine `double` values. Elements beyond index `8` are untouched.
+ * @param[in] virial_len Capacity of `virial`; it must be at least `9`.
+ * @param[in] force_manager Borrowed non-null live manager handle.
+ *
+ * @return `APO_STATUS_OK` on success.
+ * @return `APO_STATUS_INVALID_ARGUMENT` if the handle or output buffer is
+ * invalid or `virial_len` is less than `9`.
+ * @return `APO_STATUS_NOT_INITIALIZED` if the manager is not initialized.
+ * @return `APO_STATUS_CUDA_ERROR` if a virial copy or transfer fails.
+ * @return `APO_STATUS_RUNTIME_ERROR` if an uncategorized standard operation
+ * fails.
+ *
+ * @post On failure, output-buffer contents remain unchanged.
+ * @post Success clears the thread-local diagnostic; failure leaves a nonempty
+ * diagnostic available through @ref apo_last_error.
+ */
+APOCHARMM_C_API apo_status
+apo_force_manager_get_virial(double *virial, const size_t virial_len,
+                             const apo_force_manager *force_manager);
+
 #ifdef __cplusplus
 }
 #endif

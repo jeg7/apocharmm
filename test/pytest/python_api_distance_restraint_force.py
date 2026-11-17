@@ -139,7 +139,10 @@ def check_exports_construction_default_tag_and_scale() -> None:
         -1,
     )
 
-    restraint = apo.DistanceRestraintForce(2)
+    psf_path: str = apo_test.require_file(apo_test.get_data_dir() / "nacl_pair.psf")
+    psf = apo.CharmmPsf(psf_path)
+    restraint = apo.DistanceRestraintForce(psf)
+    psf.close()
     try:
         apo_test.assert_equal(
             "DistanceRestraintForce.default_force_tag",
@@ -165,7 +168,7 @@ def check_term_conditions_reset_and_reuse() -> None:
     psf_path: str = apo_test.require_file(apo_test.get_data_dir() / "nacl_pair.psf")
     psf = apo.CharmmPsf(psf_path)
     atom_pair = create_atom_pair(psf)
-    restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+    restraint = apo.DistanceRestraintForce(psf)
 
     try:
         add_stable_one_pair_term(
@@ -218,28 +221,19 @@ def check_validation() -> None:
     print("Checking DistanceRestraintForce validation and error propagation...")
 
     prm, psf, crd, fm, ctx = create_system()
-    restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+    restraint = apo.DistanceRestraintForce(psf)
     atom_pair = create_atom_pair(psf)
 
     try:
-        apo_test.expect_exception(
-            "DistanceRestraintForce rejects non-int num_atoms",
+        atom_count_error: TypeError = apo_test.expect_exception(
+            "DistanceRestraintForce rejects an atom count",
             TypeError,
-            lambda: apo.DistanceRestraintForce(2.0),  # type: ignore[arg-type]
+            lambda: apo.DistanceRestraintForce(2),  # type: ignore[arg-type]
         )
-
-        apo_test.expect_invalid_argument(
-            "DistanceRestraintForce rejects zero num_atoms",
-            lambda: apo.DistanceRestraintForce(0),
-            "Atom count must be positive; observed 0",
-            expected_context="DistanceRestraintForce construction",
-        )
-
-        apo_test.expect_invalid_argument(
-            "DistanceRestraintForce rejects negative num_atoms",
-            lambda: apo.DistanceRestraintForce(-1),
-            "Atom count must be positive; observed -1",
-            expected_context="DistanceRestraintForce construction",
+        apo_test.assert_equal(
+            "DistanceRestraintForce atom-count rejection message",
+            str(atom_count_error),
+            "DistanceRestraintForce expects a CharmmPsf",
         )
 
         raw_integer_error: TypeError = apo_test.expect_exception(
@@ -579,7 +573,7 @@ def check_subscription_mutation_and_short_integration() -> None:
     )
 
     prm, psf, crd, fm, ctx = create_system()
-    restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+    restraint = apo.DistanceRestraintForce(psf)
     atom_pair = create_atom_pair(psf)
     integrator: apo.CudaLangevinThermostatIntegrator | None = None
 
@@ -695,7 +689,7 @@ def check_reference_handles_are_not_retained() -> None:
     source_psf = apo.CharmmPsf(source_psf_path)
     atom_pair = create_atom_pair(source_psf)
 
-    restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+    restraint = apo.DistanceRestraintForce(psf)
     subscribed: bool = False
 
     try:
@@ -732,7 +726,7 @@ def check_closed_handle_rejection() -> None:
     psf = apo.CharmmPsf(psf_path)
     atom_pair = create_atom_pair(psf)
 
-    restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+    restraint = apo.DistanceRestraintForce(psf)
     restraint.close()
 
     try:
@@ -758,6 +752,12 @@ def check_closed_handle_rejection() -> None:
     finally:
         close_atom_pair(atom_pair)
         psf.close()
+
+    apo_test.expect_exception(
+        "DistanceRestraintForce rejects a closed CharmmPsf",
+        RuntimeError,
+        lambda: apo.DistanceRestraintForce(psf),
+    )
 
     return
 

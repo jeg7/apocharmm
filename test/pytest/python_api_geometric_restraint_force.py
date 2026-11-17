@@ -115,6 +115,54 @@ CLOSED_HANDLE_MESSAGE: str = "apoCHARMM object has been destroyed"
 ATOMS_TYPE_MESSAGE: str = "atoms must be an AtomSelection or AtomReference"
 RCM_TOTAL_DIAGNOSTIC: str = "RCM total mass must be finite and nonzero"
 
+TEST_PARAMETER_TEXT: str = """NONBONDED
+DUM 0.0 0.0 1.0
+END
+"""
+BOX_DIMENSIONS: list[float] = [20.0, 30.0, 40.0]
+CUTOFF: float = 9.0
+CTONNB: float = 8.5
+CTOFNB: float = 7.5
+DEFAULT_COORDINATES: list[tuple[float, float, float]] = [
+    (0.0, 0.0, 0.0),
+    (1.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0),
+    (0.0, 0.0, 1.0),
+    (3.0, 4.0, 5.0),
+    (-3.0, -4.0, -5.0),
+    (7.0, 1.0, -2.0),
+    (-7.0, -1.0, 2.0),
+    (9.0, 9.0, 9.0),
+    (-9.0, -9.0, -9.0),
+    (2.0, 5.0, -6.0),
+    (-2.0, -5.0, 6.0),
+]
+EQUAL_MASSES: list[float] = [2.0] * NUM_ATOMS
+UNEQUAL_MASSES: list[float] = [
+    1.0,
+    3.0,
+    2.0,
+    4.0,
+    1.5,
+    5.0,
+    2.5,
+    6.0,
+    3.5,
+    7.0,
+    4.5,
+    8.0,
+]
+NEGATIVE_TOTAL_MASSES: list[float] = [1.0, -3.0] + [2.0] * (NUM_ATOMS - 2)
+ZERO_MEMBER_MASSES: list[float] = [0.0] + [2.0] * (NUM_ATOMS - 1)
+INV_FORCE_SCALE: float = 2.0**-40
+FLOAT_EPSILON: float = 2.0**-23
+ARITHMETIC_TOLERANCE: float = 64.0 * FLOAT_EPSILON
+DUPLICATE_TERM_COUNT: int = 150
+
+SUBSCRIBE_CONTEXT: str = "ForceManager.subscribe(GeometricRestraintForce)"
+UNSUBSCRIBE_CONTEXT: str = "ForceManager.unsubscribe(GeometricRestraintForce)"
+SET_PBC_CONTEXT: str = "ForceManager.setPeriodicBoundaryCondition(pbc)"
+
 AtomInput = apo.AtomSelection | apo.AtomReference
 
 
@@ -124,6 +172,39 @@ class TermAddition(NamedTuple):
     selection_function: str
     atom_reference_function: str
     add: Callable[[object], None]
+
+
+class CharmmTerm(NamedTuple):
+    geometry: str  # "plane", "cylinder", or "sphere"
+    activation: apo.GeometricRestraintActivation
+    selection_mode: apo.GeometricRestraintSelectionMode
+    atoms: str
+    origin: tuple[float, float, float]
+    direction: tuple[float, float, float]
+    force_constant: float
+    offset: float
+
+
+class CharmmPhase(NamedTuple):
+    name: str
+    terms: list[CharmmTerm]
+    energy: float
+    forces: dict[int, tuple[float, float, float]]
+    energy_tolerance: float
+    force_tolerance: float
+
+
+class CharmmCase(NamedTuple):
+    name: str
+    coordinate_prefix: list[tuple[float, float, float]]
+    masses: list[float]
+    phases: list[CharmmPhase]
+
+
+class ManagerOutput(NamedTuple):
+    energy: float
+    forces: list[list[float]]
+    virial: list[list[float]]
 
 
 class DuckTypedAtoms:
@@ -140,6 +221,7 @@ class RecordingLibrary:
     def __init__(self, library: ctypes.CDLL) -> None:
         self._library: ctypes.CDLL = library
         self.destroyed_handles: list[int | None] = []
+        self.force_tags: list[bytes | None] = []
         return
 
     def __getattr__(self, name: str) -> object:
@@ -149,6 +231,500 @@ class RecordingLibrary:
         self.destroyed_handles.append(handle.value)
         self._library.apo_geometric_restraint_force_destroy(handle)
         return
+
+    def apo_force_manager_subscribe_geometric_restraint_force(
+        self,
+        force_manager_handle: ctypes.c_void_p,
+        restraint_handle: ctypes.c_void_p,
+        force_tag: ctypes.c_char_p,
+    ) -> int:
+        self.force_tags.append(force_tag.value)
+        return int(
+            self._library.apo_force_manager_subscribe_geometric_restraint_force(
+                force_manager_handle, restraint_handle, force_tag
+            )
+        )
+
+
+CHARMM_CASES: list[CharmmCase] = [
+    CharmmCase(
+        "INSIDE plane above its offset",
+        [(3.0, 0.5, -0.25)],
+        STANDARD_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "plane",
+                        INSIDE,
+                        ATOMWISE,
+                        "bynu 1",
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                1.0,
+                {0: (-2.0, 0.0, 0.0)},
+                5e-07,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "Symmetric cylinder off its axis",
+        [(3.0, 0.5, -0.25)],
+        STANDARD_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "cylinder",
+                        SYMMETRIC,
+                        ATOMWISE,
+                        "bynu 1",
+                        (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 1.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                1.08447494,
+                {0: (-2.0544243047, -0.3424040508, 0.0)},
+                5e-09,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "Sphere measured from the raw P1 coordinate",
+        [(-9.5, 1.0, 0.5)],
+        STANDARD_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "sphere",
+                        SYMMETRIC,
+                        ATOMWISE,
+                        "bynu 1",
+                        (9.0, 0.0, 0.0),
+                        (0.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                273.364988,
+                {0: (33.0072846537, -1.7841775488, -0.8920887744)},
+                5e-07,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "OUTSIDE plane through its atom",
+        [],
+        STANDARD_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "plane",
+                        OUTSIDE,
+                        ATOMWISE,
+                        "bynu 1",
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                4.0,
+                {0: (4.0, 0.0, 0.0)},
+                5e-07,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "OUTSIDE sphere centered on its atom",
+        [(1.25, -2.5, 3.75)],
+        STANDARD_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "sphere",
+                        OUTSIDE,
+                        ATOMWISE,
+                        "bynu 1",
+                        (1.25, -2.5, 3.75),
+                        (0.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                0.0,
+                {},
+                5e-07,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "Plane term over every atom",
+        [(3.0, 0.0, 0.0)],
+        STANDARD_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "plane",
+                        SYMMETRIC,
+                        ATOMWISE,
+                        "all",
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                328.0,
+                {
+                    0: (-2.0, 0.0, 0.0),
+                    1: (2.0, 0.0, 0.0),
+                    2: (4.0, 0.0, 0.0),
+                    3: (4.0, 0.0, 0.0),
+                    4: (-2.0, 0.0, 0.0),
+                    5: (10.0, 0.0, 0.0),
+                    6: (-10.0, 0.0, 0.0),
+                    7: (18.0, 0.0, 0.0),
+                    8: (-14.0, 0.0, 0.0),
+                    9: (22.0, 0.0, 0.0),
+                    11: (8.0, 0.0, 0.0),
+                },
+                5e-05,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "RCM sphere over three equal masses",
+        [(1.0, 1.0, 1.0), (2.0, 2.0, 2.0), (3.0, 3.0, 3.0)],
+        EQUAL_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "sphere",
+                        SYMMETRIC,
+                        RCM,
+                        "bynu 1:3",
+                        (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                2.14359354,
+                {
+                    0: (-0.5635329744, -0.5635329744, -0.5635329744),
+                    1: (-0.5635329744, -0.5635329744, -0.5635329744),
+                    2: (-0.5635329744, -0.5635329744, -0.5635329744),
+                },
+                5e-09,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "Plane, cylinder, and RCM sphere terms together",
+        [(3.0, 2.0, 1.0), (4.0, 1.0, 2.0), (5.0, 3.0, 1.0)],
+        UNEQUAL_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "plane",
+                        SYMMETRIC,
+                        ATOMWISE,
+                        "bynu 1:2",
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        1.0,
+                        1.5,
+                    ),
+                    CharmmTerm(
+                        "cylinder",
+                        OUTSIDE,
+                        ATOMWISE,
+                        "bynu 2:3",
+                        (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 1.0),
+                        1.25,
+                        2.0,
+                    ),
+                    CharmmTerm(
+                        "sphere",
+                        SYMMETRIC,
+                        RCM,
+                        "bynu 1:3",
+                        (1.0, 1.0, 1.0),
+                        (0.0, 0.0, 0.0),
+                        0.75,
+                        2.5,
+                    ),
+                ],
+                4.49751867,
+                {
+                    0: (-1.5970852864, -0.0255487596, -0.0153292557),
+                    1: (-2.7912558591, -0.0766462787, -0.0459877672),
+                    2: (-0.1941705727, -0.0510975191, -0.0306585115),
+                },
+                5e-09,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "OUTSIDE plane beyond its offset",
+        [(3.0, 0.5, -0.25)],
+        STANDARD_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "plane",
+                        OUTSIDE,
+                        ATOMWISE,
+                        "bynu 1",
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                0.0,
+                {},
+                5e-07,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "OUTSIDE cylinder beyond its offset",
+        [(3.0, 0.5, -0.25)],
+        STANDARD_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "cylinder",
+                        OUTSIDE,
+                        ATOMWISE,
+                        "bynu 1",
+                        (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 1.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                0.0,
+                {},
+                5e-07,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "OUTSIDE sphere beyond its offset",
+        [(3.0, 0.5, -0.25)],
+        STANDARD_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "sphere",
+                        OUTSIDE,
+                        ATOMWISE,
+                        "bynu 1",
+                        (0.0, 0.0, 0.0),
+                        (0.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                0.0,
+                {},
+                5e-07,
+                1e-10,
+            )
+        ],
+    ),
+]
+RESET_REUSE_CASE: CharmmCase = CharmmCase(
+    "Reset then reuse with an RCM term",
+    [(1.0, 0.0, 0.0), (5.0, 0.0, 0.0)],
+    UNEQUAL_MASSES,
+    [
+        CharmmPhase(
+            "Before reset",
+            [
+                CharmmTerm(
+                    "plane",
+                    SYMMETRIC,
+                    ATOMWISE,
+                    "bynu 1",
+                    (0.0, 0.0, 0.0),
+                    (1.0, 0.0, 0.0),
+                    2.0,
+                    2.0,
+                )
+            ],
+            1.0,
+            {0: (2.0, 0.0, 0.0)},
+            5e-07,
+            1e-10,
+        ),
+        CharmmPhase(
+            "New RCM term after reset",
+            [
+                CharmmTerm(
+                    "plane",
+                    SYMMETRIC,
+                    RCM,
+                    "bynu 1:2",
+                    (0.0, 0.0, 0.0),
+                    (1.0, 0.0, 0.0),
+                    2.0,
+                    2.0,
+                )
+            ],
+            4.0,
+            {0: (-1.0, 0.0, 0.0), 1: (-3.0, 0.0, 0.0)},
+            5e-07,
+            1e-10,
+        ),
+    ],
+)
+RCM_MASS_CASES: list[CharmmCase] = [
+    CharmmCase(
+        "RCM plane with equal masses",
+        [(1.0, 0.0, 0.0), (5.0, 0.0, 0.0), (9.0, 0.0, 0.0)],
+        EQUAL_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "plane",
+                        SYMMETRIC,
+                        RCM,
+                        "bynu 1:2",
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                1.0,
+                {0: (-1.0, 0.0, 0.0), 1: (-1.0, 0.0, 0.0)},
+                5e-07,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "RCM plane with unequal masses",
+        [(1.0, 0.0, 0.0), (5.0, 0.0, 0.0), (9.0, 0.0, 0.0)],
+        UNEQUAL_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "plane",
+                        SYMMETRIC,
+                        RCM,
+                        "bynu 1:2",
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                4.0,
+                {0: (-1.0, 0.0, 0.0), 1: (-3.0, 0.0, 0.0)},
+                5e-07,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "RCM plane with a negative selected total",
+        [(1.0, 0.0, 0.0), (5.0, 0.0, 0.0), (9.0, 0.0, 0.0)],
+        NEGATIVE_TOTAL_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "plane",
+                        SYMMETRIC,
+                        RCM,
+                        "bynu 1:2",
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                25.0,
+                {0: (5.0, 0.0, 0.0), 1: (-15.0, 0.0, 0.0)},
+                5e-06,
+                1e-10,
+            )
+        ],
+    ),
+    CharmmCase(
+        "RCM plane with a zero-mass member",
+        [(1.0, 0.0, 0.0), (5.0, 0.0, 0.0), (9.0, 0.0, 0.0)],
+        ZERO_MEMBER_MASSES,
+        [
+            CharmmPhase(
+                "Restraint evaluated",
+                [
+                    CharmmTerm(
+                        "plane",
+                        SYMMETRIC,
+                        RCM,
+                        "bynu 1:2",
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        2.0,
+                        2.0,
+                    )
+                ],
+                9.0,
+                {1: (-6.0, 0.0, 0.0)},
+                5e-07,
+                1e-10,
+            )
+        ],
+    ),
+]
 
 
 def select(psf: apo.CharmmPsf, selection_string: str) -> apo.AtomSelection:
@@ -252,6 +828,203 @@ def assert_no_rcm_term(label: str, restraint: apo.GeometricRestraintForce) -> No
         raise AssertionError(f"{label}: an RCM term is installed") from exc
 
     restraint.setMasses(STANDARD_MASSES)
+
+    return
+
+
+def make_force_manager(
+    psf: apo.CharmmPsf, parameters: apo.CharmmParameters
+) -> apo.ForceManager:
+    force_manager = apo.ForceManager(psf, parameters)
+
+    try:
+        force_manager.setBoxDimensions(BOX_DIMENSIONS)
+        force_manager.setCutoff(CUTOFF)
+        force_manager.setCtonnb(CTONNB)
+        force_manager.setCtofnb(CTOFNB)
+        force_manager.setPeriodicBoundaryCondition(apo.PeriodicBoundaryCondition.P1)
+    except BaseException:
+        force_manager.close()
+        raise
+
+    return force_manager
+
+
+def make_context(force_manager: apo.ForceManager) -> apo.CharmmContext:
+    context = apo.CharmmContext(force_manager)
+
+    apo_test.assert_equal(
+        "CharmmContext initializes the configured ForceManager",
+        force_manager.isInitialized(),
+        True,
+    )
+
+    return context
+
+
+def evaluated_coordinates(case: CharmmCase) -> list[list[float]]:
+    coordinates: list[list[float]] = [
+        list(position) for position in DEFAULT_COORDINATES
+    ]
+
+    for index, position in enumerate(case.coordinate_prefix):
+        coordinates[index] = list(position)
+
+    return coordinates
+
+
+def evaluate(
+    force_manager: apo.ForceManager,
+    context: apo.CharmmContext,
+    coordinates: Sequence[Sequence[float]],
+) -> ManagerOutput:
+    context.setCoordinates(coordinates)
+    context.calculatePotentialEnergy()
+
+    return ManagerOutput(
+        force_manager.getPotentialEnergy(),
+        force_manager.getForces(),
+        force_manager.getVirial(),
+    )
+
+
+def add_charmm_terms(
+    restraint: apo.GeometricRestraintForce,
+    psf: apo.CharmmPsf,
+    terms: Sequence[CharmmTerm],
+    use_atom_references: bool,
+) -> None:
+    for term in terms:
+        atoms: AtomInput = (
+            select_atom(psf, term.atoms)
+            if use_atom_references
+            else select(psf, term.atoms)
+        )
+
+        try:
+            if term.geometry == "plane":
+                restraint.addPlane(
+                    atoms,
+                    term.origin,
+                    term.direction,
+                    term.force_constant,
+                    term.offset,
+                    term.activation,
+                    term.selection_mode,
+                )
+            elif term.geometry == "cylinder":
+                restraint.addCylinder(
+                    atoms,
+                    term.origin,
+                    term.direction,
+                    term.force_constant,
+                    term.offset,
+                    term.activation,
+                    term.selection_mode,
+                )
+            else:
+                restraint.addSphere(
+                    atoms,
+                    term.origin,
+                    term.force_constant,
+                    term.offset,
+                    term.activation,
+                    term.selection_mode,
+                )
+        finally:
+            atoms.close()
+
+    return
+
+
+def check_manager_output(
+    label: str, phase: CharmmPhase, baseline: ManagerOutput, observed: ManagerOutput
+) -> None:
+    force_magnitude: float = max(
+        (abs(component) for force in phase.forces.values() for component in force),
+        default=0.0,
+    )
+    energy_tolerance: float = phase.energy_tolerance + ARITHMETIC_TOLERANCE * abs(
+        phase.energy
+    )
+    force_tolerance: float = (
+        phase.force_tolerance
+        + 0.5 * INV_FORCE_SCALE
+        + 0.5 * FLOAT_EPSILON * force_magnitude
+        + ARITHMETIC_TOLERANCE * max(1.0, force_magnitude)
+    )
+
+    apo_test.assert_equal(f"{label}: force rows", len(observed.forces), NUM_ATOMS)
+    apo_test.assert_equal(
+        f"{label}: virial shape", [len(row) for row in observed.virial], [3, 3, 3]
+    )
+
+    apo_test.assert_close(
+        f"{label}: aggregate energy",
+        observed.energy - baseline.energy,
+        phase.energy,
+        energy_tolerance,
+    )
+
+    for atom in range(NUM_ATOMS):
+        expected_force: tuple[float, float, float] = phase.forces.get(
+            atom, (0.0, 0.0, 0.0)
+        )
+
+        for k in range(3):
+            apo_test.assert_close(
+                f"{label}: force on atom {atom}, component {'xyz'[k]}",
+                observed.forces[atom][k] - baseline.forces[atom][k],
+                expected_force[k],
+                force_tolerance,
+            )
+
+    apo_test.assert_equal(f"{label}: virial", observed.virial, baseline.virial)
+
+    return
+
+
+def check_no_contribution(
+    label: str, baseline: ManagerOutput, observed: ManagerOutput
+) -> None:
+    apo_test.assert_equal(f"{label}: energy", observed.energy, baseline.energy)
+    apo_test.assert_equal(f"{label}: forces", observed.forces, baseline.forces)
+    apo_test.assert_equal(f"{label}: virial", observed.virial, baseline.virial)
+    return
+
+
+def run_charmm_case(
+    psf: apo.CharmmPsf,
+    force_manager: apo.ForceManager,
+    context: apo.CharmmContext,
+    case: CharmmCase,
+    use_atom_references: bool,
+) -> None:
+    route: str = "AtomReference" if use_atom_references else "AtomSelection"
+    coordinates: list[list[float]] = evaluated_coordinates(case)
+    restraint = apo.GeometricRestraintForce(psf)
+
+    try:
+        force_manager.subscribe(restraint)
+
+        try:
+            baseline: ManagerOutput = evaluate(force_manager, context, coordinates)
+            restraint.setMasses(case.masses)
+
+            for phase in case.phases:
+                add_charmm_terms(restraint, psf, phase.terms, use_atom_references)
+                check_manager_output(
+                    f"{case.name} through {route} inputs, {phase.name}",
+                    phase,
+                    baseline,
+                    evaluate(force_manager, context, coordinates),
+                )
+        finally:
+            force_manager.unsubscribe(restraint)
+    finally:
+        restraint.close()
+
+    print(f"Matched CHARMM through {route} inputs: {case.name}")
 
     return
 
@@ -1847,24 +2620,916 @@ def check_terms_charmm_accepts(psf: apo.CharmmPsf) -> None:
     return
 
 
+def check_subscription_tags(
+    psf: apo.CharmmPsf, parameters: apo.CharmmParameters
+) -> None:
+    print("Checking default, explicit, and invalid ForceManager tags...")
+
+    force_manager = make_force_manager(psf, parameters)
+    restraint = apo.GeometricRestraintForce(psf)
+    second = apo.GeometricRestraintForce(psf)
+    recording_library = RecordingLibrary(apo_lib.lib())
+
+    native_tags: list[tuple[str, str | None, bytes]] = [
+        ("the default tag", None, b"mmfp"),
+        ("an explicit tag", "geometric-restraint", b"geometric-restraint"),
+        ("a non-ASCII tag", "g\u00e9om\u00e9trie", "g\u00e9om\u00e9trie".encode()),
+        ("a tag with an embedded NUL", "mm\x00fp", b"mm"),
+    ]
+
+    try:
+        with patch(
+            "apocharmm.geometric_restraint_force.lib", return_value=recording_library
+        ):
+            for label, force_tag, native_tag in native_tags:
+                force_manager.subscribe(restraint, force_tag)
+                force_manager.unsubscribe(restraint)
+
+                apo_test.assert_equal(
+                    f"native code receives {label}",
+                    recording_library.force_tags[-1],
+                    native_tag,
+                )
+
+            apo_test.expect_invalid_argument(
+                "native code rejects a tag that starts with NUL as empty",
+                lambda: force_manager.subscribe(restraint, "\x00mmfp"),
+                "Force tag must not be empty",
+                expected_context=SUBSCRIBE_CONTEXT,
+            )
+            apo_test.assert_equal(
+                "native code receives an empty tag after a leading NUL",
+                recording_library.force_tags[-1],
+                b"",
+            )
+
+        apo_test.expect_invalid_argument(
+            "ForceManager.subscribe rejects an empty tag",
+            lambda: force_manager.subscribe(restraint, ""),
+            "Force tag must not be empty",
+            expected_context=SUBSCRIBE_CONTEXT,
+        )
+
+        rejected_tags: list[tuple[str, object]] = [("an int", 1), ("bytes", b"mmfp")]
+
+        for label, force_tag in rejected_tags:
+            error: TypeError = apo_test.expect_exception(
+                f"ForceManager.subscribe rejects {label} tag",
+                TypeError,
+                lambda force_tag=force_tag: force_manager.subscribe(
+                    restraint, cast(str, force_tag)
+                ),
+            )
+            apo_test.assert_equal(
+                f"ForceManager.subscribe rejects {label} tag message",
+                str(error),
+                "force_tag must be a str",
+            )
+
+            error = apo_test.expect_exception(
+                f"the subscription callback rejects {label} tag",
+                TypeError,
+                lambda force_tag=force_tag: restraint._subscribe_to_force_manager(
+                    force_manager, cast(str, force_tag)
+                ),
+            )
+            apo_test.assert_equal(
+                f"the subscription callback rejects {label} tag message",
+                str(error),
+                "force_tag must be a str",
+            )
+
+        error = apo_test.expect_exception(
+            "the subscription callback rejects a target that is not a ForceManager",
+            TypeError,
+            lambda: restraint._subscribe_to_force_manager(
+                cast(apo.ForceManager, object())
+            ),
+        )
+        apo_test.assert_equal(
+            "the subscription callback rejects a non-ForceManager message",
+            str(error),
+            "force_manager must be a ForceManager",
+        )
+
+        apo_test.expect_exception(
+            "ForceManager.subscribe rejects a tag that UTF-8 cannot encode",
+            UnicodeEncodeError,
+            lambda: force_manager.subscribe(restraint, "\udcff"),
+        )
+
+        force_manager.subscribe(restraint, "shared-tag")
+        force_manager.subscribe(second, "shared-tag")
+        force_manager.unsubscribe(second)
+        force_manager.unsubscribe(restraint)
+
+        print("Accepted two restraints that share one explicit tag")
+    finally:
+        second.close()
+        restraint.close()
+        force_manager.close()
+
+    return
+
+
+def check_subscription_lifecycle(
+    psf: apo.CharmmPsf, parameters: apo.CharmmParameters, larger_psf: apo.CharmmPsf
+) -> None:
+    print(
+        "Checking subscription before and after initialization, duplicates, "
+        "unsubscription, and resubscription..."
+    )
+
+    case: CharmmCase = CHARMM_CASES[0]
+    phase: CharmmPhase = case.phases[0]
+    coordinates: list[list[float]] = evaluated_coordinates(case)
+
+    force_manager = make_force_manager(psf, parameters)
+    restraint = apo.GeometricRestraintForce(psf)
+    context: apo.CharmmContext | None = None
+
+    try:
+        force_manager.subscribe(restraint)
+
+        apo_test.assert_equal(
+            "subscribing before CharmmContext construction does not initialize",
+            force_manager.isInitialized(),
+            False,
+        )
+
+        context = make_context(force_manager)
+        baseline: ManagerOutput = evaluate(force_manager, context, coordinates)
+
+        add_charmm_terms(restraint, psf, phase.terms, False)
+        check_manager_output(
+            "Terms added after subscription before initialization",
+            phase,
+            baseline,
+            evaluate(force_manager, context, coordinates),
+        )
+
+        apo_test.expect_invalid_argument(
+            "ForceManager.subscribe rejects a duplicate subscription",
+            lambda: force_manager.subscribe(restraint),
+            "Force is already subscribed to this ForceManager",
+            expected_context=SUBSCRIBE_CONTEXT,
+        )
+        apo_test.expect_invalid_argument(
+            "ForceManager.subscribe rejects a duplicate under another tag",
+            lambda: force_manager.subscribe(restraint, "second-tag"),
+            "Force is already subscribed to this ForceManager",
+            expected_context=SUBSCRIBE_CONTEXT,
+        )
+        check_manager_output(
+            "Rejected duplicates add no second contribution",
+            phase,
+            baseline,
+            evaluate(force_manager, context, coordinates),
+        )
+
+        force_manager.unsubscribe(restraint)
+
+        check_no_contribution(
+            "Unsubscribed restraint",
+            baseline,
+            evaluate(force_manager, context, coordinates),
+        )
+        apo_test.expect_invalid_argument(
+            "ForceManager.unsubscribe rejects a restraint that is not subscribed",
+            lambda: force_manager.unsubscribe(restraint),
+            "Force is not subscribed to this ForceManager",
+            expected_context=UNSUBSCRIBE_CONTEXT,
+        )
+
+        force_manager.subscribe(restraint, "resubscribed")
+
+        check_manager_output(
+            "Resubscription keeps the installed terms",
+            phase,
+            baseline,
+            evaluate(force_manager, context, coordinates),
+        )
+
+        force_manager.unsubscribe(restraint)
+
+        late = apo.GeometricRestraintForce(psf)
+
+        try:
+            add_charmm_terms(late, psf, phase.terms, True)
+            force_manager.subscribe(late)
+
+            check_manager_output(
+                "Restraint subscribed after initialization",
+                phase,
+                baseline,
+                evaluate(force_manager, context, coordinates),
+            )
+
+            force_manager.unsubscribe(late)
+        finally:
+            late.close()
+
+        mismatched = apo.GeometricRestraintForce(larger_psf)
+
+        try:
+            apo_test.expect_invalid_argument(
+                "an initialized manager rejects a restraint for another atom count",
+                lambda: force_manager.subscribe(mismatched),
+                f"Initialization atom count mismatch; expected {LARGER_NUM_ATOMS}, "
+                f"observed {NUM_ATOMS}",
+                expected_context=SUBSCRIBE_CONTEXT,
+            )
+            apo_test.expect_invalid_argument(
+                "the rejected restraint is not subscribed",
+                lambda: force_manager.unsubscribe(mismatched),
+                "Force is not subscribed to this ForceManager",
+                expected_context=UNSUBSCRIBE_CONTEXT,
+            )
+        finally:
+            mismatched.close()
+
+        closed = apo.GeometricRestraintForce(psf)
+        closed.close()
+
+        expect_closed_handle(
+            "ForceManager.subscribe rejects a restraint closed before subscription",
+            lambda: force_manager.subscribe(closed),
+        )
+        check_no_contribution(
+            "Rejected subscriptions",
+            baseline,
+            evaluate(force_manager, context, coordinates),
+        )
+    finally:
+        if context is not None:
+            context.close()
+
+        restraint.close()
+        force_manager.close()
+
+    return
+
+
+def check_manager_retention(
+    psf: apo.CharmmPsf, parameters: apo.CharmmParameters
+) -> None:
+    print("Checking wrapper retention and closure while subscribed...")
+
+    case: CharmmCase = CHARMM_CASES[0]
+    phase: CharmmPhase = case.phases[0]
+    coordinates: list[list[float]] = evaluated_coordinates(case)
+
+    force_manager = make_force_manager(psf, parameters)
+
+    try:
+        context = make_context(force_manager)
+
+        try:
+            baseline: ManagerOutput = evaluate(force_manager, context, coordinates)
+
+            retained = apo.GeometricRestraintForce(psf)
+            retained_weak: weakref.ref[apo.GeometricRestraintForce] = weakref.ref(
+                retained
+            )
+
+            add_charmm_terms(retained, psf, phase.terms, False)
+            force_manager.subscribe(retained)
+            del retained
+            gc.collect()
+
+            apo_test.assert_equal(
+                "ForceManager retains a subscribed wrapper",
+                retained_weak() is not None,
+                True,
+            )
+            check_manager_output(
+                "Retained wrapper",
+                phase,
+                baseline,
+                evaluate(force_manager, context, coordinates),
+            )
+
+            force_manager.unsubscribe(
+                cast(apo.GeometricRestraintForce, retained_weak())
+            )
+            gc.collect()
+
+            apo_test.assert_equal(
+                "unsubscription releases the retained wrapper",
+                retained_weak() is None,
+                True,
+            )
+
+            rejected = apo.GeometricRestraintForce(psf)
+            rejected_weak: weakref.ref[apo.GeometricRestraintForce] = weakref.ref(
+                rejected
+            )
+
+            force_manager.subscribe(rejected)
+            apo_test.expect_invalid_argument(
+                "a duplicate subscription is rejected",
+                lambda: force_manager.subscribe(rejected),
+                "Force is already subscribed to this ForceManager",
+                expected_context=SUBSCRIBE_CONTEXT,
+            )
+            force_manager.unsubscribe(rejected)
+            apo_test.expect_invalid_argument(
+                "an empty tag is rejected",
+                lambda: force_manager.subscribe(rejected, ""),
+                "Force tag must not be empty",
+                expected_context=SUBSCRIBE_CONTEXT,
+            )
+            rejected.close()
+            expect_closed_handle(
+                "a closed restraint is rejected",
+                lambda: force_manager.subscribe(rejected),
+            )
+            del rejected
+            gc.collect()
+
+            apo_test.assert_equal(
+                "failed subscriptions retain no wrapper",
+                rejected_weak() is None,
+                True,
+            )
+
+            closed = apo.GeometricRestraintForce(psf)
+            closed_weak: weakref.ref[apo.GeometricRestraintForce] = weakref.ref(closed)
+
+            force_manager.subscribe(closed)
+            add_charmm_terms(closed, psf, phase.terms, True)
+            closed.close()
+
+            check_manager_output(
+                "Native subscription after closing its wrapper",
+                phase,
+                baseline,
+                evaluate(force_manager, context, coordinates),
+            )
+            expect_closed_handle(
+                "a closed wrapper can no longer identify its subscription",
+                lambda: force_manager.unsubscribe(closed),
+            )
+
+            del closed
+            gc.collect()
+
+            apo_test.assert_equal(
+                "ForceManager keeps the closed wrapper it could not unsubscribe",
+                closed_weak() is not None,
+                True,
+            )
+        finally:
+            context.close()
+    finally:
+        force_manager.close()
+
+    gc.collect()
+
+    apo_test.assert_equal(
+        "ForceManager.close() releases the retained wrapper",
+        closed_weak() is None,
+        True,
+    )
+
+    return
+
+
+def check_force_manager_lifetime(
+    psf: apo.CharmmPsf, parameters: apo.CharmmParameters
+) -> None:
+    print("Checking a restraint that outlives its ForceManager wrapper...")
+
+    case: CharmmCase = CHARMM_CASES[1]
+    phase: CharmmPhase = case.phases[0]
+    coordinates: list[list[float]] = evaluated_coordinates(case)
+
+    restraint = apo.GeometricRestraintForce(psf)
+
+    try:
+        first = make_force_manager(psf, parameters)
+        first.subscribe(restraint)
+        first.close()
+
+        expect_closed_handle(
+            "a closed ForceManager cannot unsubscribe the restraint",
+            lambda: first.unsubscribe(restraint),
+        )
+
+        restraint.setMasses(case.masses)
+        add_charmm_terms(restraint, psf, phase.terms, False)
+
+        second = make_force_manager(psf, parameters)
+
+        try:
+            context = make_context(second)
+
+            try:
+                baseline: ManagerOutput = evaluate(second, context, coordinates)
+                second.subscribe(restraint)
+
+                check_manager_output(
+                    "Restraint subscribed to a second ForceManager",
+                    phase,
+                    baseline,
+                    evaluate(second, context, coordinates),
+                )
+
+                second.unsubscribe(restraint)
+            finally:
+                context.close()
+        finally:
+            second.close()
+    finally:
+        restraint.close()
+
+    return
+
+
+def check_context_manager_closure(
+    psf: apo.CharmmPsf, parameters: apo.CharmmParameters
+) -> None:
+    print("Checking context-manager closure of subscribed restraints...")
+
+    case: CharmmCase = CHARMM_CASES[2]
+    phase: CharmmPhase = case.phases[0]
+    coordinates: list[list[float]] = evaluated_coordinates(case)
+
+    force_manager = make_force_manager(psf, parameters)
+
+    try:
+        context = make_context(force_manager)
+
+        try:
+            baseline: ManagerOutput = evaluate(force_manager, context, coordinates)
+
+            with apo.GeometricRestraintForce(psf) as managed:
+                force_manager.subscribe(managed)
+                add_charmm_terms(managed, psf, phase.terms, False)
+
+                check_manager_output(
+                    "Restraint subscribed inside a with block",
+                    phase,
+                    baseline,
+                    evaluate(force_manager, context, coordinates),
+                )
+
+                force_manager.unsubscribe(managed)
+
+            expect_closed_handle(
+                "with-block exit closes the unsubscribed restraint", managed.reset
+            )
+            check_no_contribution(
+                "Restraint unsubscribed inside a with block",
+                baseline,
+                evaluate(force_manager, context, coordinates),
+            )
+
+            with apo.GeometricRestraintForce(psf) as left_subscribed:
+                force_manager.subscribe(left_subscribed)
+                add_charmm_terms(left_subscribed, psf, phase.terms, True)
+
+            expect_closed_handle(
+                "with-block exit closes the subscribed restraint",
+                left_subscribed.reset,
+            )
+            check_manager_output(
+                "Native subscription after with-block exit",
+                phase,
+                baseline,
+                evaluate(force_manager, context, coordinates),
+            )
+            expect_closed_handle(
+                "a restraint closed by with-block exit cannot be unsubscribed",
+                lambda: force_manager.unsubscribe(left_subscribed),
+            )
+        finally:
+            context.close()
+    finally:
+        force_manager.close()
+
+    return
+
+
+def check_periodic_boundary_conditions(
+    psf: apo.CharmmPsf, parameters: apo.CharmmParameters
+) -> None:
+    print("Checking P1 enforcement while subscribed and after unsubscription...")
+
+    case: CharmmCase = CHARMM_CASES[3]
+    phase: CharmmPhase = case.phases[0]
+    coordinates: list[list[float]] = evaluated_coordinates(case)
+    p21_diagnostic: str = (
+        "Subscribed force does not support periodic boundary condition value 2"
+    )
+
+    restraint = apo.GeometricRestraintForce(psf)
+
+    try:
+        force_manager = make_force_manager(psf, parameters)
+
+        try:
+            force_manager.subscribe(restraint)
+            context = make_context(force_manager)
+
+            try:
+                baseline: ManagerOutput = evaluate(force_manager, context, coordinates)
+                add_charmm_terms(restraint, psf, phase.terms, False)
+
+                rejected_conditions: list[tuple[str, int, str]] = [
+                    ("P21", apo.PeriodicBoundaryCondition.P21, p21_diagnostic),
+                    ("the integer value of P21", 2, p21_diagnostic),
+                    (
+                        "the UNSET sentinel",
+                        apo.PeriodicBoundaryCondition.UNSET,
+                        "Periodic boundary condition must be PBC::P1 or PBC::P21; "
+                        "observed 0",
+                    ),
+                ]
+
+                for label, pbc, diagnostic in rejected_conditions:
+                    apo_test.expect_invalid_argument(
+                        f"a subscribed restraint rejects {label}",
+                        lambda pbc=pbc: force_manager.setPeriodicBoundaryCondition(pbc),
+                        diagnostic,
+                        expected_context=SET_PBC_CONTEXT,
+                    )
+
+                invalid_values: list[object] = [99, -1, "P21"]
+
+                for value in invalid_values:
+                    error: ValueError = apo_test.expect_exception(
+                        f"the Python enum layer rejects {value!r}",
+                        ValueError,
+                        lambda value=value: force_manager.setPeriodicBoundaryCondition(
+                            cast(int, value)
+                        ),
+                    )
+                    apo_test.assert_equal(
+                        f"the Python enum layer rejects {value!r} message",
+                        str(error),
+                        f"invalid pbc: {value!r}",
+                    )
+
+                force_manager.setPeriodicBoundaryCondition(
+                    apo.PeriodicBoundaryCondition.P1
+                )
+
+                apo_test.assert_equal(
+                    "rejected changes leave the manager in P1",
+                    force_manager.getPeriodicBoundaryCondition(),
+                    apo.PeriodicBoundaryCondition.P1,
+                )
+                check_manager_output(
+                    "Subscription after rejected PBC changes",
+                    phase,
+                    baseline,
+                    evaluate(force_manager, context, coordinates),
+                )
+
+                force_manager.unsubscribe(restraint)
+            finally:
+                context.close()
+        finally:
+            force_manager.close()
+
+        unsubscribed_manager = make_force_manager(psf, parameters)
+
+        try:
+            unsubscribed_manager.subscribe(restraint)
+            unsubscribed_manager.unsubscribe(restraint)
+            unsubscribed_manager.setPeriodicBoundaryCondition(
+                apo.PeriodicBoundaryCondition.P21
+            )
+
+            apo_test.assert_equal(
+                "an unsubscribed restraint no longer constrains the manager",
+                unsubscribed_manager.getPeriodicBoundaryCondition(),
+                apo.PeriodicBoundaryCondition.P21,
+            )
+            apo_test.expect_invalid_argument(
+                "ForceManager.subscribe requires P1",
+                lambda: unsubscribed_manager.subscribe(restraint),
+                p21_diagnostic,
+                expected_context=SUBSCRIBE_CONTEXT,
+            )
+
+            unsubscribed_manager.setPeriodicBoundaryCondition(
+                apo.PeriodicBoundaryCondition.P1
+            )
+            context = make_context(unsubscribed_manager)
+
+            try:
+                baseline = evaluate(unsubscribed_manager, context, coordinates)
+                unsubscribed_manager.subscribe(restraint)
+
+                check_manager_output(
+                    "Subscription after restoring P1",
+                    phase,
+                    baseline,
+                    evaluate(unsubscribed_manager, context, coordinates),
+                )
+
+                unsubscribed_manager.unsubscribe(restraint)
+            finally:
+                context.close()
+        finally:
+            unsubscribed_manager.close()
+    finally:
+        restraint.close()
+
+    return
+
+
+def check_input_lifetimes_through_manager(
+    psf_path: Path, psf: apo.CharmmPsf, parameters: apo.CharmmParameters
+) -> None:
+    print("Checking PSF, selection, and reference lifetimes through ForceManager...")
+
+    force_manager = make_force_manager(psf, parameters)
+
+    try:
+        context = make_context(force_manager)
+
+        try:
+            for case, use_atom_references in (
+                (CHARMM_CASES[7], False),
+                (CHARMM_CASES[2], True),
+            ):
+                phase: CharmmPhase = case.phases[0]
+                coordinates: list[list[float]] = evaluated_coordinates(case)
+
+                source_psf = apo.CharmmPsf(str(psf_path))
+                source_psf_weak: weakref.ref[apo.CharmmPsf] = weakref.ref(source_psf)
+                restraint = apo.GeometricRestraintForce(source_psf)
+
+                try:
+                    source_psf.close()
+                    del source_psf
+                    gc.collect()
+
+                    apo_test.assert_equal(
+                        f"{case.name}: the restraint retains no PSF wrapper",
+                        source_psf_weak() is None,
+                        True,
+                    )
+
+                    atom_psf = apo.CharmmPsf(str(psf_path))
+                    add_charmm_terms(
+                        restraint, atom_psf, phase.terms, use_atom_references
+                    )
+                    atom_psf.close()
+                    restraint.setMasses(case.masses)
+
+                    baseline: ManagerOutput = evaluate(
+                        force_manager, context, coordinates
+                    )
+                    force_manager.subscribe(restraint)
+
+                    try:
+                        check_manager_output(
+                            f"{case.name} after closing every input wrapper",
+                            phase,
+                            baseline,
+                            evaluate(force_manager, context, coordinates),
+                        )
+                    finally:
+                        force_manager.unsubscribe(restraint)
+                finally:
+                    restraint.close()
+        finally:
+            context.close()
+    finally:
+        force_manager.close()
+
+    return
+
+
+def check_mutation_while_subscribed(
+    psf: apo.CharmmPsf, parameters: apo.CharmmParameters
+) -> None:
+    print("Checking mass replacement, reset, and reuse while subscribed...")
+
+    force_manager = make_force_manager(psf, parameters)
+
+    try:
+        context = make_context(force_manager)
+
+        try:
+            restraint = apo.GeometricRestraintForce(psf)
+
+            try:
+                force_manager.subscribe(restraint)
+
+                first: CharmmCase = RCM_MASS_CASES[0]
+                coordinates: list[list[float]] = evaluated_coordinates(first)
+                baseline: ManagerOutput = evaluate(force_manager, context, coordinates)
+
+                restraint.setMasses(first.masses)
+                add_charmm_terms(restraint, psf, first.phases[0].terms, False)
+
+                for case in RCM_MASS_CASES:
+                    restraint.setMasses(case.masses)
+
+                    check_manager_output(
+                        f"{case.name} after replacing masses while subscribed",
+                        case.phases[0],
+                        baseline,
+                        evaluate(force_manager, context, coordinates),
+                    )
+
+                force_manager.unsubscribe(restraint)
+            finally:
+                restraint.close()
+
+            restraint = apo.GeometricRestraintForce(psf)
+
+            try:
+                force_manager.subscribe(restraint)
+
+                case = RESET_REUSE_CASE
+                before_reset, after_reset = case.phases
+                coordinates = evaluated_coordinates(case)
+                baseline = evaluate(force_manager, context, coordinates)
+
+                restraint.setMasses(case.masses)
+                add_charmm_terms(restraint, psf, before_reset.terms, True)
+
+                check_manager_output(
+                    f"{case.name}, {before_reset.name}",
+                    before_reset,
+                    baseline,
+                    evaluate(force_manager, context, coordinates),
+                )
+
+                restraint.reset()
+
+                check_no_contribution(
+                    f"{case.name}, after reset",
+                    baseline,
+                    evaluate(force_manager, context, coordinates),
+                )
+
+                restraint.reset()
+
+                check_no_contribution(
+                    f"{case.name}, after a repeated reset",
+                    baseline,
+                    evaluate(force_manager, context, coordinates),
+                )
+
+                add_charmm_terms(restraint, psf, after_reset.terms, False)
+
+                check_manager_output(
+                    f"{case.name}, {after_reset.name}",
+                    after_reset,
+                    baseline,
+                    evaluate(force_manager, context, coordinates),
+                )
+
+                force_manager.unsubscribe(restraint)
+            finally:
+                restraint.close()
+        finally:
+            context.close()
+    finally:
+        force_manager.close()
+
+    return
+
+
+def check_charmm_numerics(psf: apo.CharmmPsf, parameters: apo.CharmmParameters) -> None:
+    print("Checking CHARMM energies and forces through ForceManager...")
+
+    force_manager = make_force_manager(psf, parameters)
+
+    try:
+        context = make_context(force_manager)
+
+        try:
+            for case in CHARMM_CASES:
+                run_charmm_case(psf, force_manager, context, case, False)
+
+                selections: list[apo.AtomSelection] = [
+                    select(psf, term.atoms)
+                    for phase in case.phases
+                    for term in phase.terms
+                ]
+
+                try:
+                    single_atom_terms: bool = all(
+                        selection.getNumSelected() == 1 for selection in selections
+                    )
+                finally:
+                    for selection in selections:
+                        selection.close()
+
+                if single_atom_terms:
+                    run_charmm_case(psf, force_manager, context, case, True)
+        finally:
+            context.close()
+    finally:
+        force_manager.close()
+
+    return
+
+
+def check_many_terms(
+    psf: apo.CharmmPsf, parameters: apo.CharmmParameters, larger_psf: apo.CharmmPsf
+) -> None:
+    print("Checking more than 100 terms and more than 100 selected atoms...")
+
+    case: CharmmCase = CHARMM_CASES[0]
+    phase: CharmmPhase = case.phases[0]
+    coordinates: list[list[float]] = evaluated_coordinates(case)
+    count: int = DUPLICATE_TERM_COUNT
+    duplicates = CharmmPhase(
+        f"{count} copies of one term",
+        phase.terms,
+        count * phase.energy,
+        {
+            atom: (count * force[0], count * force[1], count * force[2])
+            for atom, force in phase.forces.items()
+        },
+        count * phase.energy_tolerance,
+        count * phase.force_tolerance,
+    )
+
+    force_manager = make_force_manager(psf, parameters)
+
+    try:
+        context = make_context(force_manager)
+
+        try:
+            restraint = apo.GeometricRestraintForce(psf)
+
+            try:
+                force_manager.subscribe(restraint)
+                baseline: ManagerOutput = evaluate(force_manager, context, coordinates)
+
+                for copy in range(count):
+                    add_charmm_terms(restraint, psf, phase.terms, copy % 2 == 1)
+
+                check_manager_output(
+                    f"{case.name}, {duplicates.name}",
+                    duplicates,
+                    baseline,
+                    evaluate(force_manager, context, coordinates),
+                )
+
+                force_manager.unsubscribe(restraint)
+            finally:
+                restraint.close()
+        finally:
+            context.close()
+    finally:
+        force_manager.close()
+
+    larger_restraint = apo.GeometricRestraintForce(larger_psf)
+    larger_all = select(larger_psf, "all")
+
+    try:
+        apo_test.assert_equal(
+            "larger selection size", larger_all.getNumSelected(), LARGER_NUM_ATOMS
+        )
+
+        for selection_mode in apo.GeometricRestraintSelectionMode:
+            for addition in make_term_additions(
+                larger_restraint, SYMMETRIC, selection_mode
+            ):
+                addition.add(larger_all)
+
+        larger_restraint.setMasses([2.0 * mass for mass in larger_psf.getMasses()])
+        larger_restraint.reset()
+    finally:
+        larger_all.close()
+        larger_restraint.close()
+
+    return
+
+
 def main(argc: int, argv: list[str]) -> int:
     repo_root: Path = Path(argv[1]) if argc > 1 else Path(".")
     output_dir: Path = repo_root / "test/pytest"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     psf_path: Path = output_dir / "tmp_python_api_geometric_restraint_force.psf"
+    parameter_path: Path = output_dir / "tmp_python_api_geometric_restraint_force.prm"
     apo_test.remove_if_exists(psf_path)
+    apo_test.remove_if_exists(parameter_path)
 
     larger_psf_path: str = apo_test.require_file(apo_test.get_data_dir() / "1lvz.psf")
 
     try:
         apo_test.write_text_file(psf_path, TEST_PSF_TEXT)
+        apo_test.write_text_file(parameter_path, TEST_PARAMETER_TEXT)
 
         check_exports_and_enums()
 
         psf = apo.CharmmPsf(str(psf_path))
         second_psf = apo.CharmmPsf(str(psf_path))
         larger_psf = apo.CharmmPsf(larger_psf_path)
+        parameters = apo.CharmmParameters(str(parameter_path))
 
         try:
             apo_test.assert_equal("test PSF atom count", psf.getNumAtoms(), NUM_ATOMS)
@@ -1893,12 +3558,24 @@ def main(argc: int, argv: list[str]) -> int:
             check_reset_preserves_masses(psf)
             check_geometry_arguments(psf)
             check_terms_charmm_accepts(psf)
+            check_subscription_tags(psf, parameters)
+            check_subscription_lifecycle(psf, parameters, larger_psf)
+            check_manager_retention(psf, parameters)
+            check_force_manager_lifetime(psf, parameters)
+            check_context_manager_closure(psf, parameters)
+            check_periodic_boundary_conditions(psf, parameters)
+            check_input_lifetimes_through_manager(psf_path, psf, parameters)
+            check_mutation_while_subscribed(psf, parameters)
+            check_charmm_numerics(psf, parameters)
+            check_many_terms(psf, parameters, larger_psf)
         finally:
+            parameters.close()
             larger_psf.close()
             second_psf.close()
             psf.close()
     finally:
         print("Cleaning up GeometricRestraintForce Python API test files...")
+        apo_test.remove_if_exists(parameter_path)
         apo_test.remove_if_exists(psf_path)
 
     print(

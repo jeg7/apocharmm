@@ -9,6 +9,7 @@
 
 #include "apocharmm_c/DistanceRestraintForce.h"
 #include "apocharmm_c/detail/AtomReferenceHandle.h"
+#include "apocharmm_c/detail/CharmmPsfHandle.h"
 #include "apocharmm_c/detail/DistanceRestraintForceHandle.h"
 #include "apocharmm_c/detail/ErrorInternal.h"
 #include "apocharmm_c/detail/ForceManagerHandle.h"
@@ -22,7 +23,7 @@
 
 extern "C" apo_status
 apo_distance_restraint_force_create(apo_distance_restraint_force **out,
-                                    const int num_atoms) {
+                                    const apo_charmm_psf *psf) {
   const char *function_name = "apo_distance_restraint_force_create";
 
   return apocharmm_c::guard(
@@ -31,12 +32,16 @@ apo_distance_restraint_force_create(apo_distance_restraint_force **out,
             apocharmm_c::prepare_output_pointer<apo_distance_restraint_force>(
                 out, function_name, "out"));
 
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_charmm_psf>(
+                psf, function_name, "CharmmPsf"));
+
         std::unique_ptr<apo_distance_restraint_force> handle(
             new apo_distance_restraint_force());
 
         handle->object =
             std::make_shared<DistanceRestraintForce<long long int, float>>(
-                num_atoms);
+                psf->object);
 
         *out = handle.release();
 

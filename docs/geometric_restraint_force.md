@@ -71,18 +71,14 @@ atom-to-reference or center-to-reference displacements are not minimum-imaged.
 Changing only the stored box lengths leaves the geometric contribution
 unchanged. Other force-field contributions can still change with the box.
 
-The complete external virial tensor is:
-
-```text
-W_ab = sum over atoms i of r_i,a * gradient_i,b
-```
-
-It uses raw absolute positions and the double-precision gradient accumulated at
-each atom before conversion to fixed point. RCM terms use each atom's
-distributed gradient in this sum. Components are stored in
-`XX, XY, XZ, YX, YY, YZ, ZX, ZY, ZZ` order. The tensor need not be symmetric or
-translation invariant. This is the external coordinate-gradient tensor; it does
-not define CHARMM's internal pressure accumulator.
+The restraint contributes no virial. CHARMM forms its internal virial before it
+evaluates GEO restraints, so their forces enter neither that virial nor the
+pressure derived from it. The terms are also anchored at fixed points in space,
+and their net force need not vanish, so a coordinate-gradient moment would
+depend on the choice of origin. `contributesVirial` is therefore false:
+ForceManager passes `calcVirial == false` to the restraint and leaves it out of
+the aggregate virial, and a direct calculation ignores `calcVirial`. The
+restraint's own virial storage stays zero.
 
 ## Quick Start
 
@@ -135,9 +131,10 @@ int main() {
 
 The context initializes the fully configured manager. Subscription then
 initializes the restraint with the manager's atom count and box. Normal manager
-evaluation clears the requested outputs and includes the restraint's energy,
-gradient, and tensor. The printed energy table includes the ordinary force field
-as well as MMFP; it is not an isolated restraint-energy report.
+evaluation clears the requested outputs and includes the restraint's energy and
+gradient; the restraint adds nothing to the virial. The printed energy table
+includes the ordinary force field as well as MMFP; it is not an isolated
+restraint-energy report.
 
 ## Construction and Required State
 
@@ -174,7 +171,9 @@ force's mass snapshot; use `setMasses()` to replace it.
 ForceManager retains shared ownership of a subscribed force and its supplied
 resources. Pass the stream, force array, and energy-virial object belonging to
 that same force. Unsubscription releases the manager's owners without resetting
-the force, which can subsequently be reused or resubscribed.
+the force, which can subsequently be reused or resubscribed. The Python
+`ForceManager` also retains a subscribed Python wrapper until unsubscription or
+`close()`.
 
 `getForce()` and `getEnergyVirial()` return shared owners that can preserve
 output allocations after force destruction. `getStream()` shares only the host
@@ -199,7 +198,7 @@ AKMA-compatible quantities:
 | Coordinates | Borrowed device `float4[N]` | Angstroms in `x`, `y`, `z`; charge `w` ignored |
 | Force output | `Force<long long int>` | Fixed-point potential gradient, scale `2^40` |
 | Energy | `CudaEnergyVirial` term `mmfp` | Kilocalories per mole |
-| Virial | Nine components in `Virial_t::virmat` | Kilocalories per mole |
+| Virial | Nine components in `Virial_t::virmat` | Never written by this force; remain zero |
 
 Force components use structure-of-arrays storage at offsets zero, `stride()`,
 and `2 * stride()`. Divide each stored integer by `2^40` to recover the gradient
@@ -233,7 +232,8 @@ the caller or manager. CUDA failures do not provide an output rollback guarantee
 addition, force-wide mass replacement, reset, and force-manager subscription
 for the `GeometricRestraintForce<long long int, float>` specialization. It does
 not expose direct calculation or output access; a subscribed manager evaluates
-the restraint.
+the restraint, and the ForceManager output functions report the aggregate
+energy, physical forces, and virial.
 
 ### Ownership, borrowing, and lifetime
 
@@ -331,28 +331,33 @@ initialization. They do not require resubscription or replace output owners.
 | `addPlane`, `addCylinder`, `addSphere` | Append copied terms; update device mirrors before use |
 | `setMasses` | Validate every installed RCM selection and replace the force-wide mass vector |
 | `reset` | Remove all terms; preserve masses, box, resources, and current output |
-| `clear()` | Clear force, energy, and tensor output; retain configuration |
+| `clear()` | Clear force, energy, and virial output; retain configuration |
 | `clear(calcEnergy, calcVirial)` | Clear forces and only the requested optional outputs |
-| `calcForce` | Accumulate gradients and requested energy/tensor; preserve disabled outputs |
+| `calcForce` | Accumulate gradients and requested energy; ignore `calcVirial`; preserve a disabled energy |
 
-Preserved energy or tensor values can be stale for new coordinates. After reset,
+A preserved energy can be stale for new coordinates. After reset,
 new terms may be added immediately. A calculation with no terms contributes
 nothing and does not clear, validate the coordinate pointer, or synchronize.
 
 ### Numerical and CUDA limits
 
-Geometry, RCM arithmetic, and ordered accumulation use double precision. `CT`
-selects only the final Cartesian-gradient conversion; both supported
-specializations consume `float4` coordinates. Choosing `CT = double` cannot
-recover coordinate precision lost at input, especially with nearly cancelling
-signed RCM masses.
+Geometry, RCM reductions and centers, per-atom gradient sums, and the energy at
+each atom of an atomwise term or at each RCM center use `CT`. These energies
+are converted to double before they are summed, so the term energies and the
+energy total are double, as in the bonded force kernels. The configuration
+(directions, offsets, force constants, masses, and RCM totals) is prepared on
+the host in double precision and converted to `CT` when the kernels read it.
+The C ABI and Python API use `CT = float`. Both supported specializations
+consume `float4` coordinates, so choosing `CT = double` cannot recover
+coordinate precision lost at input, especially with nearly cancelling signed
+RCM masses.
 
-Before fixed-point conversion, gradient components must lie in
-`[-8388608, 8388608)`. Conversion through `CT` and addition to existing output
-must also remain representable. Finite input values alone do not guarantee
-finite intermediate products, centers, energies, or tensors. Directions require
-a positive finite `std::hypot` norm; this typed envelope does not reproduce
-every CHARMM text-parser underflow or overflow path.
+Before fixed-point conversion, each summed gradient component must lie in
+`[-8388608, 8388608)`, and its addition to existing output must remain
+representable. Finite input values alone do not guarantee
+finite intermediate products, centers, or energies. Directions require a
+positive finite `std::hypot` norm; this typed envelope does not reproduce every
+CHARMM text-parser underflow or overflow path.
 
 Serialize host configuration, calculation, clearing, subscription operations,
 and destruction. Mutate between manager evaluations after outstanding users of
@@ -404,32 +409,40 @@ selection-mode enumerations are in `python/apocharmm/enums.py`.
 
 Dirty host term mirrors are synchronized before use. RCM work first reduces
 mass-weighted coordinates. Geometry evaluation then writes private membership
-gradients and term energies. Output staging sums gradients per atom, checks
-conversion and addition, and constructs the tensor from the new double-gradient
-sum. A checked host synchronization precedes commitment to public outputs.
+gradients and term energies. Output staging sums gradients per atom and checks
+conversion and addition. A checked host synchronization precedes commitment to
+public outputs.
 
-`contributesVirial` and `computesVirial` are both true. ForceView dispatches
-selective clearing, P1 compatibility, initialization, box propagation, and
-calculation. ForceManager aggregates the supplied tensor once and skips its
-ordinary coordinate-gradient reconstruction for this force.
+`contributesVirial` is false. ForceView dispatches selective clearing, P1
+compatibility, initialization, box propagation, and calculation. ForceManager
+neither converts this force's fixed-point gradients for virial reconstruction
+nor adds its virial storage to the aggregate.
 
 ### Tests and extension constraints
 
 `test/unittests/unittest-geometricRestraintForce.cpp` covers native geometry,
-activation, signed masses, output controls, mutation, manager ownership and
-lifecycle, accumulation, dynamic capacity, and stable derivative checks.
+activation, signed masses, output controls, the absent virial contribution,
+mutation, manager ownership and lifecycle, accumulation, dynamic capacity, and
+stable derivative checks. Its float variants use single-precision tolerances,
+and the precision-envelope tests (near-cancelling or extreme masses,
+double-precision origins, and finite differences) run for `CT = double` only.
 `test/unittests/unittest-forceManager.cpp` covers the shared manager machinery.
 `test/unittests/unittest-capiGeometricRestraintForce.cpp` covers C ABI
 construction, ownership, borrowing, typed atom inputs, enumeration and array
 validation, status mapping, mass replacement, reset, manager subscription, tags,
 P1 enforcement, ownership and lifecycle, and comparisons with CHARMM c52a1
-energies, forces, and virials, evaluated through `ForceManager` in a
-twelve-atom system with no other interactions.
+energies and forces, with an unchanged aggregate virial, evaluated through
+`ForceManager` in a twelve-atom system with no other interactions and also read
+through the C ABI output functions.
 `test/pytest/python_api_geometric_restraint_force.py` covers Python
 construction, ownership and closure, typed atom inputs, enumeration and
-argument validation, mass conversion and replacement, and reset.
+argument validation, mass conversion and replacement, reset, `ForceManager`
+subscription with default, explicit, and invalid tags, wrapper and native
+retention, lifecycle and P1 enforcement, more than 100 terms, and comparisons
+with CHARMM c52a1 energies and forces, with an unchanged aggregate virial, read
+through `ForceManager`.
 The public potential enum contains only `HARMONIC`. Changes to representations,
-imaging, ordering, or tensor handling require corresponding numerical and
+imaging, ordering, or virial handling require corresponding numerical and
 lifecycle review; they are not additional modes implied by the current API.
 
 ## API Reference

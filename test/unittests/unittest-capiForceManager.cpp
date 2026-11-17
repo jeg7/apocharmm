@@ -300,6 +300,8 @@ TEST_CASE("CapiForceManagerValidatesEveryFunctionHandle") {
   int outputGrid[3] = {0, 0, 0};
   int integer = 0;
   apo_pbc pbc = APO_PBC_UNSET;
+  double outputForces[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  double outputVirial[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
   CheckForceManagerHandleValidation(
       "apo_force_manager_set_box_dimensions",
@@ -415,6 +417,21 @@ TEST_CASE("CapiForceManagerValidatesEveryFunctionHandle") {
       [&flag](apo_force_manager *forceManager) -> apo_status {
         return apo_force_manager_is_composite(&flag, forceManager);
       });
+  CheckForceManagerHandleValidation(
+      "apo_force_manager_get_potential_energy",
+      [&scalar](apo_force_manager *forceManager) -> apo_status {
+        return apo_force_manager_get_potential_energy(&scalar, forceManager);
+      });
+  CheckForceManagerHandleValidation(
+      "apo_force_manager_get_forces",
+      [&outputForces](apo_force_manager *forceManager) -> apo_status {
+        return apo_force_manager_get_forces(outputForces, 6, forceManager);
+      });
+  CheckForceManagerHandleValidation(
+      "apo_force_manager_get_virial",
+      [&outputVirial](apo_force_manager *forceManager) -> apo_status {
+        return apo_force_manager_get_virial(outputVirial, 9, forceManager);
+      });
 }
 
 TEST_CASE("CapiForceManagerValidatesPointersBuffersAndEnums") {
@@ -514,6 +531,21 @@ TEST_CASE("CapiForceManagerValidatesPointersBuffersAndEnums") {
       apo_force_manager_is_composite(nullptr, forceManager.get()),
       APO_STATUS_INVALID_ARGUMENT,
       "apo_force_manager_is_composite: flag is NULL");
+
+  CheckStatusAndDiagnostic(
+      apo_force_manager_get_potential_energy(nullptr, forceManager.get()),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_force_manager_get_potential_energy: energy is NULL");
+
+  double outputVirial[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  CheckStatusAndDiagnostic(
+      apo_force_manager_get_virial(nullptr, 9, forceManager.get()),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_force_manager_get_virial: Virial output buffer is NULL");
+  CheckStatusAndDiagnostic(
+      apo_force_manager_get_virial(outputVirial, 8, forceManager.get()),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_force_manager_get_virial: Virial output buffer is too small");
 }
 
 TEST_CASE("CapiForceManagerMapsNativeValidationErrors") {
@@ -626,6 +658,126 @@ TEST_CASE("CapiForceManagerMapsNativeValidationErrors") {
                    "apo_force_manager_set_vdw_type", "InvalidArgument",
                    "Van der Waals type must be in [1, 6]; observed 7",
                    "setVdwType");
+}
+
+TEST_CASE("CapiForceManagerOutputsRequireInitialization") {
+  ForceManagerInputs inputs;
+  ForceManagerHandle forceManager = MakeForceManager(inputs);
+  apo_status status = APO_STATUS_OK;
+
+  double energy = 17.0;
+  CHECK_NOTHROW((status = apo_force_manager_get_potential_energy(
+                     &energy, forceManager.get())));
+  CheckNativeError(status, APO_STATUS_NOT_INITIALIZED,
+                   "apo_force_manager_get_potential_energy", "NotInitialized",
+                   "ForceManager must be initialized before this operation",
+                   "checkInitialized");
+  CHECK(energy == 17.0);
+
+  const std::vector<double> sentinel(9, 17.0);
+  std::vector<double> forces = sentinel;
+  CHECK_NOTHROW((status = apo_force_manager_get_forces(
+                     forces.data(), forces.size(), forceManager.get())));
+  CheckNativeError(status, APO_STATUS_NOT_INITIALIZED,
+                   "apo_force_manager_get_forces", "NotInitialized",
+                   "ForceManager must be initialized before this operation",
+                   "checkInitialized");
+  CHECK(forces == sentinel);
+
+  CHECK_NOTHROW(
+      (status = apo_force_manager_get_forces(nullptr, 0, forceManager.get())));
+  CheckNativeError(status, APO_STATUS_NOT_INITIALIZED,
+                   "apo_force_manager_get_forces", "NotInitialized",
+                   "ForceManager must be initialized before this operation",
+                   "checkInitialized");
+
+  std::vector<double> virial = sentinel;
+  CHECK_NOTHROW((status = apo_force_manager_get_virial(
+                     virial.data(), virial.size(), forceManager.get())));
+  CheckNativeError(status, APO_STATUS_NOT_INITIALIZED,
+                   "apo_force_manager_get_virial", "NotInitialized",
+                   "ForceManager must be initialized before this operation",
+                   "checkInitialized");
+  CHECK(virial == sentinel);
+}
+
+TEST_CASE("CapiForceManagerCopiesAggregateOutputs") {
+  ForceManagerInputs inputs;
+  ForceManagerHandle forceManager = MakeForceManager(inputs);
+
+  const double boxDimensions[3] = {50.0, 50.0, 50.0};
+  REQUIRE(apo_force_manager_set_box_dimensions(
+              forceManager.get(), boxDimensions, 3) == APO_STATUS_OK);
+
+  // CharmmContext normally selects the GPU and caches its launch limits in its
+  // constructor. This test drives the ForceManager directly, so it does the
+  // same first.
+  std::vector<int> devices;
+  start_gpu(1, 1, 0, devices);
+
+  ForceManager &manager = *forceManager->object;
+  manager.initialize();
+
+  const std::vector<double> &charges = inputs.psf->getCharges();
+  CudaContainer<float4> xyzq(std::vector<float4>{
+      make_float4(0.0f, 0.0f, 0.0f, static_cast<float>(charges[0])),
+      make_float4(2.82f, 2.82f, 2.82f, static_cast<float>(charges[1]))});
+  manager.resetNeighborList(xyzq.getDeviceArray().data());
+  manager.calcForce(xyzq.getDeviceArray().data(), false, true, true);
+
+  double energy = 17.0;
+  CHECK(apo_force_manager_get_potential_energy(&energy, forceManager.get()) ==
+        APO_STATUS_OK);
+  CudaContainer<double> &nativeEnergy = manager.getPotentialEnergy();
+  nativeEnergy.transferToHost();
+  CHECK(energy == nativeEnergy[0]);
+
+  std::vector<double> gradientX(2);
+  std::vector<double> gradientY(2);
+  std::vector<double> gradientZ(2);
+  manager.getForces()->getXYZ(gradientX.data(), gradientY.data(),
+                              gradientZ.data());
+
+  std::vector<double> forces(7, 17.0);
+  CHECK(apo_force_manager_get_forces(forces.data(), forces.size(),
+                                     forceManager.get()) == APO_STATUS_OK);
+  for (std::size_t atom = 0; atom < 2; atom++) {
+    CHECK(forces[3 * atom + 0] == -gradientX[atom]);
+    CHECK(forces[3 * atom + 1] == -gradientY[atom]);
+    CHECK(forces[3 * atom + 2] == -gradientZ[atom]);
+  }
+  CHECK(forces[6] == 17.0);
+
+  const std::vector<double> asymmetricVirial = {1.0, 2.0, 3.0, 4.0, 5.0,
+                                                6.0, 7.0, 8.0, 9.0};
+  copy_HtoD_sync<double>(
+      asymmetricVirial.data(),
+      manager.getBondedEnergyVirial().getVirialPointer()->virmat, 9);
+
+  std::vector<double> virial(10, 17.0);
+  CHECK(apo_force_manager_get_virial(virial.data(), virial.size(),
+                                     forceManager.get()) == APO_STATUS_OK);
+  const CudaContainer<double> &nativeVirial = manager.getVirial();
+  CHECK(nativeVirial[1] != nativeVirial[3]);
+  for (std::size_t i = 0; i < 9; i++)
+    CHECK(virial[i] == nativeVirial[i]);
+  CHECK(virial[9] == 17.0);
+
+  const std::vector<double> sentinel(6, 17.0);
+  std::vector<double> rejected = sentinel;
+  CheckStatusAndDiagnostic(
+      apo_force_manager_get_forces(nullptr, 6, forceManager.get()),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_force_manager_get_forces: Force output buffer is NULL");
+  CheckStatusAndDiagnostic(
+      apo_force_manager_get_forces(rejected.data(), 5, forceManager.get()),
+      APO_STATUS_INVALID_ARGUMENT,
+      "apo_force_manager_get_forces: Force output buffer is too small");
+  CHECK(rejected == sentinel);
+
+  CHECK(apo_force_manager_get_virial(virial.data(), 9, forceManager.get()) ==
+        APO_STATUS_OK);
+  CHECK(std::string(apo_last_error()).empty() == true);
 }
 
 TEST_CASE("CapiForceManagerMapsMissingPsf") {

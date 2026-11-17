@@ -13,8 +13,9 @@
 `GeometricRestraintForce` copies harmonic plane, cylinder, and sphere terms and
 force-wide masses through the C ABI. Every term-addition method accepts exactly
 one typed `AtomSelection` or `AtomReference`; raw atom indices are not part of
-this interface. Force calculation and native output access are not exposed
-directly by this module.
+this interface. The restraint can be subscribed to `ForceManager`, which
+evaluates it and reports the aggregate outputs; this module does not expose
+force calculation or native output access directly.
 
 @anchor python_geometric_restraint_force_module
 @see geometric_restraint_force
@@ -30,6 +31,7 @@ from .atom_selection import AtomSelection
 from .charmm_psf import CharmmPsf
 from .enums import GeometricRestraintActivation, GeometricRestraintSelectionMode
 from .error import configure_status_function
+from .force_manager import ForceManager
 
 _prototypes_initialized: bool = False
 
@@ -165,6 +167,18 @@ def _initialize_prototypes() -> None:
         "GeometricRestraintForce.reset()",
     )
 
+    configure_status_function(
+        lib().apo_force_manager_subscribe_geometric_restraint_force,
+        [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p],
+        "ForceManager.subscribe(GeometricRestraintForce)",
+    )
+
+    configure_status_function(
+        lib().apo_force_manager_unsubscribe_geometric_restraint_force,
+        [ctypes.c_void_p, ctypes.c_void_p],
+        "ForceManager.unsubscribe(GeometricRestraintForce)",
+    )
+
     _prototypes_initialized = True
 
     return
@@ -179,11 +193,12 @@ class GeometricRestraintForce(_ApoObject):
     activation and either evaluates every selected atom independently
     (`ATOMWISE`) or evaluates one signed mass-weighted center (`RCM`). As in
     CHARMM, separate terms may overlap or repeat and contribute additively in
-    insertion order. Harmonic terms are the only supported potential form. See
-    the subsystem page for the reaction coordinates and the energy, gradient,
-    and virial definitions. Positions, origins, centers, and offsets use
-    angstroms; force constants use kilocalories per mole per square angstrom;
-    masses normally use atomic mass units.
+    insertion order. Harmonic terms are the only supported potential form. As
+    in CHARMM, the restraint contributes no virial. See the subsystem page for
+    the reaction coordinates and the energy and gradient definitions.
+    Positions, origins, centers, and offsets use angstroms; force constants use
+    kilocalories per mole per square angstrom; masses normally use atomic mass
+    units.
 
     This wrapper owns one C handle for the native
     `GeometricRestraintForce<long long int, float>` specialization.
@@ -222,19 +237,20 @@ class GeometricRestraintForce(_ApoObject):
     clearing: existing force, energy, and virial values are left for the force
     manager's next clearing or evaluation.
 
-    `ForceManager` accepts this restraint only under
-    `PeriodicBoundaryCondition.P1` and rejects a later change to `P21` while it
-    is subscribed. Under P1, atom positions, `RCM` centers, and reference
+    `ForceManager.subscribe()` accepts this restraint only under
+    `PeriodicBoundaryCondition.P1`, uses `default_force_tag` unless a tag is
+    given, and rejects a later change to `P21` while the restraint is
+    subscribed. Under P1, atom positions, `RCM` centers, and reference
     displacements come from raw Cartesian coordinates, without unwrapping or
-    minimum-image replacement, exactly as in CHARMM. A native manager
-    subscription retains independent shared ownership of the restraint and its
-    calculation resources, so term addition, `setMasses()`, and `reset()` remain
-    available after subscription and take effect at the next manager evaluation
-    without resubscription. Closing a subscribed wrapper destroys its
-    identifying C handle but does not remove the native subscription. This class
-    does not define the private `ForceManager` subscription callbacks, so
-    `ForceManager.subscribe()` rejects it with `TypeError` before any native
-    call.
+    minimum-image replacement, exactly as in CHARMM. The manager retains this
+    Python wrapper while it is subscribed, and the native subscription retains
+    independent shared ownership of the restraint and its calculation
+    resources, so term addition, `setMasses()`, and `reset()` remain available
+    after subscription and take effect at the next manager evaluation without
+    resubscription. Unsubscribe before calling `close()`: closing a subscribed
+    wrapper destroys its C handle but does not remove the native subscription,
+    and the closed wrapper can no longer identify that subscription for
+    `ForceManager.unsubscribe()`.
 
     `close()`, `destroy()`, context-manager exit, and finalization release the
     owned C handle. Explicit closure is idempotent. Methods that access
@@ -744,5 +760,97 @@ class GeometricRestraintForce(_ApoObject):
         _initialize_prototypes()
 
         lib().apo_geometric_restraint_force_reset(self.handle)
+
+        return
+
+    def _subscribe_to_force_manager(
+        self, force_manager: ForceManager, force_tag: str | None = None
+    ) -> None:
+        """
+        @brief Implements the `ForceManager.subscribe()` callback.
+
+        `None` selects `default_force_tag`; otherwise `force_tag` must be a
+        Python `str`. The selected text is encoded as UTF-8 and passed as a
+        borrowed null-terminated C string. Native code copies the tag and, on
+        success, retains the restraint, its CUDA stream holder, its force array,
+        and its energy-virial object. An initialized manager initializes the
+        restraint immediately with its atom count and box; otherwise manager
+        initialization does so later.
+
+        This callback performs the native subscription. The calling
+        `ForceManager.subscribe()` method retains this Python wrapper only after
+        the callback succeeds.
+
+        @param[in] force_manager Live `ForceManager` receiving the restraint.
+        Its periodic boundary condition must be `PeriodicBoundaryCondition.P1`.
+        @param[in] force_tag Python `str` tag, or `None` to use `"mmfp"`.
+        @throws TypeError If `force_manager` is not a `ForceManager` or a
+        non-`None` tag is not a `str`.
+        @throws UnicodeEncodeError If `force_tag` cannot be encoded as UTF-8.
+        @throws RuntimeError If this wrapper or `force_manager` has been closed.
+        @throws ApoCharmmError With native status
+        `APO_STATUS_INVALID_ARGUMENT` if the tag is empty, this restraint is
+        already subscribed to the manager, the manager's periodic boundary
+        condition is not `P1`, or immediate initialization finds a different
+        manager atom count; `APO_STATUS_CUDA_ERROR` if immediate initialization
+        fails while synchronizing, allocating, or transferring term data; or
+        `APO_STATUS_RUNTIME_ERROR` if copying the tag or growing manager storage
+        fails.
+
+        @warning An embedded NUL character terminates the C string, so native
+        code observes only the preceding prefix and rejects a tag that starts
+        with NUL as empty.
+        """
+        _initialize_prototypes()
+
+        if not isinstance(force_manager, ForceManager):
+            raise TypeError("force_manager must be a ForceManager")
+
+        if force_tag is None:
+            force_tag_value: str = self._default_force_tag
+        else:
+            if not isinstance(force_tag, str):
+                raise TypeError("force_tag must be a str")
+
+            force_tag_value = force_tag
+
+        encoded_force_tag: bytes = force_tag_value.encode("utf-8")
+        c_force_tag: ctypes.c_char_p = ctypes.c_char_p(encoded_force_tag)
+
+        lib().apo_force_manager_subscribe_geometric_restraint_force(
+            force_manager.handle, self.handle, c_force_tag
+        )
+
+        return
+
+    def _unsubscribe_from_force_manager(self, force_manager: ForceManager) -> None:
+        """
+        @brief Implements the `ForceManager.unsubscribe()` callback.
+
+        Native unsubscription removes the subscription by restraint identity and
+        releases the manager's retained restraint, stream, force-array, and
+        energy-virial owners. It does not reset the restraint: terms, masses,
+        and existing outputs are preserved, and the restraint may be subscribed
+        again. After this callback succeeds, the calling
+        `ForceManager.unsubscribe()` method releases its retained Python
+        reference.
+
+        @param[in] force_manager Live `ForceManager` currently containing this
+        restraint.
+        @throws RuntimeError If this wrapper or `force_manager` has been closed.
+        @throws ApoCharmmError With native status
+        `APO_STATUS_INVALID_ARGUMENT` if either native handle is invalid or this
+        restraint is not subscribed to the manager, or
+        `APO_STATUS_RUNTIME_ERROR` if an unexpected native failure occurs.
+
+        @post On success, the restraint no longer participates in manager
+        evaluation or box propagation and no longer constrains the manager's
+        periodic boundary condition.
+        """
+        _initialize_prototypes()
+
+        lib().apo_force_manager_unsubscribe_geometric_restraint_force(
+            force_manager.handle, self.handle
+        )
 
         return

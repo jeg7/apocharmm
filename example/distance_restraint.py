@@ -57,7 +57,7 @@ def main(argc, argv):
     )
 
     # Setup distance restraints
-    resd = apo.DistanceRestraintForce(psf.getNumAtoms())
+    resd = apo.DistanceRestraintForce(psf)
 
     # Conventional harmonic-distance term on r(N, HT1)
     resd.addRestraint(

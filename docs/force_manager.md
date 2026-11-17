@@ -16,9 +16,10 @@ available. Direct C++ callers may invoke
 [ForceManager::initialize](@ref ForceManager::initialize) explicitly.
 
 The native C++ interface exposes force evaluation and device storage. The
-public C ABI and Python wrapper currently expose construction, configuration,
-state inspection, and force subscription support used by higher-level
-objects. Python force evaluation is performed through `CharmmContext`.
+public C ABI and Python wrapper expose construction, configuration, state
+inspection, force subscription support used by higher-level objects, and
+copies of the aggregate potential energy, physical forces, and virial.
+Python force evaluation is performed through `CharmmContext`.
 
 ## Quick Start
 
@@ -199,9 +200,21 @@ inverse hydrogen mass. This layout is exposed by the native accessors but is
 not a stable interchange format.
 
 The aggregate potential-energy container has one element. It is updated only
-when force calculation requests energy. The aggregate virial container has
-nine elements; the current repository does not establish a public
-component-to-matrix order or sign convention.
+when force calculation requests energy. The aggregate force array stores the
+potential-energy gradient `g`; the C ABI and Python force getters return the
+physical force `0.0 - g` as one `[fx, fy, fz]` row per atom. The aggregate
+virial container has nine elements, which the C ABI and Python getters copy in
+row-major `xx, xy, xz, yx, yy, yz, zx, zy, zz` order.
+
+The bonded, direct-space, and subscribed contributions to the aggregate virial
+follow the convention of CHARMM's internal virial,
+`W_ab = -sum_i r_i,a * g_i,b` for positions `r` and potential-energy gradients
+`g`, with periodic shift terms where a force records them. A subscribed force
+whose `contributesVirial` constant is false receives `calcVirial == false` and
+is left out of the aggregate; this applies to
+[HarmonicRestraintForce](@ref harmonic_restraint_force),
+[HarmonicCenterOfMassRestraintForce](@ref harmonic_center_of_mass_restraint_force),
+and [GeometricRestraintForce](@ref geometric_restraint_force).
 
 ## Errors
 
@@ -243,14 +256,19 @@ thread-local text available through [apo_last_error](@ref apo_last_error).
 Invalid handles, pointers, buffer sizes, enum values, and scalar values return
 `APO_STATUS_INVALID_ARGUMENT`. Missing native PSF state in
 [apo_force_manager_get_num_atoms](@ref apo_force_manager_get_num_atoms) returns
-`APO_STATUS_NOT_INITIALIZED`. Categorized CUDA failures return
-`APO_STATUS_CUDA_ERROR`. Native allocation and uncategorized standard
-exceptions return `APO_STATUS_RUNTIME_ERROR`.
+`APO_STATUS_NOT_INITIALIZED`, and so do
+[apo_force_manager_get_potential_energy](@ref apo_force_manager_get_potential_energy),
+[apo_force_manager_get_forces](@ref apo_force_manager_get_forces), and
+[apo_force_manager_get_virial](@ref apo_force_manager_get_virial) before
+initialization. Categorized CUDA failures return `APO_STATUS_CUDA_ERROR`.
+Native allocation and uncategorized standard exceptions return
+`APO_STATUS_RUNTIME_ERROR`.
 
 Creation sets a valid output slot to `NULL` before collaborator validation.
 The atom-count getter sets its output to zero before handle validation. Other
 getters leave output storage unchanged on failure. Box and FFT getters write
-only their first three output elements and leave trailing capacity unchanged.
+only their first three output elements, the force getter its first `3 * N`,
+and the virial getter its first nine; trailing capacity is unchanged.
 
 [apo_force_manager_destroy](@ref apo_force_manager_destroy) accepts `NULL`, does
 not throw across the ABI, and normally preserves a stale diagnostic.
@@ -465,11 +483,12 @@ calculation path when possible.
   validation, copying, initialization, force evaluation, subscriptions, box
   propagation, and error categories.
 - `test/unittests/unittest-capiForceManager.cpp` covers C ABI ownership,
-  validation, output state, status mapping, and thread-local diagnostic
-  behavior.
+  validation, output state, status mapping, thread-local diagnostic
+  behavior, and output getters that copy the native energy, negated force,
+  and virial storage.
 - `test/pytest/python_api_force_manager.py` covers Python defaults,
   setter/getter round trips, enum conversion, close behavior, subscription
-  retention, and Python/native exception boundaries.
+  retention, output getters, and Python/native exception boundaries.
 - `test/pytest/python_api_charmm_context.py` exercises ForceManager through the
   higher-level Python context.
 - `example/energy.py` demonstrates the context-centered energy workflow.
@@ -478,10 +497,9 @@ calculation path when possible.
 
 The current implementation contains duplicated float and double box state,
 mutable accessors that bypass invariants, a non-transactional initialization
-path, a cached graph tied to specific force buffers, a legacy incomplete host
-energy sum, and unresolved public virial ordering and force-sign documentation.
-These constraints should be preserved or explicitly resolved when reorganizing
-the subsystem.
+path, a cached graph tied to specific force buffers, and a legacy incomplete
+host energy sum. These constraints should be preserved or explicitly resolved
+when reorganizing the subsystem.
 
 ## API Reference
 
@@ -490,7 +508,10 @@ the subsystem.
   [apo_force_manager_create](@ref apo_force_manager_create),
   [apo_force_manager_destroy](@ref apo_force_manager_destroy),
   [apo_force_manager_set_box_dimensions](@ref apo_force_manager_set_box_dimensions),
-  and the remaining `apo_force_manager_*` configuration and query functions.
+  [apo_force_manager_get_potential_energy](@ref apo_force_manager_get_potential_energy),
+  [apo_force_manager_get_forces](@ref apo_force_manager_get_forces),
+  [apo_force_manager_get_virial](@ref apo_force_manager_get_virial), and the
+  remaining `apo_force_manager_*` configuration and query functions.
 - Python: [python_force_manager](@ref python_force_manager).
 - Related enums: [PBC](@ref PBC), [apo_pbc](@ref apo_pbc),
   [python_periodic_boundary_condition](@ref python_periodic_boundary_condition),

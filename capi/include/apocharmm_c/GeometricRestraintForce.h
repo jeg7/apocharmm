@@ -37,8 +37,8 @@ extern "C" {
  * @ref apo_geometric_restraint_force_destroy. The handle retains shared
  * ownership of one native `GeometricRestraintForce<long long int, float>`,
  * which uses fixed-point `long long int` force storage and single-precision
- * final gradient conversion. Geometry, energy, and RCM arithmetic use double
- * precision.
+ * arithmetic for geometry, RCM centers, gradient sums, and the energy at each
+ * atom or center; energy sums are double.
  *
  * Construction borrows a live @ref apo_charmm_psf handle only for the call.
  * The native constructor copies the PSF atom count and complete mass vector.
@@ -60,9 +60,9 @@ extern "C" {
  * Every term is harmonic. Positions, origins, centers, and offsets use
  * angstroms; force constants use kilocalories per mole per square angstrom;
  * masses normally use atomic mass units. Separate terms may overlap or repeat
- * and contribute additively in insertion order. See
- * @ref geometric_restraint_force for the geometry, activation, RCM, and virial
- * definitions.
+ * and contribute additively in insertion order. As in CHARMM, the restraint
+ * contributes no virial. See @ref geometric_restraint_force for the geometry,
+ * activation, and RCM definitions.
  *
  * A successful force-manager subscription retains independent native shared
  * ownership of the restraint, CUDA stream holder, force array, and

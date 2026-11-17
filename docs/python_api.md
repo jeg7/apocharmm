@@ -74,18 +74,28 @@ Their meanings and Python exception mapping are documented in the
   `AtomReference` endpoint pairs. Raw integer endpoint pairs are not accepted.
   See the [DistanceRestraintForce subsystem](@ref distance_restraint_force).
 - [apocharmm.ForceManager](@ref python_force_manager) configures and owns native
-  force backends. See the [ForceManager subsystem](@ref force_manager).
+  force backends and reports the aggregate potential energy, physical forces,
+  and virial after an evaluation. See the
+  [ForceManager subsystem](@ref force_manager).
 - [apocharmm.GeometricRestraintForce](@ref python_geometric_restraint_force)
   configures CHARMM MMFP GEO harmonic plane, cylinder, and sphere terms, each
-  for one `AtomSelection` or `AtomReference`. Raw atom indices are not
-  accepted. See the
+  for one `AtomSelection` or `AtomReference`, and can be subscribed to
+  `ForceManager`. Raw atom indices are not accepted. See the
   [GeometricRestraintForce subsystem](@ref geometric_restraint_force).
 - [apocharmm.HarmonicCenterOfMassRestraintForce](@ref python_harmonic_center_of_mass_restraint_force)
-  configures periodic geometric-center or mass-weighted-center restraints. See
-  the [HarmonicCenterOfMassRestraintForce subsystem](@ref harmonic_center_of_mass_restraint_force).
+  configures CHARMM `CONS HMCM` restraints on the raw geometric or
+  mass-weighted center of a selection. See the
+  [HarmonicCenterOfMassRestraintForce subsystem](@ref harmonic_center_of_mass_restraint_force).
 - [apocharmm.HarmonicRestraintForce](@ref python_harmonic_restraint_force)
-  configures absolute mass-weighted harmonic restraints. See the
+  configures CHARMM `CONS HARM ABSOLUTE` restraints, including the exponent
+  and scale factors. See the
   [HarmonicRestraintForce subsystem](@ref harmonic_restraint_force).
+
+All four restraint wrappers are constructed the same way, from the `CharmmPsf`
+of the system they restrain, for example `apo.HarmonicRestraintForce(psf)`.
+The PSF is borrowed only for the call: each restraint copies the atom count,
+`HarmonicCenterOfMassRestraintForce` and `GeometricRestraintForce` also copy
+the masses, and none retains the PSF.
   
 ## CUDA Integrators
 

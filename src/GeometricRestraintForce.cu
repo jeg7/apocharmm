@@ -81,13 +81,6 @@ GeometricRestraintForce<AT, CT>::GeometricRestraintForce(
   m_TermOffsets.getHostArray().push_back(0);
   m_PendingForces.resize(static_cast<std::size_t>(numAtoms));
   m_PendingEnergy.resize(1);
-
-  const std::size_t virialBlocks = std::min<std::size_t>(
-      (static_cast<std::size_t>(numAtoms) + RCM_CHUNK_SIZE - 1) /
-          RCM_CHUNK_SIZE,
-      65535);
-  m_VirialPartials.resize(9 * virialBlocks);
-  m_PendingVirial.resize(9);
   m_EvaluationError.resize(1);
   m_EnergyVirial = std::make_shared<CudaEnergyVirial>();
   m_EnergyVirial->insert("mmfp");
@@ -323,9 +316,9 @@ void GeometricRestraintForce<AT, CT>::clear(const bool calcEnergy,
   return;
 }
 
-template <int blockSize>
+template <typename CT, typename CT3, int blockSize>
 __global__ static void BuildRcmPartialsKernel(
-    double3 *__restrict__ partials, int *__restrict__ error,
+    CT3 *__restrict__ partials, int *__restrict__ error,
     const float4 *__restrict__ xyzq, const int *__restrict__ atomIndices,
     const double *__restrict__ masses,
     const std::size_t *__restrict__ chunkBegins,
@@ -333,27 +326,28 @@ __global__ static void BuildRcmPartialsKernel(
   static_assert(blockSize == RCM_CHUNK_SIZE,
                 "RCM partial block size must equal the membership chunk size");
 
-  __shared__ BlockReduceSumStorage<double, blockSize, 3> cache;
+  __shared__ BlockReduceSumStorage<CT, blockSize, 3> cache;
 
   for (std::size_t chunk = blockIdx.x; chunk < numChunks; chunk += gridDim.x) {
-    double weighted[3] = {0.0, 0.0, 0.0};
+    CT weighted[3] = {static_cast<CT>(0), static_cast<CT>(0),
+                      static_cast<CT>(0)};
     const std::size_t member = chunkBegins[chunk] + threadIdx.x;
     if (member < chunkEnds[chunk]) {
       const int atom = atomIndices[member];
       const float4 position = xyzq[atom];
-      const double mass = masses[atom];
-      weighted[0] = mass * static_cast<double>(position.x);
-      weighted[1] = mass * static_cast<double>(position.y);
-      weighted[2] = mass * static_cast<double>(position.z);
+      const CT mass = static_cast<CT>(masses[atom]);
+      weighted[0] = mass * static_cast<CT>(position.x);
+      weighted[1] = mass * static_cast<CT>(position.y);
+      weighted[2] = mass * static_cast<CT>(position.z);
       if (!isfinite(weighted[0]) || !isfinite(weighted[1]) ||
           !isfinite(weighted[2])) {
         atomicOr(error, NONFINITE_EVALUATION);
       }
     }
 
-    BlockReduceSum<double, blockSize, 3>(weighted, cache);
+    BlockReduceSum<CT, blockSize, 3>(weighted, cache);
     if (threadIdx.x == 0) {
-      partials[chunk] = make_double3(weighted[0], weighted[1], weighted[2]);
+      partials[chunk] = CT3{weighted[0], weighted[1], weighted[2]};
       if (!isfinite(weighted[0]) || !isfinite(weighted[1]) ||
           !isfinite(weighted[2])) {
         atomicOr(error, NONFINITE_EVALUATION);
@@ -365,103 +359,105 @@ __global__ static void BuildRcmPartialsKernel(
   return;
 }
 
-template <typename AT, typename CT, bool calcEnergy>
+template <typename AT, typename CT, typename CT3, bool calcEnergy>
 __device__ static void
-EvaluateGeometricPoint(double3 &gradient, double &energy, int *error,
-                       const double3 position, const int4 types,
-                       const double3 origin, const double3 normal,
-                       const double offset, const double forceConstant) {
+EvaluateGeometricPoint(CT3 &gradient, double &energy, int *error,
+                       const CT3 position, const int4 types, const CT3 origin,
+                       const CT3 normal, const CT offset,
+                       const CT forceConstant) {
+  constexpr CT ZERO = static_cast<CT>(0);
+
   using GeoForce = GeometricRestraintForce<AT, CT>;
-  gradient = make_double3(0.0, 0.0, 0.0);
+  gradient = CT3{ZERO, ZERO, ZERO};
   energy = 0.0;
-  if (forceConstant == 0.0)
+  if (forceConstant == ZERO)
     return;
 
   // JEG261019: CHARMM uses raw Cartesian displacements for atomwise and RCM
   // restraints. Selected atoms are not unwrapped, and the center-reference
   // displacement is not replaced by a periodic image.
-  const double dx = position.x - origin.x;
-  const double dy = position.y - origin.y;
-  const double dz = position.z - origin.z;
+  const CT dx = position.x - origin.x;
+  const CT dy = position.y - origin.y;
+  const CT dz = position.z - origin.z;
   const bool symmetric =
       types.y == static_cast<int>(GeoForce::Activation::SYMMETRIC);
 
-  double coordinate = 0.0;
-  double derivativeSign = 1.0;
-  double3 coordinateGradient = normal;
+  CT coordinate = ZERO;
+  CT derivativeSign = static_cast<CT>(1);
+  CT3 coordinateGradient = normal;
   bool evaluate = true;
 
   if (types.x == static_cast<int>(GeoForce::Geometry::PLANE)) {
     // JEG261019: A symmetric plane uses signed distance. One-sided planes use
     // its magnitude; CHARMM chooses +normal at exactly zero distance.
-    const double signedDistance = normal.x * dx + normal.y * dy + normal.z * dz;
+    const CT signedDistance = normal.x * dx + normal.y * dy + normal.z * dz;
     coordinate = (symmetric) ? signedDistance : fabs(signedDistance);
-    derivativeSign = (!symmetric && (signedDistance < 0.0)) ? -1.0 : 1.0;
+    derivativeSign = (!symmetric && signedDistance < ZERO) ? static_cast<CT>(-1)
+                                                           : static_cast<CT>(1);
     if (!isfinite(signedDistance)) {
       atomicOr(error, NONFINITE_EVALUATION);
       evaluate = false;
     }
   } else {
-    double3 radial = make_double3(dx, dy, dz);
+    CT3 radial = CT3{dx, dy, dz};
     if (types.x == static_cast<int>(GeoForce::Geometry::CYLINDER)) {
-      const double axialDistance =
-          normal.x * dx + normal.y * dy + normal.z * dz;
-      radial = make_double3(dx - axialDistance * normal.x,
-                            dy - axialDistance * normal.y,
-                            dz - axialDistance * normal.z);
+      const CT axialDistance = normal.x * dx + normal.y * dy + normal.z * dz;
+      radial = CT3{dx - axialDistance * normal.x, dy - axialDistance * normal.y,
+                   dz - axialDistance * normal.z};
     }
 
     // JEG261019: Squaring perpendicular components avoids cancellation near the
     // cylinder axis. CHARMM suppresses both energy and gradient near the axis
     // or sphere center, so apply the cutoff before activation or deviation.
-    const double radiusSquared =
+    const CT radiusSquared =
         radial.x * radial.x + radial.y * radial.y + radial.z * radial.z;
     if (!isfinite(radiusSquared)) {
       atomicOr(error, NONFINITE_EVALUATION);
       evaluate = false;
-    } else if (radiusSquared <= 1.0e-10)
+    } else if (radiusSquared <= static_cast<CT>(1.0e-10)) {
       evaluate = false;
-    else {
+    } else {
       coordinate = sqrt(radiusSquared);
-      coordinateGradient = make_double3(
-          radial.x / coordinate, radial.y / coordinate, radial.z / coordinate);
+      coordinateGradient = CT3{radial.x / coordinate, radial.y / coordinate,
+                               radial.z / coordinate};
     }
   }
 
   if (evaluate) {
-    const double deviation = coordinate - offset;
+    const CT deviation = coordinate - offset;
     const bool active =
         symmetric ||
         ((types.y == static_cast<int>(GeoForce::Activation::INSIDE)) &&
-         (deviation > 0.0)) ||
+         (deviation > ZERO)) ||
         ((types.y == static_cast<int>(GeoForce::Activation::OUTSIDE)) &&
-         (deviation < 0.0));
+         (deviation < ZERO));
 
     if (!isfinite(deviation))
       atomicOr(error, NONFINITE_EVALUATION);
-    else if (active && (deviation != 0.0)) {
+    else if (active && deviation != ZERO) {
       // JEG261020: CHARMM squares the devition before scaling the harmonic
       // energy, then accumulates gradients only when that energy is nonzero.
       // This gate applies even when energy output is disabled.
-      const double squaredDeviation = deviation * deviation;
-      const double evaluatedEnergy = (0.5 * forceConstant) * squaredDeviation;
+      const CT squaredDeviation = deviation * deviation;
+      const CT evaluatedEnergy =
+          (static_cast<CT>(0.5) * forceConstant) * squaredDeviation;
 
       if (!isfinite(evaluatedEnergy)) {
         atomicOr(error, NONFINITE_EVALUATION);
         return;
       }
 
-      if (evaluatedEnergy != 0.0) {
-        const double derivative = forceConstant * deviation;
-        const double orientedDerivative = derivative * derivativeSign;
-        gradient = make_double3(orientedDerivative * coordinateGradient.x,
-                                orientedDerivative * coordinateGradient.y,
-                                orientedDerivative * coordinateGradient.z);
+      if (evaluatedEnergy != ZERO) {
+        const CT derivative = forceConstant * deviation;
+        const CT orientedDerivative = derivative * derivativeSign;
+        gradient = CT3{orientedDerivative * coordinateGradient.x,
+                       orientedDerivative * coordinateGradient.y,
+                       orientedDerivative * coordinateGradient.z};
 
         // JEG261019: CHARMM's harmonic energy is 0.5 * K * deviation^2.
         // derivative already contains one factor of K.
         if constexpr (calcEnergy)
-          energy = evaluatedEnergy;
+          energy = static_cast<double>(evaluatedEnergy);
       }
     }
   }
@@ -474,20 +470,22 @@ EvaluateGeometricPoint(double3 &gradient, double &energy, int *error,
   return;
 }
 
-template <typename AT, typename CT, int blockSize, bool calcEnergy>
+template <typename AT, typename CT, typename CT3, int blockSize,
+          bool calcEnergy>
 __global__ static void EvaluateGeometricTermsKernel(
-    double3 *__restrict__ membershipGradients,
-    double *__restrict__ termEnergies, double3 *__restrict__ rcmCenters,
-    double3 *__restrict__ rcmCenterGradients, int *__restrict__ error,
-    const float4 *__restrict__ xyzq, const int *__restrict__ atomIndices,
-    const double *__restrict__ masses,
+    CT3 *__restrict__ membershipGradients, double *__restrict__ termEnergies,
+    CT3 *__restrict__ rcmCenters, CT3 *__restrict__ rcmCenterGradients,
+    int *__restrict__ error, const float4 *__restrict__ xyzq,
+    const int *__restrict__ atomIndices, const double *__restrict__ masses,
     const std::size_t *__restrict__ termOffsets,
     const int4 *__restrict__ termTypes, const double3 *__restrict__ origins,
     const double3 *__restrict__ directions, const double *__restrict__ offsets,
     const double *__restrict__ forceConstants,
     const double *__restrict__ selectedMassTotals,
     const std::size_t *__restrict__ rcmChunkOffsets,
-    const double3 *__restrict__ rcmPartials, const std::size_t numTerms) {
+    const CT3 *__restrict__ rcmPartials, const std::size_t numTerms) {
+  constexpr CT ZERO = static_cast<CT>(0);
+
   using GeoForce = GeometricRestraintForce<AT, CT>;
   __shared__ BlockReduceSumStorage<double, blockSize, 1> cache;
 
@@ -503,15 +501,28 @@ __global__ static void EvaluateGeometricTermsKernel(
         (rcm ||
          (types.z == static_cast<int>(GeoForce::SelectionMode::ATOMWISE))) &&
         (types.w == static_cast<int>(GeoForce::PotentialType::HARMONIC));
-    if (!supported && (threadIdx.x == 0))
+    if (!supported && threadIdx.x == 0)
       atomicOr(error, UNSUPPORTED_TERM);
 
+    // The host prepares the configuration in double precision; evaluation
+    // converts it to CT once per term.
+    const CT3 origin =
+        CT3{static_cast<CT>(origins[i].x), static_cast<CT>(origins[i].y),
+            static_cast<CT>(origins[i].z)};
+    const CT3 normal =
+        CT3{static_cast<CT>(directions[i].x), static_cast<CT>(directions[i].y),
+            static_cast<CT>(directions[i].z)};
+    const CT offset = static_cast<CT>(offsets[i]);
+    const CT forceConstant = static_cast<CT>(forceConstants[i]);
+
     if (rcm) {
+      const CT total = static_cast<CT>(selectedMassTotals[i]);
+
       if (threadIdx.x == 0) {
-        double3 weighted = make_double3(0.0, 0.0, 0.0);
+        CT3 weighted = CT3{ZERO, ZERO, ZERO};
         for (std::size_t chunk = rcmChunkOffsets[i];
              chunk < rcmChunkOffsets[i + 1]; chunk++) {
-          const double3 partial = rcmPartials[chunk];
+          const CT3 partial = rcmPartials[chunk];
           weighted.x += partial.x;
           weighted.y += partial.y;
           weighted.z += partial.z;
@@ -520,21 +531,19 @@ __global__ static void EvaluateGeometricTermsKernel(
         // JEG261019: CHARMM divides the signed mass-weighted coordinate sum by
         // the signed total mass. Divide directly because forming a reciprocal
         // first can overflow for tiny totals. Retain the raw center; no
-        // periodic image shift if applied. The tensor uses distributed atom
-        // gradients.
-        const double total = selectedMassTotals[i];
-        const double3 center = make_double3(
-            weighted.x / total, weighted.y / total, weighted.z / total);
+        // periodic image shift is applied.
+        const CT3 center =
+            CT3{weighted.x / total, weighted.y / total, weighted.z / total};
 
-        double3 gradient = make_double3(0.0, 0.0, 0.0);
+        CT3 gradient = CT3{ZERO, ZERO, ZERO};
         double energy = 0.0;
 
         if (!isfinite(center.x) || !isfinite(center.y) || !isfinite(center.z))
           atomicOr(error, NONFINITE_EVALUATION);
         else if (supported) {
-          EvaluateGeometricPoint<AT, CT, calcEnergy>(
-              gradient, energy, error, center, types, origins[i], directions[i],
-              offsets[i], forceConstants[i]);
+          EvaluateGeometricPoint<AT, CT, CT3, calcEnergy>(
+              gradient, energy, error, center, types, origin, normal, offset,
+              forceConstant);
         }
 
         rcmCenters[i] = center;
@@ -543,14 +552,13 @@ __global__ static void EvaluateGeometricTermsKernel(
       }
       __syncthreads();
 
-      const double3 centerGradient = rcmCenterGradients[i];
-      const double total = selectedMassTotals[i];
+      const CT3 centerGradient = rcmCenterGradients[i];
       for (std::size_t j = termOffsets[i] + threadIdx.x; j < termOffsets[i + 1];
            j += blockDim.x) {
-        const double fraction = masses[atomIndices[j]] / total;
-        const double3 gradient = make_double3(fraction * centerGradient.x,
-                                              fraction * centerGradient.y,
-                                              fraction * centerGradient.z);
+        const CT fraction = static_cast<CT>(masses[atomIndices[j]]) / total;
+        const CT3 gradient =
+            CT3{fraction * centerGradient.x, fraction * centerGradient.y,
+                fraction * centerGradient.z};
         if (!isfinite(gradient.x) || !isfinite(gradient.y) ||
             !isfinite(gradient.z)) {
           atomicOr(error, NONFINITE_EVALUATION);
@@ -563,16 +571,17 @@ __global__ static void EvaluateGeometricTermsKernel(
 
       for (std::size_t j = termOffsets[i] + threadIdx.x; j < termOffsets[i + 1];
            j += blockDim.x) {
-        double3 gradient = make_double3(0.0, 0.0, 0.0);
+        CT3 gradient = CT3{ZERO, ZERO, ZERO};
         double energy = 0.0;
 
         if (supported) {
           const float4 position = xyzq[atomIndices[j]];
 
-          EvaluateGeometricPoint<AT, CT, calcEnergy>(
+          EvaluateGeometricPoint<AT, CT, CT3, calcEnergy>(
               gradient, energy, error,
-              make_double3(position.x, position.y, position.z), types,
-              origins[i], directions[i], offsets[i], forceConstants[i]);
+              CT3{static_cast<CT>(position.x), static_cast<CT>(position.y),
+                  static_cast<CT>(position.z)},
+              types, origin, normal, offset, forceConstant);
         }
 
         membershipGradients[j] = gradient;
@@ -581,8 +590,8 @@ __global__ static void EvaluateGeometricTermsKernel(
 
       BlockReduceSum<double, blockSize, 1>(partialEnergy, cache);
       if (threadIdx.x == 0) {
-        rcmCenters[i] = make_double3(0.0, 0.0, 0.0);
-        rcmCenterGradients[i] = make_double3(0.0, 0.0, 0.0);
+        rcmCenters[i] = CT3{ZERO, ZERO, ZERO};
+        rcmCenterGradients[i] = CT3{ZERO, ZERO, ZERO};
         termEnergies[i] = partialEnergy[0];
         if (!isfinite(partialEnergy[0]))
           atomicOr(error, NONFINITE_EVALUATION);
@@ -594,20 +603,16 @@ __global__ static void EvaluateGeometricTermsKernel(
   return;
 }
 
-template <typename AT, typename CT, int blockSize, bool calcEnergy,
-          bool calcVirial>
+template <typename AT, typename CT, typename CT3, bool calcEnergy>
 __global__ static void StageGeometricOutputKernel(
     longlong3 *__restrict__ pendingForces, double *__restrict__ pendingEnergy,
-    double *__restrict__ virialPartials, int *__restrict__ error,
-    const float4 *__restrict__ xyzq,
-    const std::size_t *__restrict__ atomMemberships,
-    const double3 *__restrict__ membershipGradients,
+    int *__restrict__ error, const std::size_t *__restrict__ atomMemberships,
+    const CT3 *__restrict__ membershipGradients,
     const std::size_t *__restrict__ atomOffsets, const int numAtoms,
     const AT *__restrict__ forces, const int forceStride,
     const double *__restrict__ energy, const double *__restrict__ termEnergies,
     const std::size_t numTerms) {
-  __shared__ BlockReduceSumStorage<double, blockSize, 9> virialCache;
-  double moment[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  constexpr CT ZERO = static_cast<CT>(0);
 
   if constexpr (calcEnergy) {
     if (blockIdx.x == 0 && threadIdx.x == 0) {
@@ -625,33 +630,12 @@ __global__ static void StageGeometricOutputKernel(
   const int stride = gridDim.x * blockDim.x;
 
   for (int i = idx; i < numAtoms; i += stride) {
-    double gradient[3] = {0.0, 0.0, 0.0};
+    CT gradient[3] = {ZERO, ZERO, ZERO};
     for (std::size_t j = atomOffsets[i]; j < atomOffsets[i + 1]; j++) {
-      const double3 contribution = membershipGradients[atomMemberships[j]];
+      const CT3 contribution = membershipGradients[atomMemberships[j]];
       gradient[0] += contribution.x;
       gradient[1] += contribution.y;
       gradient[2] += contribution.z;
-    }
-
-    if constexpr (calcVirial) {
-      if (atomOffsets[i] != atomOffsets[i + 1]) {
-        // JEG261020: CHARMM adds overlapping term gradients in insertion order,
-        // so form the external moment from that sum and the raw atom
-        // coordinate. Use only this evaluation's double gradient, before
-        // fixed-point conversion.
-        const float4 position = xyzq[i];
-        const double coordinate[3] = {static_cast<double>(position.x),
-                                      static_cast<double>(position.y),
-                                      static_cast<double>(position.z)};
-        for (int r = 0; r < 3; r++) {
-          for (int c = 0; c < 3; c++) {
-            const int comp = r * 3 + c;
-            moment[comp] += coordinate[r] * gradient[c];
-            if (!isfinite(moment[comp]))
-              atomicOr(error, NONFINITE_EVALUATION);
-          }
-        }
-      }
     }
 
     AT result[3] = {static_cast<AT>(0), static_cast<AT>(0), static_cast<AT>(0)};
@@ -663,26 +647,19 @@ __global__ static void StageGeometricOutputKernel(
         valid = false;
         continue;
       }
-      // JEG261006: Check before narrowing as well as after rounding to CT. In
-      // particular, CT=float can round an otherwise representable value to
-      // the upper bound
-      if ((gradient[k] < -upperBound) || (gradient[k] >= upperBound)) {
-        atomicOr(error, UNREPRESENTABLE_GRADIENT);
-        valid = false;
-        continue;
-      }
-      const CT converted = static_cast<CT>(gradient[k]);
-      if ((static_cast<double>(converted) < -upperBound) ||
-          (static_cast<double>(converted) >= upperBound)) {
+      // The summed gradient is already in CT, so one range check before the
+      // fixed-point rounding suffices.
+      if (static_cast<double>(gradient[k]) < -upperBound ||
+          static_cast<double>(gradient[k]) >= upperBound) {
         atomicOr(error, UNREPRESENTABLE_GRADIENT);
         valid = false;
         continue;
       }
 
-      const AT increment = roundCTtoAT<AT, CT>(converted);
+      const AT increment = roundCTtoAT<AT, CT>(gradient[k]);
       const AT previous = forces[k * forceStride + i];
-      if (((increment > 0) && (previous > LLONG_MAX - increment)) ||
-          ((increment < 0) && (previous < LLONG_MIN - increment))) {
+      if ((increment > 0 && previous > LLONG_MAX - increment) ||
+          (increment < 0 && previous < LLONG_MIN - increment)) {
         atomicOr(error, ACCUMULATION_OVERFLOW);
         valid = false;
         continue;
@@ -695,53 +672,17 @@ __global__ static void StageGeometricOutputKernel(
       pendingForces[i] = make_longlong3(result[0], result[1], result[2]);
   }
 
-  if constexpr (calcVirial) {
-    BlockReduceSum<double, blockSize, 9>(moment, virialCache);
-    if (threadIdx.x == 0) {
-      for (int comp = 0; comp < 9; comp++) {
-        if (!isfinite(moment[comp]))
-          atomicOr(error, NONFINITE_EVALUATION);
-        virialPartials[blockIdx.x * 9 + comp] = moment[comp];
-      }
-    }
-  }
-
   return;
 }
 
-__global__ static void StageGeometricVirialKernel(
-    double *__restrict__ pendingVirial, int *__restrict__ error,
-    const double *__restrict__ virial, const double *__restrict__ partials,
-    const unsigned int numBlocks) {
-  if (threadIdx.x < 9) {
-    double total = virial[threadIdx.x];
-    for (unsigned int block = 0; block < numBlocks; block++)
-      total += partials[block * 9 + threadIdx.x];
-
-    if (!isfinite(total))
-      atomicOr(error, NONFINITE_EVALUATION);
-
-    pendingVirial[threadIdx.x] = total;
-  }
-
-  return;
-}
-
-template <typename AT, bool calcEnergy, bool calcVirial>
+template <typename AT, bool calcEnergy>
 __global__ static void CommitGeometricOutputKernel(
-    AT *__restrict__ forces, double *__restrict__ energy,
-    double *__restrict__ virial, const int forceStride,
+    AT *__restrict__ forces, double *__restrict__ energy, const int forceStride,
     const longlong3 *__restrict__ pendingForces, const int numAtoms,
-    const double *__restrict__ pendingEnergy,
-    const double *__restrict__ pendingVirial) {
+    const double *__restrict__ pendingEnergy) {
   if constexpr (calcEnergy) {
     if ((blockIdx.x == 0) && (threadIdx.x == 0))
       *energy = *pendingEnergy;
-  }
-
-  if constexpr (calcVirial) {
-    if ((blockIdx.x == 0) && (threadIdx.x < 9))
-      virial[threadIdx.x] = pendingVirial[threadIdx.x];
   }
 
   const int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -761,6 +702,8 @@ template <typename AT, typename CT>
 void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
                                                 const bool calcEnergy,
                                                 const bool calcVirial) {
+  static_cast<void>(calcVirial);
+
   if (this->getNumTerms() == 0)
     return;
 
@@ -777,14 +720,13 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
           65535));
   int *error = m_EvaluationError.getDeviceArray().data();
   double *energy = m_EnergyVirial->getEnergyPointer("mmfp");
-  double *virial = m_EnergyVirial->getVirialPointer()->virmat;
 
   cudaCheck(cudaMemsetAsync(error, 0, sizeof(int), *m_Stream));
 
   if (m_RcmChunkBegins.size() != 0) {
     const unsigned int chunkBlocks = static_cast<unsigned int>(
         std::min<std::size_t>(m_RcmChunkBegins.size(), 65535));
-    cudaCheckLaunch(BuildRcmPartialsKernel<numThreads>
+    cudaCheckLaunch(BuildRcmPartialsKernel<CT, CT3, numThreads>
                     <<<chunkBlocks, numThreads, 0, *m_Stream>>>(
                         m_RcmPartials.getDeviceArray().data(), error, xyzq,
                         m_AtomIndices.getDeviceArray().data(),
@@ -794,9 +736,9 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
                         m_RcmChunkBegins.size()););
   }
 
-  if (calcEnergy && calcVirial) {
+  if (calcEnergy) {
     cudaCheckLaunch(
-        EvaluateGeometricTermsKernel<AT, CT, numThreads, true>
+        EvaluateGeometricTermsKernel<AT, CT, CT3, numThreads, true>
         <<<termBlocks, numThreads, 0, *m_Stream>>>(
             m_MembershipGradients.getDeviceArray().data(),
             m_TermEnergies.getDeviceArray().data(),
@@ -814,71 +756,10 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
             m_RcmChunkOffsets.getDeviceArray().data(),
             m_RcmPartials.getDeviceArray().data(), this->getNumTerms()));
     cudaCheckLaunch(
-        StageGeometricOutputKernel<AT, CT, numThreads, true, true>
+        StageGeometricOutputKernel<AT, CT, CT3, true>
         <<<atomBlocks, numThreads, 0, *m_Stream>>>(
             m_PendingForces.getDeviceArray().data(),
-            m_PendingEnergy.getDeviceArray().data(),
-            m_VirialPartials.getDeviceArray().data(), error, xyzq,
-            m_AtomMemberships.getDeviceArray().data(),
-            m_MembershipGradients.getDeviceArray().data(),
-            m_AtomOffsets.getDeviceArray().data(), m_NumAtoms, m_Forces->xyz(),
-            m_Forces->stride(), energy, m_TermEnergies.getDeviceArray().data(),
-            this->getNumTerms()));
-  } else if (calcEnergy && !calcVirial) {
-    cudaCheckLaunch(
-        EvaluateGeometricTermsKernel<AT, CT, numThreads, true>
-        <<<termBlocks, numThreads, 0, *m_Stream>>>(
-            m_MembershipGradients.getDeviceArray().data(),
-            m_TermEnergies.getDeviceArray().data(),
-            m_RcmCenters.getDeviceArray().data(),
-            m_RcmCenterGradients.getDeviceArray().data(), error, xyzq,
-            m_AtomIndices.getDeviceArray().data(),
-            m_Masses.getDeviceArray().data(),
-            m_TermOffsets.getDeviceArray().data(),
-            m_TermTypes.getDeviceArray().data(),
-            m_Origins.getDeviceArray().data(),
-            m_Directions.getDeviceArray().data(),
-            m_Offsets.getDeviceArray().data(),
-            m_ForceConstants.getDeviceArray().data(),
-            m_SelectedMassTotals.getDeviceArray().data(),
-            m_RcmChunkOffsets.getDeviceArray().data(),
-            m_RcmPartials.getDeviceArray().data(), this->getNumTerms()));
-    cudaCheckLaunch(
-        StageGeometricOutputKernel<AT, CT, numThreads, true, false>
-        <<<atomBlocks, numThreads, 0, *m_Stream>>>(
-            m_PendingForces.getDeviceArray().data(),
-            m_PendingEnergy.getDeviceArray().data(),
-            m_VirialPartials.getDeviceArray().data(), error, xyzq,
-            m_AtomMemberships.getDeviceArray().data(),
-            m_MembershipGradients.getDeviceArray().data(),
-            m_AtomOffsets.getDeviceArray().data(), m_NumAtoms, m_Forces->xyz(),
-            m_Forces->stride(), energy, m_TermEnergies.getDeviceArray().data(),
-            this->getNumTerms()));
-  } else if (!calcEnergy && calcVirial) {
-    cudaCheckLaunch(
-        EvaluateGeometricTermsKernel<AT, CT, numThreads, false>
-        <<<termBlocks, numThreads, 0, *m_Stream>>>(
-            m_MembershipGradients.getDeviceArray().data(),
-            m_TermEnergies.getDeviceArray().data(),
-            m_RcmCenters.getDeviceArray().data(),
-            m_RcmCenterGradients.getDeviceArray().data(), error, xyzq,
-            m_AtomIndices.getDeviceArray().data(),
-            m_Masses.getDeviceArray().data(),
-            m_TermOffsets.getDeviceArray().data(),
-            m_TermTypes.getDeviceArray().data(),
-            m_Origins.getDeviceArray().data(),
-            m_Directions.getDeviceArray().data(),
-            m_Offsets.getDeviceArray().data(),
-            m_ForceConstants.getDeviceArray().data(),
-            m_SelectedMassTotals.getDeviceArray().data(),
-            m_RcmChunkOffsets.getDeviceArray().data(),
-            m_RcmPartials.getDeviceArray().data(), this->getNumTerms()));
-    cudaCheckLaunch(
-        StageGeometricOutputKernel<AT, CT, numThreads, false, true>
-        <<<atomBlocks, numThreads, 0, *m_Stream>>>(
-            m_PendingForces.getDeviceArray().data(),
-            m_PendingEnergy.getDeviceArray().data(),
-            m_VirialPartials.getDeviceArray().data(), error, xyzq,
+            m_PendingEnergy.getDeviceArray().data(), error,
             m_AtomMemberships.getDeviceArray().data(),
             m_MembershipGradients.getDeviceArray().data(),
             m_AtomOffsets.getDeviceArray().data(), m_NumAtoms, m_Forces->xyz(),
@@ -886,7 +767,7 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
             this->getNumTerms()));
   } else {
     cudaCheckLaunch(
-        EvaluateGeometricTermsKernel<AT, CT, numThreads, false>
+        EvaluateGeometricTermsKernel<AT, CT, CT3, numThreads, false>
         <<<termBlocks, numThreads, 0, *m_Stream>>>(
             m_MembershipGradients.getDeviceArray().data(),
             m_TermEnergies.getDeviceArray().data(),
@@ -904,22 +785,15 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
             m_RcmChunkOffsets.getDeviceArray().data(),
             m_RcmPartials.getDeviceArray().data(), this->getNumTerms()));
     cudaCheckLaunch(
-        StageGeometricOutputKernel<AT, CT, numThreads, false, false>
+        StageGeometricOutputKernel<AT, CT, CT3, false>
         <<<atomBlocks, numThreads, 0, *m_Stream>>>(
             m_PendingForces.getDeviceArray().data(),
-            m_PendingEnergy.getDeviceArray().data(),
-            m_VirialPartials.getDeviceArray().data(), error, xyzq,
+            m_PendingEnergy.getDeviceArray().data(), error,
             m_AtomMemberships.getDeviceArray().data(),
             m_MembershipGradients.getDeviceArray().data(),
             m_AtomOffsets.getDeviceArray().data(), m_NumAtoms, m_Forces->xyz(),
             m_Forces->stride(), energy, m_TermEnergies.getDeviceArray().data(),
             this->getNumTerms()));
-  }
-
-  if (calcVirial) {
-    cudaCheckLaunch(StageGeometricVirialKernel<<<1, 32, 0, *m_Stream>>>(
-        m_PendingVirial.getDeviceArray().data(), error, virial,
-        m_VirialPartials.getDeviceArray().data(), atomBlocks));
   }
 
   int observedError = 0;
@@ -940,34 +814,18 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
       (observedError & ACCUMULATION_OVERFLOW) == 0, ApoCharmmErrorCode::Runtime,
       "MMFP accumulated gradient exceeds the fixed-point force range");
 
-  if (calcEnergy && calcVirial) {
-    cudaCheckLaunch(CommitGeometricOutputKernel<AT, true, true>
+  if (calcEnergy) {
+    cudaCheckLaunch(CommitGeometricOutputKernel<AT, true>
                     <<<atomBlocks, numThreads, 0, *m_Stream>>>(
-                        m_Forces->xyz(), energy, virial, m_Forces->stride(),
+                        m_Forces->xyz(), energy, m_Forces->stride(),
                         m_PendingForces.getDeviceArray().data(), m_NumAtoms,
-                        m_PendingEnergy.getDeviceArray().data(),
-                        m_PendingVirial.getDeviceArray().data()));
-  } else if (calcEnergy && !calcVirial) {
-    cudaCheckLaunch(CommitGeometricOutputKernel<AT, true, false>
-                    <<<atomBlocks, numThreads, 0, *m_Stream>>>(
-                        m_Forces->xyz(), energy, virial, m_Forces->stride(),
-                        m_PendingForces.getDeviceArray().data(), m_NumAtoms,
-                        m_PendingEnergy.getDeviceArray().data(),
-                        m_PendingVirial.getDeviceArray().data()));
-  } else if (!calcEnergy && calcVirial) {
-    cudaCheckLaunch(CommitGeometricOutputKernel<AT, false, true>
-                    <<<atomBlocks, numThreads, 0, *m_Stream>>>(
-                        m_Forces->xyz(), energy, virial, m_Forces->stride(),
-                        m_PendingForces.getDeviceArray().data(), m_NumAtoms,
-                        m_PendingEnergy.getDeviceArray().data(),
-                        m_PendingVirial.getDeviceArray().data()));
+                        m_PendingEnergy.getDeviceArray().data()));
   } else {
-    cudaCheckLaunch(CommitGeometricOutputKernel<AT, false, false>
+    cudaCheckLaunch(CommitGeometricOutputKernel<AT, false>
                     <<<atomBlocks, numThreads, 0, *m_Stream>>>(
-                        m_Forces->xyz(), energy, virial, m_Forces->stride(),
+                        m_Forces->xyz(), energy, m_Forces->stride(),
                         m_PendingForces.getDeviceArray().data(), m_NumAtoms,
-                        m_PendingEnergy.getDeviceArray().data(),
-                        m_PendingVirial.getDeviceArray().data()));
+                        m_PendingEnergy.getDeviceArray().data()));
   }
 
   return;

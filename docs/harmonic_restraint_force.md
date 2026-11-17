@@ -17,23 +17,43 @@ dy_i = y_i - y0_i
 dz_i = z_i - z0_i
 ```
 
-The implemented energy is:
+The restraint reproduces CHARMM `CONS HARM ABSOLUTE` (`ECNST1` in
+`source/energy/ecnstr.F90`). With the per-atom force constant `k_i`, the
+configured mass or weight `m_i`, one exponent `n`, and three scale factors
+`(sx, sy, sz)`, define:
 
 ```text
-U_harm = sum over all atoms i of
-         k_i * m_i * (dx_i^2 + dy_i^2 + dz_i^2)
+C_i = k_i * m_i
+S_i = sx * dx_i * dx_i + sy * dy_i * dy_i + sz * dz_i * dz_i
 ```
 
-Here, `k_i` is the per-atom force constant and `m_i` is the configured mass or
-weight.
+Atoms with `C_i = 0` are skipped. Every other atom contributes the energy
+`E_i` and the gradient factor `D_i` of CHARMM's branch for `n`:
+
+```text
+n == 2:   E_i = C_i * S_i              D_i = 2 * C_i
+n == 4:   E_i = C_i * S_i * S_i        D_i = C_i * 4 * S_i
+n == 3:   E_i = C_i * S_i * sqrt(S_i)  D_i = C_i * 3 * sqrt(S_i)
+n == 1:   E_i = C_i * sqrt(S_i)        D_i = C_i / sqrt(S_i) if S_i > 1e-12,
+                                       otherwise 0
+n <= 0:   E_i = 0                      D_i = 0
+other n:  P_i = C_i * S_i^((n - 4) / 2)
+          E_i = P_i * S_i * S_i        D_i = P_i * n * S_i
+
+U_harm = sum over atoms of E_i
+```
+
+With the defaults `n = 2` and unit scale factors, this is
+`U_harm = sum k_i * m_i * (dx_i^2 + dy_i^2 + dz_i^2)`. As in CHARMM, there
+is no factor of one half.
 
 The values accumulated into apoCHARMM's force array are the
 potential-gradient components:
 
 ```text
-gradient_x_i = 2 * k_i * m_i * dx_i
-gradient_y_i = 2 * k_i * m_i * dy_i
-gradient_z_i = 2 * k_i * m_i * dz_i
+gradient_x_i = dx_i * D_i * sx
+gradient_y_i = dy_i * D_i * sy
+gradient_z_i = dz_i * D_i * sz
 ```
 
 apoCHARMM integration code subtracts this stored potential gradient. The
@@ -41,6 +61,16 @@ physical restoring-force components therefore have the opposite signs.
 
 Selection is implemented through the per-atom force constants. Unselected
 atoms have `k_i=0`.
+
+CHARMM's options map as follows. `FORCE k` is `setForceConstant(k)`, and
+`WEIGhting` (per-atom constants from the weighting array) is
+`setForceConstants()`. `MASS` is `setMasses()` with the atomic masses; without
+it, keep every weight at one. `EXPOnent` is `setExponent()`, and `XSCAle`,
+`YSCAle`, and `ZSCAle` are `setScaleFactors()`. The caller supplies the
+reference positions, which CHARMM takes from the main or comparison set. One
+restraint object corresponds to one CHARMM restraint set, so subscribe one
+object per set when sets differ in exponent or scale factors. `BESTfit`,
+`RELAtive`, and the PCA restraint types are not implemented.
 
 ## Quick Start
 
@@ -61,7 +91,7 @@ context.setCoordinates(coordinates)
 selector = apo.AtomSelector(psf)
 selection = selector.select("all")
 
-restraint = apo.HarmonicRestraintForce(psf.getNumAtoms())
+restraint = apo.HarmonicRestraintForce(psf)
 restraint.setSelection(selection)
 restraint.setReferenceCoordinates(coordinates.getCoordinates())
 restraint.setMasses(psf.getMasses())
@@ -107,8 +137,7 @@ AtomSelection selection(psf->getNumAtoms(),
                         AtomSelection::InitialValue::ALL);
 
 auto restraint =
-    std::make_shared<HarmonicRestraintForce<long long int, float>>(
-        psf->getNumAtoms());
+    std::make_shared<HarmonicRestraintForce<long long int, float>>(psf);
 
 restraint->setSelection(selection);
 restraint->setReferenceCoordinates(coordinates->getCoordinatesDP());
@@ -127,13 +156,16 @@ forceManager->unsubscribe(restraint);
 
 ## Construction and Required State
 
-Construction requires a strictly positive atom count. The count is fixed for the
-object's lifetime. The constructor establishes these defaults:
+Construction requires a non-null PSF with an initialized, strictly positive atom
+count. The constructor copies only that count, which is fixed for the object's
+lifetime, and retains no PSF. PSF masses are not read; `setMasses()` supplies
+them for CHARMM's `MASS` option. The constructor establishes these defaults:
 
 - every atom is selected;
 - every force constant is zero;
 - every reference position is `(0, 0, 0)`;
 - every per-atom weight is one;
+- the exponent is two and every scale factor is one;
 - stored box dimensions are `(0, 0, 0)`;
 - the output energy term is named `harm`;
 - a private CUDA stream and fixed-point force array are allocated.
@@ -151,8 +183,9 @@ initialization invokes it later.
 
 Normal manager-driven order is:
 
-1. construct the restraint with the manager atom count;
-2. set selection, references, masses, and force constants;
+1. construct the restraint from the PSF of the manager's system;
+2. set selection, references, masses, and force constants, and optionally the
+   exponent and scale factors;
 3. subscribe the restraint;
 4. let `CharmmContext` or an integrator drive force calculation;
 5. unsubscribe before closing or destroying the public handle.
@@ -165,7 +198,9 @@ host code consumes the result.
 
 The native object owns or retains:
 
-- host/device mirrors of force constants, references, weights, and box lengths;
+- host/device mirrors of force constants, reference positions, and masses or
+  weights;
+- host copies of the box lengths, the exponent, and the three scale factors;
 - an `AtomSelection` copy;
 - shared ownership of one `Force<AT>`;
 - shared ownership of one `CudaEnergyVirial`;
@@ -204,20 +239,27 @@ For a restraint containing `N` atoms:
 | Force constants | `std::vector<double>` of length `N` | `double[N]` | Iterable of `N` float-convertible values | Per-atom `k_i` |
 | References | `std::vector<double3>` or `N` rows of length 3 | Flat `double[3N]` | `N` iterables of length 3 | `[x, y, z]` in angstroms |
 | Masses or weights | `std::vector<double>` of length `N` | `double[N]` | Iterable of `N` float-convertible values | Normally atomic mass units |
+| Exponent | `int` | `int` | `int` fitting C `int` | Dimensionless `n` |
+| Scale factors | `std::vector<double>` of length 3 | `double[3]` | Iterable of 3 float-convertible values | Dimensionless `[sx, sy, sz]` |
 | Box | `std::vector<double>` of length 3 | `double[3]` | Iterable of 3 float-convertible values | `[x, y, z]` lengths in angstroms |
 | Current coordinates | Device `float4[N]` | Not exposed directly | Not exposed directly | `x`, `y`, `z` in angstroms; `w` ignored |
 | Force output | `Force<long long int>` | Managed through `ForceManager` | Managed through `ForceManager` | Structure-of-arrays potential gradient |
 | Energy output | `CudaEnergyVirial` term `harm` | Managed through `ForceManager` | Managed through `ForceManager` | Kilocalories per mole |
 
-The implemented energy contains the product `k_i * m_i`. When `m_i` is in
-atomic mass units, use `k_i` in kilocalories per mole per square angstrom
-per atomic mass unit. With every weight set to one, the numerical behavior is
-the ordinary per-atom harmonic expression with `k_i` in kilocalories per
-mole per square angstrom.
+The implemented energy contains the product `k_i * m_i`. With unit scale
+factors and `m_i` in atomic mass units, use `k_i` in kilocalories per mole
+per angstrom to the power `n` per atomic mass unit. With every weight set to
+one and `n = 2`, the numerical behavior is the ordinary per-atom harmonic
+expression with `k_i` in kilocalories per mole per square angstrom.
 
-Masses and force constants must be finite and non-negative. Zero is accepted
-for either quantity and disables that atom's contribution. Reference
-coordinates must be finite. Box lengths must be finite and strictly positive.
+As in CHARMM, per-atom force constants and masses must be finite and may have
+either sign. The scalar force constant must be finite and non-negative:
+CHARMM replaces a negative `FORCE` value with zero and warns, and
+`setForceConstant()` rejects it instead. Zero is accepted for any constant or
+mass and disables that atom's contribution. Every integer exponent is
+accepted. Scale factors must be finite and may be zero or negative; a zero
+factor removes that axis. Reference coordinates must be finite. Box lengths
+must be finite and strictly positive.
 
 For the supported fixed-point native instantiations, force-array integers use a
 scale of `2^40`. Multiplying by `1 / 2^40` recovers the stored
@@ -242,16 +284,22 @@ Verified argument failures raise
 [ApoCharmmError](@ref ApoCharmmError) with
 `ApoCharmmErrorCode::InvalidArgument`:
 
-- construction with a non-positive atom count;
+- construction from a null PSF or a PSF with zero atoms;
 - a selection or initialization atom-count mismatch;
+- a negative or non-finite scalar force constant;
 - a force-constant vector with the wrong length;
-- a negative or non-finite selected force constant;
+- a non-finite selected force constant;
 - a reference-coordinate collection with the wrong shape;
 - a non-finite reference-coordinate component;
 - a mass vector with the wrong length;
-- a negative or non-finite mass;
+- a non-finite mass;
+- a scale-factor vector whose length is not three;
+- a non-finite scale factor;
 - a box vector whose length is not three;
 - a non-positive or non-finite box length.
+
+Construction from a PSF whose atom count is not initialized raises
+`ApoCharmmErrorCode::NotInitialized`.
 
 CUDA allocation, transfer, synchronization, stream creation, output clearing,
 and immediate kernel-launch failures raise `ApoCharmmError` with
@@ -276,6 +324,8 @@ empty. Failure leaves nonempty text available through
 shape or length mismatches, invalid numeric values, duplicate subscription, and
 unsubscription of a restraint that is not subscribed.
 
+`APO_STATUS_NOT_INITIALIZED` reports a PSF with a negative atom count.
+
 `APO_STATUS_CUDA_ERROR` covers categorized native CUDA failures.
 
 `APO_STATUS_RUNTIME_ERROR` covers host allocation, diagnostic construction,
@@ -290,12 +340,15 @@ preserves a stale thread-local diagnostic.
 
 Python conversion and shape checks occur before the C call:
 
-- incompatible objects or non-iterable inputs can raise `TypeError`;
+- incompatible objects or non-iterable inputs can raise `TypeError`, as does
+  an exponent that is not an `int` or is a `bool`;
+- an exponent that does not fit in C `int` raises `ValueError`;
 - failed scalar conversion or a reference row whose length is not three can
   raise `ValueError`;
 - conversion of an excessively large numeric value can raise `OverflowError`;
 - temporary list or `ctypes` allocation can raise `MemoryError`;
-- using a closed wrapper raises `RuntimeError`;
+- using a closed wrapper, or constructing from a closed `CharmmPsf`, raises
+  `RuntimeError`;
 - UTF-8 tag encoding can raise `UnicodeEncodeError`.
 
 A nonzero native status raises `ApoCharmmError` with the numeric C status,
@@ -309,26 +362,29 @@ Neither method synchronizes the stream before returning. The manager orders and
 synchronizes subscribed streams during aggregate force and energy processing.
 Direct native callers must synchronize explicitly.
 
-Parameter setters use `CudaContainer` transfers that call
-`cudaDeviceSynchronize()`. They therefore wait for all previously requested
-work on the current CUDA device, not only restraint work. The scalar and
-per-atom force-constant setters currently perform a synchronized zero fill
-followed by a second synchronized transfer.
+Parameter setters change only the host mirrors and mark them dirty.
+`initialize()` and `calcForce()` transfer the changed mirrors with
+`CudaContainer` transfers that call `cudaDeviceSynchronize()`, so several
+setter calls cost one transfer of each array before the next calculation.
+Those transfers wait for all previously requested work on the current CUDA
+device, not only restraint work.
 
 Force and energy updates are additive. When `calcEnergy` is false, the existing
 `harm` energy remains unchanged and can be stale. `calcVirial` is accepted for
 interface compatibility but has no effect. The restraint declares
-`contributesVirial == false`.
+`contributesVirial == false`, because CHARMM evaluates absolute `CONS HARM`
+restraints after it forms its internal virial, so they reach only the
+external virial, which apoCHARMM does not implement.
 
 Changing the selection zeros constants for newly unselected atoms. Expanding
 the selection does not restore old constants; set the scalar or per-atom
 constants again.
 
 Reference-coordinate and mass validation is interleaved with host mutation. A
-later invalid value can leave an earlier host prefix updated while the device
-mirror remains old.
+later invalid value can leave an earlier host prefix updated, which reaches
+the device with the next transfer.
 
-Box dimensions are stored and transferred but are not read by the current
+Box dimensions are stored in host memory and are not read by the current
 kernel. Box changes do not rescale references, and displacements are not
 minimum-image wrapped.
 
@@ -339,7 +395,11 @@ HarmonicRestraintForce<long long int, float>
 HarmonicRestraintForce<long long int, double>
 ```
 
-The public C ABI and Python API use the first specialization.
+`CT` is the representation of the force arithmetic, including each atom's
+energy value, which is converted to double before it is summed; the energy sums
+and the stored energy are double. The public C ABI and Python API use the first
+specialization, so their forces and per-atom energies are evaluated in single
+precision.
 
 The native class is not safely copyable with its current compiler-generated
 copy operations. Treat each instance as a unique configuration object managed
@@ -410,39 +470,42 @@ representation requires:
 ```text
 forceConstants.size() == atomCount
 referenceCoordinates.size() == atomCount
+masses.size() == atomCount
 selection.getNumAtoms() == atomCount
-boxDimensions.size() == 3
 force.size() == atomCount
-referenceCoordinates[i].w == configured mass or weight
 unselected forceConstants[i] == 0
 ```
 
-`m_ReferenceCoordinates` stores `[x0, y0, z0, mass]` in one `double4` per atom.
+`m_ReferenceCoordinates` stores one `double3` position per atom, and `m_Masses`
+stores one mass or weight per atom.
 Selection is not read by the kernel; it affects calculation only through
 zeroed force constants.
 
 ### Host and device data flow
 
-Configuration begins in host memory. `CudaContainer` copies or updates the host
-mirror and then transfers the complete active range to device memory.
-Reference-position and mass setters share one `double4` array, so each transfer
-moves both kinds of data.
+Configuration begins in host memory. Setters update the host mirrors and set
+`m_DeviceDataDirty`; `syncDeviceData()`, called by `initialize()` and
+`calcForce()`, transfers the force constants, reference positions, and masses
+once and clears the flag. Box lengths stay in host memory.
 
 The kernel reads:
 
 ```text
 float4 current coordinate records
 double per-atom force constants
-double4 reference-position and mass records
+double3 per-atom reference positions
+double per-atom masses or weights
 ```
 
-It writes fixed-point X, Y, and Z force arrays atomically. When energy is
-requested, each block reduces a double-precision partial sum and one thread
-atomically adds it to the `harm` device scalar.
+The exponent and the three scale factors are passed by value as kernel
+arguments, so their setters perform no transfer. The kernel writes
+fixed-point X, Y, and Z force arrays atomically. When energy is requested,
+each atom's energy is evaluated in `CT` and converted to double, each block
+reduces a double-precision partial sum, and one thread atomically adds it to
+the `harm` device scalar.
 
 The current implementation launches 256 threads per block and selects one of
-four template variants for the two Boolean calculation flags. The virial
-template flag currently produces no virial write.
+two template variants for `calcEnergy`. `calcForce()` discards `calcVirial`.
 
 ### Error boundaries
 
@@ -470,7 +533,7 @@ the same resource and lifecycle interface.
 Adding periodic restraint behavior would require an explicit displacement
 policy rather than merely reading the currently stored box vector. Adding a
 virial requires defining and implementing the external-virial convention that
-the current kernel comments defer.
+the `JEG260501` note in `calcForce()` defers.
 
 Adding another `AT` or `CT` combination requires a valid device write
 implementation and a corresponding explicit template instantiation in
@@ -483,9 +546,9 @@ point accumulation in the shared manager output by using fixed-point integers.
 Energy accumulation uses a block reduction followed by one atomic addition per
 block.
 
-Configuration setters are not hot-path operations and currently use
-device-wide synchronization. Do not move those transfers into the per-step
-force path.
+Setters perform no CUDA work. A calculation after a configuration change
+first transfers the changed arrays with device-wide synchronization; a
+calculation without changes only checks the dirty flag.
 
 ### Tests and example
 
@@ -497,10 +560,13 @@ Relevant validation and behavior coverage is located in:
 - `example/cons_harm.py`.
 
 The native tests verify constructor defaults, validation, selection behavior,
-force and energy values, clearing, and force-manager subscription. The direct
-C ABI tests verify handles, arrays, statuses, diagnostics, subscription, and
-diagnostic clearing. The Python tests verify conversion, validation,
-subscription, error translation, and short propagation.
+force and energy values, every CHARMM exponent branch, scale factors, the
+linear-branch tolerance, signed constants, skipped atoms, the arithmetic type,
+clearing, and force-manager subscription. The direct C ABI tests verify
+handles, arrays, statuses, diagnostics, subscription, and diagnostic
+clearing. The Python tests verify conversion, validation, subscription, error
+translation, a manager evaluation with a quartic exponent and scale factors,
+and short propagation.
 
 ## API Reference
 
@@ -520,6 +586,8 @@ subscription, error translation, and short propagation.
 - [apo_harmonic_restraint_force_set_force_constants](@ref apo_harmonic_restraint_force_set_force_constants)
 - [apo_harmonic_restraint_force_set_reference_coordinates](@ref apo_harmonic_restraint_force_set_reference_coordinates)
 - [apo_harmonic_restraint_force_set_masses](@ref apo_harmonic_restraint_force_set_masses)
+- [apo_harmonic_restraint_force_set_exponent](@ref apo_harmonic_restraint_force_set_exponent)
+- [apo_harmonic_restraint_force_set_scale_factors](@ref apo_harmonic_restraint_force_set_scale_factors)
 - [apo_harmonic_restraint_force_set_box_dimensions](@ref apo_harmonic_restraint_force_set_box_dimensions)
 - [apo_force_manager_subscribe_harmonic_restraint_force](@ref apo_force_manager_subscribe_harmonic_restraint_force)
 - [apo_force_manager_unsubscribe_harmonic_restraint_force](@ref apo_force_manager_unsubscribe_harmonic_restraint_force)

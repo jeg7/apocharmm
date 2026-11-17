@@ -23,7 +23,9 @@ import ctypes
 
 from ._base import _ApoObject
 from ._lib import lib
+from ._validation import require_c_int
 from .atom_selection import AtomSelection
+from .charmm_psf import CharmmPsf
 from .error import configure_status_function
 from .force_manager import ForceManager
 
@@ -38,7 +40,7 @@ def _initialize_prototypes() -> None:
 
     configure_status_function(
         lib().apo_harmonic_restraint_force_create,
-        [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int],
+        [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p],
         "HarmonicRestraintForce construction",
     )
 
@@ -76,6 +78,18 @@ def _initialize_prototypes() -> None:
     )
 
     configure_status_function(
+        lib().apo_harmonic_restraint_force_set_exponent,
+        [ctypes.c_void_p, ctypes.c_int],
+        "HarmonicRestraintForce.setExponent(exponent)",
+    )
+
+    configure_status_function(
+        lib().apo_harmonic_restraint_force_set_scale_factors,
+        [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t],
+        "HarmonicRestraintForce.setScaleFactors(scale_factors)",
+    )
+
+    configure_status_function(
         lib().apo_harmonic_restraint_force_set_box_dimensions,
         [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t],
         "HarmonicRestraintForce.setBoxDimensions(box_dimensions)",
@@ -103,14 +117,18 @@ class HarmonicRestraintForce(_ApoObject):
     @brief Configures an owned native absolute harmonic restraint.
 
     The restraint applies one absolute Cartesian reference position, force
-    constant, and mass or weight per atom. See the subsystem page for the
-    energy equation, force-array sign convention, data layout, and units.
+    constant, and mass or weight per atom, with one exponent and three scale
+    factors for all atoms, like CHARMM `CONS HARM ABSOLUTE`. See the subsystem
+    page for the energy equation, force-array sign convention, data layout,
+    and units.
 
     This wrapper owns one C handle for the native
-    `HarmonicRestraintForce<long long int, float>` specialization. Python
-    sequences are converted to `float`, copied into temporary contiguous
-    `ctypes` buffers, and copied again into native storage. No caller sequence
-    or buffer is retained.
+    `HarmonicRestraintForce<long long int, float>` specialization.
+    Construction borrows a `CharmmPsf` only for the call: native code copies its
+    atom count, and this wrapper retains neither the Python PSF wrapper nor its
+    native PSF. Python sequences are converted to `float`, copied into
+    temporary contiguous `ctypes` buffers, and copied again into native
+    storage. No caller sequence or buffer is retained.
 
     `ForceManager.subscribe()` retains this wrapper after native subscription
     succeeds. The native manager independently retains the restraint and its
@@ -133,45 +151,41 @@ class HarmonicRestraintForce(_ApoObject):
 
     _destroy_function_name = "apo_harmonic_restraint_force_destroy"
 
-    def __init__(self, num_atoms: int) -> None:
+    def __init__(self, psf: CharmmPsf) -> None:
         """
-        @brief Constructs a restraint for a fixed atom count.
+        @brief Constructs a restraint from a PSF atom count.
 
-        `num_atoms` is checked as a Python `int`, converted to signed C `int`,
-        and passed to the native constructor. The wrapper owns the newly
-        returned handle and sets `default_force_tag` to `"harm"`.
+        The native constructor borrows `psf` only for the call and copies its
+        atom count; PSF masses are not read. Every per-atom weight starts at one,
+        and `setMasses()` supplies masses. The wrapper owns the newly returned
+        handle, does not retain `psf`, and sets `default_force_tag` to `"harm"`.
 
-        @param[in] num_atoms Dimensionless positive atom count representable by
-        signed 32-bit C `int`. The current `isinstance(value, int)` check also
-        accepts Python `bool`; `True` reaches native construction as one and
-        `False` is rejected natively as zero.
-        @throws TypeError If `num_atoms` is not a Python `int`.
-        @throws ValueError If `num_atoms` is outside the signed 32-bit C `int`
-        range.
-        @throws ApoCharmmError If native validation rejects a non-positive
-        value, native CUDA setup fails, or native allocation fails.
-        @throws RuntimeError If native construction reports success but
-        produces a NULL handle.
+        @param[in] psf Live `CharmmPsf` with a positive atom count.
+        @throws TypeError If `psf` is not a `CharmmPsf`.
+        @throws RuntimeError If `psf` has been closed or if native construction
+        reports success but produces a NULL handle.
+        @throws ApoCharmmError With native status
+        `APO_STATUS_INVALID_ARGUMENT` if the atom count is zero,
+        `APO_STATUS_NOT_INITIALIZED` if it is negative, `APO_STATUS_CUDA_ERROR`
+        if CUDA setup fails, or `APO_STATUS_RUNTIME_ERROR` if native allocation
+        fails.
         @throws MemoryError If Python or `ctypes` bookkeeping cannot allocate
         storage.
 
-        @post On success, this wrapper owns a live native handle and
-        `default_force_tag == "harm"`.
+        @post On success, this wrapper owns a live native handle,
+        `default_force_tag == "harm"`, and closing `psf` does not change the
+        restraint's atom count.
         """
         super().__init__()
 
-        if not isinstance(num_atoms, int):
-            raise TypeError("num_atoms must be an int")
-
-        if num_atoms < -(2**31) or num_atoms > 2**31 - 1:
-            raise ValueError("num_atoms must fit in int")
+        if not isinstance(psf, CharmmPsf):
+            raise TypeError("HarmonicRestraintForce expects a CharmmPsf")
 
         _initialize_prototypes()
 
         handle: ctypes.c_void_p = ctypes.c_void_p()
-        c_num_atoms: ctypes.c_int = ctypes.c_int(num_atoms)
 
-        lib().apo_harmonic_restraint_force_create(ctypes.byref(handle), c_num_atoms)
+        lib().apo_harmonic_restraint_force_create(ctypes.byref(handle), psf.handle)
 
         if handle.value is None:
             raise RuntimeError(
@@ -209,8 +223,7 @@ class HarmonicRestraintForce(_ApoObject):
         @throws TypeError If `selection` is not an `AtomSelection`.
         @throws RuntimeError If this wrapper or `selection` has been closed.
         @throws ApoCharmmError If native handle validation or atom-count
-        validation fails, a native allocation fails, or the native
-        host-to-device update fails.
+        validation fails or a native allocation fails.
         """
         _initialize_prototypes()
 
@@ -239,7 +252,7 @@ class HarmonicRestraintForce(_ApoObject):
         @throws OverflowError If Python conversion overflows.
         @throws RuntimeError If this wrapper has been closed.
         @throws ApoCharmmError If native validation rejects the converted
-        value or the native CUDA update fails.
+        value.
         """
         _initialize_prototypes()
 
@@ -265,7 +278,8 @@ class HarmonicRestraintForce(_ApoObject):
         and their native constants are zero.
 
         @param[in] force_constants Iterable of values accepted by `float()`, in
-        atom order. Selected values must be finite and non-negative.
+        atom order. Selected values must be finite; as with CHARMM's WEIGhting
+        option, they may have either sign.
         @throws TypeError If the object is not iterable or an element cannot be
         converted with `float()`.
         @throws ValueError If element conversion fails.
@@ -274,7 +288,7 @@ class HarmonicRestraintForce(_ApoObject):
         allocated.
         @throws RuntimeError If this wrapper has been closed.
         @throws ApoCharmmError If the native length or selected-value contract
-        is violated or the native CUDA update fails.
+        is violated.
         """
         _initialize_prototypes()
 
@@ -316,11 +330,11 @@ class HarmonicRestraintForce(_ApoObject):
         @throws MemoryError If the flattened list or C buffer cannot be
         allocated.
         @throws RuntimeError If this wrapper has been closed.
-        @throws ApoCharmmError If the native atom count is wrong, a converted
-        coordinate is non-finite, or the native CUDA transfer fails.
+        @throws ApoCharmmError If the native atom count is wrong or a converted
+        coordinate is non-finite.
 
         @warning A native non-finite-value failure can leave an earlier host
-        prefix updated while the native device mirror remains old.
+        prefix updated.
         """
         _initialize_prototypes()
 
@@ -355,9 +369,9 @@ class HarmonicRestraintForce(_ApoObject):
         temporary contiguous C `double` buffer. Native code copies the values
         again.
 
-        Values normally use atomic mass units. Every value must be finite and
-        non-negative. Zero is accepted and suppresses that atom's harmonic
-        contribution.
+        Values normally use atomic mass units. Every value must be finite; as
+        with CHARMM's MASS option, it may have either sign. Zero is accepted
+        and suppresses that atom's harmonic contribution.
 
         @param[in] masses Iterable producing exactly one mass or weight per
         atom, in atom order.
@@ -369,10 +383,10 @@ class HarmonicRestraintForce(_ApoObject):
         allocated.
         @throws RuntimeError If this wrapper has been closed.
         @throws ApoCharmmError If the native length or value contract is
-        violated or the native CUDA transfer fails.
+        violated.
 
         @warning A native invalid-value failure can leave an earlier host
-        prefix updated while the native device mirror remains old.
+        prefix updated.
         """
         _initialize_prototypes()
 
@@ -383,6 +397,66 @@ class HarmonicRestraintForce(_ApoObject):
         c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(len(mass_values))
 
         lib().apo_harmonic_restraint_force_set_masses(
+            self.handle, c_buffer, c_buffer_len
+        )
+
+        return
+
+    def setExponent(self, exponent: int) -> None:
+        """
+        @brief Sets the exponent applied to every atom.
+
+        Two gives the harmonic form, and zero or a negative value makes every
+        contribution zero. As with CHARMM's EXPOnent option, every integer
+        representable by signed C `int` is accepted.
+
+        @param[in] exponent Python `int` exponent. `bool` is rejected.
+        @throws TypeError If `exponent` is not an `int` or is a `bool`.
+        @throws ValueError If `exponent` does not fit in signed C `int`.
+        @throws RuntimeError If this wrapper has been closed.
+        @throws ApoCharmmError If the C ABI reports a failure.
+        """
+        _initialize_prototypes()
+
+        exponent_value: int = require_c_int(exponent, "exponent")
+
+        lib().apo_harmonic_restraint_force_set_exponent(
+            self.handle, ctypes.c_int(exponent_value)
+        )
+
+        return
+
+    def setScaleFactors(self, scale_factors: Sequence[float]) -> None:
+        """
+        @brief Copies the Cartesian scale factors applied to every atom.
+
+        The method consumes `scale_factors` as an iterable, converts every
+        value with `float()`, and copies the resulting list through a
+        temporary C `double` buffer. Exactly three finite values are required
+        in `[x, y, z]` order. Like CHARMM's XSCAle, YSCAle, and ZSCAle options,
+        they multiply the squared displacements and the gradient components,
+        and a factor may be zero or negative.
+
+        @param[in] scale_factors Iterable of exactly three dimensionless
+        factors.
+        @throws TypeError If the object is not iterable or a value cannot be
+        converted with `float()`.
+        @throws ValueError If value conversion fails.
+        @throws OverflowError If value conversion overflows.
+        @throws MemoryError If the temporary list or C buffer cannot be
+        allocated.
+        @throws RuntimeError If this wrapper has been closed.
+        @throws ApoCharmmError If native length or value validation fails.
+        """
+        _initialize_prototypes()
+
+        scale_factor_values: list[float] = [float(value) for value in scale_factors]
+
+        c_buffer_type = ctypes.c_double * len(scale_factor_values)
+        c_buffer = c_buffer_type(*scale_factor_values)
+        c_buffer_len: ctypes.c_size_t = ctypes.c_size_t(len(scale_factor_values))
+
+        lib().apo_harmonic_restraint_force_set_scale_factors(
             self.handle, c_buffer, c_buffer_len
         )
 
@@ -408,8 +482,7 @@ class HarmonicRestraintForce(_ApoObject):
         @throws MemoryError If the temporary list or C buffer cannot be
         allocated.
         @throws RuntimeError If this wrapper has been closed.
-        @throws ApoCharmmError If native length or value validation fails or a
-        changed box cannot be transferred to the device.
+        @throws ApoCharmmError If native length or value validation fails.
         """
         _initialize_prototypes()
 

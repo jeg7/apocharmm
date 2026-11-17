@@ -14,22 +14,33 @@
 #include "cuda_utils.h"
 #include "gpu_utils.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
 #include <string>
 
 template <typename AT, typename CT>
-DistanceRestraintForce<AT, CT>::DistanceRestraintForce(const int numAtoms)
-    : m_NumAtoms(numAtoms), m_Scale(1.0), m_BoxDimX(0.0), m_BoxDimY(0.0),
-      m_BoxDimZ(0.0), m_DeviceDataDirty(true), m_TermPairOffsets(),
-      m_FirstAtomIndices(), m_SecondAtomIndices(), m_PairCoefficients(),
-      m_ForceConstants(), m_ReferenceValues(), m_DistanceExponents(),
-      m_EnergyExponents(), m_ActivationConditions(), m_EnergyVirial(nullptr),
-      m_Forces(nullptr), m_Stream(nullptr) {
+DistanceRestraintForce<AT, CT>::DistanceRestraintForce(
+    const std::shared_ptr<const CharmmPSF> &psf)
+    : m_NumAtoms(0), m_Scale(1.0), m_BoxDimensions{0.0, 0.0, 0.0},
+      m_DeviceDataDirty(true), m_TermPairOffsets(), m_FirstAtomIndices(),
+      m_SecondAtomIndices(), m_PairCoefficients(), m_ForceConstants(),
+      m_ReferenceValues(), m_DistanceExponents(), m_EnergyExponents(),
+      m_ActivationConditions(), m_EnergyVirial(nullptr), m_Forces(nullptr),
+      m_Stream(nullptr) {
+  APOCHARMM_REQUIRE(psf != nullptr, ApoCharmmErrorCode::InvalidArgument,
+                    "CharmmPSF must not be null");
+
+  const int numAtoms = psf->getNumAtoms();
+  APOCHARMM_REQUIRE(numAtoms >= 0, ApoCharmmErrorCode::NotInitialized,
+                    "CharmmPSF atom count is not initialized; observed " +
+                        std::to_string(numAtoms));
   APOCHARMM_REQUIRE(numAtoms > 0, ApoCharmmErrorCode::InvalidArgument,
                     "Atom count must be positive; observed " +
                         std::to_string(numAtoms));
+
+  m_NumAtoms = numAtoms;
 
   m_TermPairOffsets.getHostArray().push_back(0);
 
@@ -281,9 +292,8 @@ void DistanceRestraintForce<AT, CT>::setBoxDimensions(
             " must be positive; observed " + std::to_string(boxDimensions[i]));
   }
 
-  m_BoxDimX = boxDimensions[0];
-  m_BoxDimY = boxDimensions[1];
-  m_BoxDimZ = boxDimensions[2];
+  std::copy(boxDimensions.begin(), boxDimensions.end(),
+            m_BoxDimensions.begin());
 
   return;
 }
@@ -297,6 +307,7 @@ void DistanceRestraintForce<AT, CT>::initialize(
                         std::to_string(numAtoms));
 
   this->setBoxDimensions(boxDimensions);
+  this->syncDeviceData();
 
   return;
 }
@@ -336,25 +347,28 @@ static __forceinline__ __device__ T integerPower(const T base,
 
 template <typename AT, typename CT, int blockSize, bool calcEnergy,
           bool calcVirial>
-__global__ static void DistanceRestraintForceKernel(
-    AT *__restrict__ forces, double *__restrict__ energy, const int forceStride,
-    const float4 *__restrict__ xyzq, const double scale,
-    const int *__restrict__ termPairOffsets,
-    const int *__restrict__ firstAtomIndices,
-    const int *__restrict__ secondAtomIndices,
-    const double *__restrict__ pairCoefficients,
-    const double *__restrict__ forceConstants,
-    const double *__restrict__ referenceValues,
-    const int *__restrict__ distanceExponents,
-    const int *__restrict__ energyExponents,
-    const int *__restrict__ activationConditions) {
+__global__ static void
+DistanceRestraintForceKernel(AT *__restrict__ forces,
+                             double *__restrict__ energy, const int forceStride,
+                             const float4 *__restrict__ xyzq, const CT scale,
+                             const int *__restrict__ termPairOffsets,
+                             const int *__restrict__ firstAtomIndices,
+                             const int *__restrict__ secondAtomIndices,
+                             const double *__restrict__ pairCoefficients,
+                             const double *__restrict__ forceConstants,
+                             const double *__restrict__ referenceValues,
+                             const int *__restrict__ distanceExponents,
+                             const int *__restrict__ energyExponents,
+                             const int *__restrict__ activationConditions) {
+  constexpr CT ZERO = static_cast<CT>(0);
+
   const int pairBegin = termPairOffsets[blockIdx.x];
   const int pairEnd = termPairOffsets[blockIdx.x + 1];
   const int distanceExponent = distanceExponents[blockIdx.x];
 
-  __shared__ BlockReduceSumStorage<double, blockSize, 1> cache;
-  __shared__ double deviation;
-  __shared__ double derivative;
+  __shared__ BlockReduceSumStorage<CT, blockSize, 1> cache;
+  __shared__ CT deviation;
+  __shared__ CT derivative;
   __shared__ int active;
   __shared__ int zeroDistanceDetected;
 
@@ -362,27 +376,27 @@ __global__ static void DistanceRestraintForceKernel(
     zeroDistanceDetected = 0;
   __syncthreads();
 
-  double reactionCoordinate[1] = {0.0};
+  CT reactionCoordinate[1] = {ZERO};
   for (int i = pairBegin + threadIdx.x; i < pairEnd; i += blockDim.x) {
     const int iatom = firstAtomIndices[i];
     const int jatom = secondAtomIndices[i];
 
-    const double dx =
-        static_cast<double>(xyzq[iatom].x) - static_cast<double>(xyzq[jatom].x);
-    const double dy =
-        static_cast<double>(xyzq[iatom].y) - static_cast<double>(xyzq[jatom].y);
-    const double dz =
-        static_cast<double>(xyzq[iatom].z) - static_cast<double>(xyzq[jatom].z);
-    const double dr2 = dx * dx + dy * dy + dz * dz;
+    const CT dx =
+        static_cast<CT>(xyzq[iatom].x) - static_cast<CT>(xyzq[jatom].x);
+    const CT dy =
+        static_cast<CT>(xyzq[iatom].y) - static_cast<CT>(xyzq[jatom].y);
+    const CT dz =
+        static_cast<CT>(xyzq[iatom].z) - static_cast<CT>(xyzq[jatom].z);
+    const CT dr2 = dx * dx + dy * dy + dz * dz;
 
-    if (dr2 == 0.0) {
+    if (dr2 == ZERO) {
       atomicExch(&zeroDistanceDetected, 1);
       continue;
     }
 
-    const double dr = sqrt(dr2);
-    reactionCoordinate[0] +=
-        pairCoefficients[i] * integerPower<double>(dr, distanceExponent);
+    const CT dr = sqrt(dr2);
+    reactionCoordinate[0] += static_cast<CT>(pairCoefficients[i]) *
+                             integerPower<CT>(dr, distanceExponent);
   }
 
   __syncthreads();
@@ -393,36 +407,37 @@ __global__ static void DistanceRestraintForceKernel(
     return;
   }
 
-  BlockReduceSum<double, blockSize, 1>(reactionCoordinate, cache);
+  BlockReduceSum<CT, blockSize, 1>(reactionCoordinate, cache);
 
   if (threadIdx.x == 0) {
-    deviation = reactionCoordinate[0] - referenceValues[blockIdx.x];
+    deviation =
+        reactionCoordinate[0] - static_cast<CT>(referenceValues[blockIdx.x]);
 
     const int condition = activationConditions[blockIdx.x];
     active =
         (condition == static_cast<int>(DistanceRestraintCondition::NONE)) ||
         ((condition ==
           static_cast<int>(DistanceRestraintCondition::POSITIVE)) &&
-         (deviation >= 0.0)) ||
+         (deviation >= ZERO)) ||
         ((condition ==
           static_cast<int>(DistanceRestraintCondition::NEGATIVE)) &&
-         (deviation <= 0.0));
+         (deviation <= ZERO));
 
     if (active != 0) {
-      const double forceConstant = forceConstants[blockIdx.x];
+      const CT forceConstant = static_cast<CT>(forceConstants[blockIdx.x]);
       const int energyExponent = energyExponents[blockIdx.x];
 
       derivative = scale * forceConstant *
-                   integerPower<double>(deviation, energyExponent - 1);
+                   integerPower<CT>(deviation, energyExponent - 1);
 
       if constexpr (calcEnergy) {
-        const double en =
-            scale * (forceConstant / static_cast<double>(energyExponent)) *
-            integerPower<double>(deviation, energyExponent);
-        atomicAdd(energy, en);
+        const CT en = scale *
+                      (forceConstant / static_cast<CT>(energyExponent)) *
+                      integerPower<CT>(deviation, energyExponent);
+        atomicAdd(energy, static_cast<double>(en));
       }
     } else {
-      derivative = 0.0;
+      derivative = ZERO;
     }
   }
   __syncthreads();
@@ -434,29 +449,28 @@ __global__ static void DistanceRestraintForceKernel(
     const int iatom = firstAtomIndices[i];
     const int jatom = secondAtomIndices[i];
 
-    const double dx =
-        static_cast<double>(xyzq[iatom].x) - static_cast<double>(xyzq[jatom].x);
-    const double dy =
-        static_cast<double>(xyzq[iatom].y) - static_cast<double>(xyzq[jatom].y);
-    const double dz =
-        static_cast<double>(xyzq[iatom].z) - static_cast<double>(xyzq[jatom].z);
-    const double dr2 = dx * dx + dy * dy + dz * dz;
-    const double dr = sqrt(dr2);
+    const CT dx =
+        static_cast<CT>(xyzq[iatom].x) - static_cast<CT>(xyzq[jatom].x);
+    const CT dy =
+        static_cast<CT>(xyzq[iatom].y) - static_cast<CT>(xyzq[jatom].y);
+    const CT dz =
+        static_cast<CT>(xyzq[iatom].z) - static_cast<CT>(xyzq[jatom].z);
+    const CT dr2 = dx * dx + dy * dy + dz * dz;
+    const CT dr = sqrt(dr2);
 
     if (distanceExponent == 0)
       continue;
 
-    const double pairGradientCoefficient =
-        derivative * pairCoefficients[i] *
-        static_cast<double>(distanceExponent) *
-        integerPower<double>(dr, distanceExponent - 2);
+    const CT pairGradientCoefficient =
+        derivative * static_cast<CT>(pairCoefficients[i]) *
+        static_cast<CT>(distanceExponent) *
+        integerPower<CT>(dr, distanceExponent - 2);
 
     AT gradX = static_cast<AT>(0);
     AT gradY = static_cast<AT>(0);
     AT gradZ = static_cast<AT>(0);
-    calc_component_force<AT, CT>(static_cast<CT>(pairGradientCoefficient),
-                                 static_cast<CT>(dx), static_cast<CT>(dy),
-                                 static_cast<CT>(dz), gradX, gradY, gradZ);
+    calc_component_force<AT, CT>(pairGradientCoefficient, dx, dy, dz, gradX,
+                                 gradY, gradZ);
 
     write_force<AT>(gradX, gradY, gradZ, iatom, forceStride, forces);
     write_force<AT>(-gradX, -gradY, -gradZ, jatom, forceStride, forces);
@@ -489,7 +503,7 @@ void DistanceRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
         DistanceRestraintForceKernel<AT, CT, numThreads, true, true>
         <<<numBlocks, numThreads, 0, *m_Stream>>>(
             m_Forces->xyz(), m_EnergyVirial->getEnergyPointer("resd"),
-            m_Forces->stride(), xyzq, m_Scale,
+            m_Forces->stride(), xyzq, static_cast<CT>(m_Scale),
             m_TermPairOffsets.getDeviceArray().data(),
             m_FirstAtomIndices.getDeviceArray().data(),
             m_SecondAtomIndices.getDeviceArray().data(),
@@ -504,7 +518,7 @@ void DistanceRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
         DistanceRestraintForceKernel<AT, CT, numThreads, true, false>
         <<<numBlocks, numThreads, 0, *m_Stream>>>(
             m_Forces->xyz(), m_EnergyVirial->getEnergyPointer("resd"),
-            m_Forces->stride(), xyzq, m_Scale,
+            m_Forces->stride(), xyzq, static_cast<CT>(m_Scale),
             m_TermPairOffsets.getDeviceArray().data(),
             m_FirstAtomIndices.getDeviceArray().data(),
             m_SecondAtomIndices.getDeviceArray().data(),
@@ -519,7 +533,7 @@ void DistanceRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
         DistanceRestraintForceKernel<AT, CT, numThreads, false, true>
         <<<numBlocks, numThreads, 0, *m_Stream>>>(
             m_Forces->xyz(), m_EnergyVirial->getEnergyPointer("resd"),
-            m_Forces->stride(), xyzq, m_Scale,
+            m_Forces->stride(), xyzq, static_cast<CT>(m_Scale),
             m_TermPairOffsets.getDeviceArray().data(),
             m_FirstAtomIndices.getDeviceArray().data(),
             m_SecondAtomIndices.getDeviceArray().data(),
@@ -534,7 +548,7 @@ void DistanceRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
         DistanceRestraintForceKernel<AT, CT, numThreads, false, false>
         <<<numBlocks, numThreads, 0, *m_Stream>>>(
             m_Forces->xyz(), m_EnergyVirial->getEnergyPointer("resd"),
-            m_Forces->stride(), xyzq, m_Scale,
+            m_Forces->stride(), xyzq, static_cast<CT>(m_Scale),
             m_TermPairOffsets.getDeviceArray().data(),
             m_FirstAtomIndices.getDeviceArray().data(),
             m_SecondAtomIndices.getDeviceArray().data(),

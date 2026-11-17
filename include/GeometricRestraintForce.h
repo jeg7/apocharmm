@@ -17,6 +17,7 @@
 #include "CudaEnergyVirial.h"
 #include "Force.h"
 #include "PBC.h"
+#include "cuda_utils.h"
 
 #include <array>
 #include <cstddef>
@@ -61,9 +62,9 @@
  * `SYMMETRIC` has no one-sided gate. Equality contributes zero. Finite
  * positive, zero, and negative force constants and offsets are accepted.
  * Energy is evaluated as `(0.5 * K) * (Delta * Delta)`, the operation order
- * CHARMM uses, so both programs round the energy identically. As in CHARMM, a
- * computed zero energy suppresses the gradient, even when energy output is
- * disabled.
+ * CHARMM uses, so with `CT = double` both programs round the energy
+ * identically. As in CHARMM, a computed zero energy suppresses the gradient,
+ * even when energy output is disabled.
  *
  * `ATOMWISE` evaluates each selected atom independently. `RCM` evaluates
  * once at a signed mass-weighted center and distributes its gradient:
@@ -77,10 +78,11 @@
  * One owned mass vector serves all RCM terms. Signed and zero individual
  * masses are accepted; each nonempty RCM selection requires a finite,
  * nonzero total and finite mass fractions. Atomwise terms ignore masses.
- * Selected totals use ascending atom-index order in double precision.
- * Construction copies the PSF atom count and masses; term addition copies
- * selected indices. No PSF, AtomSelection, or AtomReference owner is retained.
- * A valid empty selection adds no term. Separate terms may overlap or repeat.
+ * Selected totals are formed on the host in ascending atom-index order in
+ * double precision. Construction copies the PSF atom count and masses; term
+ * addition copies selected indices. No PSF, AtomSelection, or AtomReference
+ * owner is retained. A valid empty selection adds no term. Separate terms may
+ * overlap or repeat.
  *
  * Only orthorhombic `PBC::P1` is supported through ForceManager. Atom
  * positions, RCM construction, and reference displacements use raw Cartesian
@@ -90,18 +92,12 @@
  * units, and `K` in kilocalories per mole per angstrom squared.
  *
  * Gradients are summed at each atom in term insertion order before conversion
- * to fixed point. Energy uses the named term `mmfp`. The complete external
- * tensor uses raw absolute coordinates and unconverted double gradients:
- *
- * @code
- * W_ab = sum over atoms i of r_i,a * gradient_i,b
- * @endcode
- *
- * Energy and tensor components are in kilocalories per mole. Tensor order is
- * `XX, XY, XZ, YX, YY, YZ, ZX, ZY, ZZ`; the tensor need not be symmetric or
- * translation invariant. This defines the external coordinate-gradient
- * tensor, not CHARMM's internal pressure accumulator. ForceManager aggregates
- * it once and skips reconstruction because `computesVirial` is true.
+ * to fixed point. Energy uses the named term `mmfp`, in kilocalories per mole.
+ * The restraint contributes no virial. CHARMM forms its internal virial
+ * before it evaluates GEO restraints, so their forces do not enter that
+ * virial or the pressure derived from it. The terms are also anchored at
+ * fixed points in space, so a coordinate-gradient moment would depend on the
+ * choice of origin.
  *
  * Terms, selections, and reduction storage grow dynamically. Additions and
  * `reset()` update host state; dirty device mirrors synchronize before use.
@@ -113,9 +109,13 @@
  *
  * @tparam AT Device force-accumulator representation. Only `long long int`
  * is supported, using apoCHARMM's fixed-point scale of `2^40`.
- * @tparam CT Final Cartesian-gradient conversion representation, either
- * `float` or `double`. Geometry, energy, and RCM arithmetic use double
- * precision; both specializations read current coordinates from `float4`.
+ * @tparam CT Representation of the force arithmetic, either `float` or
+ * `double`: geometry, the RCM reductions and centers, the per-atom gradient
+ * sums, and the energy at each atom of an atomwise term or at each RCM center,
+ * which is converted to double before it is summed. Term energies and the
+ * energy total are summed in double. The configuration prepared on the host in
+ * double precision is converted to CT when the kernels read it. Both
+ * specializations read current coordinates from `float4`.
  *
  * @warning The class provides no internal host-thread synchronization. Callers
  * must serialize configuration, clearing, calculation, destruction, and all
@@ -140,6 +140,9 @@ template <typename AT, typename CT> class GeometricRestraintForce {
   static_assert(std::is_same<CT, float>::value ||
                     std::is_same<CT, double>::value,
                 "GeometricRestraintForce supports float or double arithmetic");
+
+private:
+  using CT3 = typename CudaVectorType<CT, 3>::type;
 
 public:
   /**
@@ -189,20 +192,14 @@ public:
   };
 
   /**
-   * @brief Reports that this restraint contributes the external virial tensor.
+   * @brief Reports that this restraint does not contribute to virial
+   * aggregation.
    *
-   * ForceManager requests the tensor when global virial calculation is enabled
-   * and includes the stored nine-component contribution in its aggregate.
+   * CHARMM leaves GEO restraints out of its internal virial. Likewise,
+   * ForceManager passes `calcVirial == false` to this force and excludes it
+   * from the aggregate virial.
    */
-  static constexpr bool contributesVirial = true;
-
-  /**
-   * @brief Reports that force evaluation supplies the complete virial tensor.
-   *
-   * ForceView uses this trait to skip manager-side force conversion and
-   * coordinate-gradient reconstruction. The tensor is aggregated once.
-   */
-  static constexpr bool computesVirial = true;
+  static constexpr bool contributesVirial = false;
 
 public:
   /**
@@ -670,20 +667,18 @@ public:
   std::shared_ptr<Force<AT>> getForce(void);
 
   /**
-   * @brief Returns shared ownership of energy and complete virial storage.
+   * @brief Returns shared ownership of energy and virial storage.
    *
-   * The object contains the named energy term `mmfp` and the complete external
-   * tensor `W_ab = sum_i r_i,a * g_i,b`, both in kilocalories per mole. Tensor
-   * components are ordered XX, XY, XZ, YX, YY, YZ, ZX, ZY, ZZ. The manager must
-   * not add another coordinate-gradient reconstruction for this force.
+   * The object contains the named energy term `mmfp`, in kilocalories per mole.
+   * This force never writes the object's virial, which remains zero.
    *
    * @return A copied shared owner of the restraint's `CudaEnergyVirial` object.
    * No transfer or synchronization occurs. Storage may outlive this restraint
    * while another shared owner remains.
    * @warning Copy device values to the host and synchronize before reading
-   * them. A disabled calculation flag leaves its previous output stale.
+   * them. A disabled energy calculation leaves the previous energy stale.
    * @see calcForce
-   * @see computesVirial
+   * @see contributesVirial
    */
   std::shared_ptr<CudaEnergyVirial> getEnergyVirial(void);
 
@@ -790,8 +785,8 @@ public:
    *
    * @param[in] calcEnergy Whether to zero energy storage. A false value
    * preserves the previous energy, which may be stale for new coordinates.
-   * @param[in] calcVirial Whether to zero virial storage. A false value
-   * preserves the previous tensor, which may be stale for new coordinates.
+   * @param[in] calcVirial Whether to zero virial storage. This force never
+   * writes its virial, so the flag has no observable effect.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if an output
    * clear reports an immediate CUDA failure.
    *
@@ -804,18 +799,16 @@ public:
   void clear(const bool calcEnergy, const bool calcVirial);
 
   /**
-   * @brief Accumulates native gradients and optional energy and full virial.
+   * @brief Accumulates native gradients and optional energy.
    *
    * Dirty term mirrors are rebuilt before evaluation. Term gradients are summed
-   * at each atom in insertion order, converted through CT, and added to the
-   * fixed-point output. Physical force is the negative of that stored gradient.
-   * The tensor uses raw positions and the new unconverted double gradient sum,
-   * including mass-distributed RCM gradients.
+   * in CT at each atom in insertion order and added to the fixed-point output.
+   * Physical force is the negative of that stored gradient.
    *
    * Evaluation and output-range checks are staged on the private stream. The
    * method synchronizes that stream to validate the result, then enqueues the
-   * output commit. Energy and virial are accumulated only when their flags are
-   * true; disabled outputs retain previous values and can be stale.
+   * output commit. Energy is accumulated only when `calcEnergy` is true; a
+   * disabled energy retains its previous value and can be stale.
    *
    * @param[in] xyzq Borrowed CUDA-device pointer to at least `getNumAtoms()`
    * contiguous `float4` records in `[x, y, z, charge]` order. Coordinates use
@@ -825,12 +818,12 @@ public:
    * @param[in] calcEnergy Whether to add the evaluated energy to the device
    * `mmfp` term. The energy-zero gradient gate and finite-arithmetic checks
    * still apply when this flag is false.
-   * @param[in] calcVirial Whether to add all nine external virial components in
-   * `W_ab = sum_i r_i,a * g_i,b` order.
+   * @param[in] calcVirial Accepted for the force-manager interface but ignored
+   * because this restraint contributes no virial.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
    * terms exist and `xyzq` is null.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if a term is
-   * unsupported, evaluated arithmetic is nonfinite, gradient conversion is
+   * unsupported, evaluated arithmetic is nonfinite, a summed gradient is
    * outside the fixed-point range, or accumulation would overflow.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if allocation,
    * transfer, a kernel launch, or synchronization fails.
@@ -930,9 +923,9 @@ private:
   CudaContainer<std::size_t> m_RcmChunkOffsets;
   CudaContainer<std::size_t> m_RcmChunkBegins;
   CudaContainer<std::size_t> m_RcmChunkEnds;
-  CudaContainer<double3> m_RcmPartials;
-  CudaContainer<double3> m_RcmCenters;
-  CudaContainer<double3> m_RcmCenterGradients;
+  CudaContainer<CT3> m_RcmPartials;
+  CudaContainer<CT3> m_RcmCenters;
+  CudaContainer<CT3> m_RcmCenterGradients;
 
   // JEG261002: Derived inverse membership lists preserve term insertion order
   // per atom
@@ -941,12 +934,10 @@ private:
 
   // JEG261002: Private evaluation and checked-commit workspace (never exposed
   // as output)
-  CudaContainer<double3> m_MembershipGradients;
+  CudaContainer<CT3> m_MembershipGradients;
   CudaContainer<double> m_TermEnergies;
   CudaContainer<longlong3> m_PendingForces;
   CudaContainer<double> m_PendingEnergy;
-  CudaContainer<double> m_VirialPartials;
-  CudaContainer<double> m_PendingVirial;
   CudaContainer<int> m_EvaluationError;
 
   std::shared_ptr<CudaEnergyVirial> m_EnergyVirial;

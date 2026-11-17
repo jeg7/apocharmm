@@ -303,7 +303,8 @@ seed on every call. Repeating the call with the same seed, temperature, masses,
 and atom order produces the same sampled sequence. It does not remove
 center-of-mass motion or rescale the result.
 
-`calculatePotentialEnergy()` also calculates forces and virial. In the Python
+`calculatePotentialEnergy()` also calculates forces and virial; read them, and
+the aggregate energy, through the attached `ForceManager`. In the Python
 wrapper, reset mode is always disabled. Native and C ABI callers can pass reset
 explicitly, but the current force manager reports
 `ApoCharmmErrorCode::NotImplemented` or `APO_STATUS_NOT_IMPLEMENTED` when it is

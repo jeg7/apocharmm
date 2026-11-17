@@ -195,7 +195,8 @@ A newly constructed apoCHARMM object has:
 
 - no restraint terms
 - global `SCALE=1`
-- a fixed positive atom count supplied to the constructor
+- a fixed positive atom count copied from the `CharmmPSF` passed to the
+  constructor
 - the default force-manager tag `"resd"` in the Python API
 
 CHARMM's `RESDistance` parser fills in omitted keywords with `IVAL=1`, `EVAL=2`,
@@ -210,13 +211,14 @@ condition value.
 
 ## Atom References, Pairs, and Indexing
 
-`DistanceRestraintForce` remains atom-count based:
+Like the other apoCHARMM restraints, `DistanceRestraintForce` is constructed
+from a `CharmmPSF`:
 
 ```cpp
-DistanceRestraintForce(numAtoms)
+DistanceRestraintForce(psf)
 ```
 
-It does not retain or derive its atom count from a `CharmmPSF`.
+It copies only the atom count and retains no PSF.
 
 All public C++, C, and Python term-creation interfaces require topology-aware
 `AtomReference` endpoints. There is no public distance-restraint interface that
@@ -249,7 +251,7 @@ Consequently:
 * topology A index zero paired with topology B index zero is rejected because
   both endpoints map to force-array element zero;
 * a reference valid for its source topology is rejected when its extracted index
-  is outside the force-local `[0, numAtoms)` range.
+  is outside the force-local range `[0, N)`, where `N` is the force's atom count.
 
 Pair definitions and coefficients remain separate parallel collections and must
 have matching lengths. Pair order and coefficient correspondence are preserved.
@@ -327,8 +329,8 @@ term can have a nonzero gradient and internal virial at that boundary. The first
 derivative is therefore discontinuous when crossing between the inactive and
 active sides.
 
-Deviations at the limit of double precision are still classified by their exact
-sign, for example:
+Deviations at the limit of the arithmetic precision are still classified by
+their exact sign, for example, with `CT = double`:
 
 ```text
 D = +2.220446049250313e-16
@@ -372,6 +374,13 @@ contribution and zero pair gradient.
 CHARMM gives finite results for `IVAL=6` and `IVAL=7` at a pair distance of two,
 but overflow and underflow limits at other distances are not specified.
 
+The kernel uses the arithmetic type `CT` for the force arithmetic, including
+the per-term reduction, the deviation `D`, and its one-sided classification,
+and for each term's energy value, which is converted to double before it is
+added to the energy storage, so the sum over terms is double. The native
+library instantiates `float` and `double`; the C ABI and Python API use
+`float`, so they form `D` and classify it in single precision.
+
 This page does not specify:
 
 - numerical overflow and underflow thresholds
@@ -386,10 +395,11 @@ limits.
 
 ## Python Use and Lifetime
 
-Construct the force with the same atom count as its `ForceManager`:
+Construct the force from the PSF of the system that its `ForceManager`
+evaluates:
 
 ```python
-restraint = apo.DistanceRestraintForce(psf.getNumAtoms())
+restraint = apo.DistanceRestraintForce(psf)
 ```
 
 Create exact-one atom references through `AtomSelector.selectAtom()`:

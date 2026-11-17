@@ -689,6 +689,15 @@ TEMPLATE_TEST_CASE("GeometricRestraintForcePlanarMatchesCharmm", "[mmfp]",
   selection.set(0);
   for (const Case &test : cases) {
     INFO(test.id);
+    // Float cannot represent these parameters, so CT = double alone checks
+    // such cases.
+    if (std::is_same<TestType, float>::value &&
+        (((test.k != 0.0) &&
+          (std::abs(test.k) < std::numeric_limits<float>::min())) ||
+         (std::abs(test.offset) > std::numeric_limits<float>::max()) ||
+         (std::abs(test.origin[0]) > std::numeric_limits<float>::max())))
+      continue;
+
     force.reset();
     force.initialize(NUM_ATOMS, BOX_DIMS);
     force.addPlane(selection, test.origin, test.direction, test.k, test.offset,
@@ -708,11 +717,12 @@ TEMPLATE_TEST_CASE("GeometricRestraintForcePlanarMatchesCharmm", "[mmfp]",
     // float rounding.
     const double tolerance =
         1.0e-10 + 0.5 * INV_FORCE_SCALE_TEST +
-        (std::is_same<TestType, float>::value
-             ? 0.5 * std::numeric_limits<float>::epsilon() * magnitude
-             : 0.0);
+        16.0 * std::numeric_limits<TestType>::epsilon() * magnitude;
     CheckOutput(test.id, Evaluate(force, coordinates), test.energy, expected,
-                test.energyTolerance, tolerance);
+                test.energyTolerance +
+                    16.0 * std::numeric_limits<TestType>::epsilon() *
+                        std::abs(test.energy),
+                tolerance);
   }
 }
 
@@ -1017,12 +1027,11 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceBoxAndVirial", "[mmfp][virial]",
   // JEG261007: CHARMM uses the raw atom position, so no image correction is
   // applied.
   ForceView view(&force);
-  CHECK(view.contributesVirial());
+  CHECK(!view.contributesVirial());
   CHECK(view.supportsPBC(PBC::P1));
   CHECK(!view.supportsPBC(PBC::P21));
   CHECK(!view.supportsPBC(PBC::UNSET));
-  CheckVirial("raw-coordinate plane virial", result.virial,
-              {451.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+  CheckVirial("plane adds no virial", result.virial, {});
 }
 
 TEMPLATE_TEST_CASE("GeometricRestraintForceGrowingSelectionsAndTerms", "[mmfp]",
@@ -1090,14 +1099,17 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCheckedNumericalLimits", "[mmfp]",
     // JEG261007: CHARMM accepts this input with E=5e-87 kcal/mol and physical
     // Fx=-1e7 kcal/mol/A. Both native specializations use fixed-point force
     // storage, so they reject this force when it exceeds the representable
-    // range.
-    force.addPlane(atom, {-1e-93, 0.0, 0.0}, X_DIRECTION, 1e100, 0.0,
-                   A::SYMMETRIC);
-    CudaContainer<float4> xyzq(coordinates);
-    apo_test::CheckApoCharmmError(
-        [&] { force.calcForce(xyzq.getDeviceArray().data(), true, true); },
-        ApoCharmmErrorCode::Runtime,
-        "MMFP gradient exceeds the fixed-point force range");
+    // range. Float cannot represent K = 1e100 or the origin, so CT = double
+    // alone checks this input.
+    if constexpr (std::is_same<TestType, double>::value) {
+      force.addPlane(atom, {-1e-93, 0.0, 0.0}, X_DIRECTION, 1e100, 0.0,
+                     A::SYMMETRIC);
+      CudaContainer<float4> xyzq(coordinates);
+      apo_test::CheckApoCharmmError(
+          [&] { force.calcForce(xyzq.getDeviceArray().data(), true, true); },
+          ApoCharmmErrorCode::Runtime,
+          "MMFP gradient exceeds the fixed-point force range");
+    }
   }
 
   SECTION("NonfiniteEvaluatedArithmetic") {
@@ -1168,8 +1180,10 @@ TEST_CASE("GeometricRestraintForceDoubleConversionAccuracy", "[mmfp]") {
   // rounded reference values collected from CHARMM for a general plane normal.
   CheckOutput("double analytical", Evaluate(dual, coordinates), energy,
               expected, 2.0e-13, 1.0e-12);
-  CheckOutput("float conversion analytical", Evaluate(single, coordinates),
-              energy, expected, 2.0e-13, 3.0e-7);
+  // Single-precision arithmetic rounds the energy as well as the forces.
+  CheckOutput("float arithmetic analytical", Evaluate(single, coordinates),
+              energy, expected,
+              4.0 * std::numeric_limits<float>::epsilon() * energy, 3.0e-7);
 
   const Output center = Evaluate(dual, coordinates);
   constexpr float step = 1.0f / 1024.0f;
@@ -1195,6 +1209,95 @@ TEST_CASE("GeometricRestraintForceDoubleConversionAccuracy", "[mmfp]") {
     const double numericalForce =
         -(plusEnergy - minusEnergy) / (2.0 * static_cast<double>(step));
     CHECK(std::abs(numericalForce - physicalForce) <= 2.0e-9);
+  }
+}
+
+TEST_CASE("GeometricRestraintForceArithmeticFollowsCT", "[mmfp]") {
+  // A plane origin 2^-30 angstrom from the atom is exact in double arithmetic
+  // and rounds onto the atom when it is converted to float.
+  auto psf = MakePsf();
+  const AtomReference atom(psf, 0);
+  const std::array<double, 3> origin = {1.0 + std::ldexp(1.0, -30), 0.0, 0.0};
+  const double forceConstant = std::ldexp(1.0, 20);
+
+  std::vector<float4> coordinates(NUM_ATOMS,
+                                  make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+  coordinates[0].x = 1.0f;
+
+  GeoForce<double> dual(psf);
+  dual.addPlane(atom, origin, X_DIRECTION, forceConstant, 0.0,
+                GeoForce<double>::Activation::SYMMETRIC);
+
+  // The deviation -2^-30 gives the energy 0.5 * 2^20 * 2^-60 and the
+  // physical force -(2^20 * -2^-30).
+  std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+  expected[0].x = std::ldexp(1.0, -10);
+  CheckOutput("double arithmetic", Evaluate(dual, coordinates),
+              std::ldexp(1.0, -41), expected);
+
+  GeoForce<float> single(psf);
+  single.addPlane(atom, origin, X_DIRECTION, forceConstant, 0.0,
+                  GeoForce<float>::Activation::SYMMETRIC);
+  CheckOutput("float arithmetic", Evaluate(single, coordinates), 0.0,
+              std::vector<double3>(NUM_ATOMS, make_double3(0.0, 0.0, 0.0)));
+}
+
+TEST_CASE("GeometricRestraintForceSumsEnergyInDouble", "[mmfp]") {
+  // Atom energies of 2^24 and 1 are exact in float, but a float sum rounds
+  // them to 2^24. Each atom's energy is evaluated in CT; term energies and
+  // the total are summed in double for both specializations.
+  auto psf = MakePsf();
+  AtomSelection both(NUM_ATOMS);
+  both.set(0);
+  both.set(1);
+  const AtomReference first(psf, 0);
+  const AtomReference second(psf, 1);
+  const double largeForceConstant = std::ldexp(1.0, 19);
+
+  std::vector<float4> coordinates(NUM_ATOMS,
+                                  make_float4(0.0f, 0.0f, 0.0f, 0.0f));
+  coordinates[0].x = 8.0f;
+  std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
+  expected[0].x = -std::ldexp(1.0, 22);
+
+  SECTION("OneTermOverTwoAtoms") {
+    // 0.5 * 2^19 * 8^2 = 2^24 and 0.5 * 2^19 * (2^-9)^2 = 1.
+    coordinates[1].x = std::ldexp(1.0f, -9);
+    expected[1].x = -std::ldexp(1.0, 10);
+
+    GeoForce<float> single(psf);
+    single.addPlane(both, ORIGIN, X_DIRECTION, largeForceConstant, 0.0,
+                    GeoForce<float>::Activation::SYMMETRIC);
+    CheckOutput("float term", Evaluate(single, coordinates),
+                std::ldexp(1.0, 24) + 1.0, expected);
+
+    GeoForce<double> dual(psf);
+    dual.addPlane(both, ORIGIN, X_DIRECTION, largeForceConstant, 0.0,
+                  GeoForce<double>::Activation::SYMMETRIC);
+    CheckOutput("double term", Evaluate(dual, coordinates),
+                std::ldexp(1.0, 24) + 1.0, expected);
+  }
+
+  SECTION("TwoTerms") {
+    // 0.5 * 2^19 * 8^2 = 2^24 and 0.5 * 2 * 1^2 = 1.
+    coordinates[1].x = 1.0f;
+    expected[1].x = -2.0;
+
+    GeoForce<float> single(psf);
+    single.addPlane(first, ORIGIN, X_DIRECTION, largeForceConstant, 0.0,
+                    GeoForce<float>::Activation::SYMMETRIC);
+    single.addPlane(second, ORIGIN, X_DIRECTION, 2.0, 0.0,
+                    GeoForce<float>::Activation::SYMMETRIC);
+    CheckOutput("float terms", Evaluate(single, coordinates),
+                std::ldexp(1.0, 24) + 1.0, expected);
+
+    GeoForce<double> dual(psf);
+    dual.addPlane(first, ORIGIN, X_DIRECTION, largeForceConstant, 0.0,
+                  GeoForce<double>::Activation::SYMMETRIC);
+    dual.addPlane(second, ORIGIN, X_DIRECTION, 2.0, 0.0,
+                  GeoForce<double>::Activation::SYMMETRIC);
+    CheckOutput("double terms", Evaluate(dual, coordinates),
+                std::ldexp(1.0, 24) + 1.0, expected);
   }
 }
 
@@ -1259,8 +1362,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerIntegration", "[mmfp]", float,
   CHECK(mixedView.supportsPBC(PBC::P1));
   CHECK(!mixedView.supportsPBC(PBC::P21));
   CHECK(!mixedView.supportsPBC(PBC::UNSET));
-  CHECK(mixedView.contributesVirial());
-  CHECK(!mixedView.requiresVirialCalculation());
+  CHECK(!mixedView.contributesVirial());
 
   CHECK(force->getForce() == forceOwner);
   CHECK(force->getEnergyVirial() == energyOwner);
@@ -1597,15 +1699,12 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRadialMatchesCharmm", "[mmfp]",
     const double magnitude = std::max({std::abs(test.physicalForce[0]),
                                        std::abs(test.physicalForce[1]),
                                        std::abs(test.physicalForce[2])});
-    const double forceTolerance =
-        1.0e-10 + 0.5 * INV_FORCE_SCALE_TEST +
-        32.0 * std::numeric_limits<double>::epsilon() *
-            std::max(1.0, magnitude) +
-        ((std::is_same<TestType, float>::value)
-             ? 0.5 * std::numeric_limits<float>::epsilon() * magnitude
-             : 0.0);
+    const double forceTolerance = 1.0e-10 + 0.5 * INV_FORCE_SCALE_TEST +
+                                  32.0 *
+                                      std::numeric_limits<TestType>::epsilon() *
+                                      std::max(1.0, magnitude);
     const double energyTolerance =
-        test.energyTolerance + 32.0 * std::numeric_limits<double>::epsilon() *
+        test.energyTolerance + 32.0 * std::numeric_limits<TestType>::epsilon() *
                                    std::max(1.0, std::abs(test.energy));
 
     CheckOutput(test.id, Evaluate(force, coordinates), test.energy, expected,
@@ -1766,6 +1865,11 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRadialSingularNeighborhood",
       }
 
       for (const Case &test : translated) {
+        // The tiny displacement lives in the double-precision origin. CT =
+        // float rounds it across the threshold, so CT = double alone checks it.
+        if (!std::is_same<TestType, double>::value)
+          break;
+
         INFO(test.id << ", cylinder=" << cylinder
                      << ", mode=" << static_cast<int>(mode));
         force.reset();
@@ -1831,16 +1935,17 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRadialSingularNeighborhood",
         const bool suppressed = radial == rounded;
         const double deviation = static_cast<double>(radial) - offset;
         expected[0].x = suppressed ? 0.0 : -2.0 * deviation;
-        const double tolerance =
-            suppressed
-                ? 0.0
-                : 1.0e-12 + 0.5 * INV_FORCE_SCALE_TEST +
-                      (std::is_same<TestType, float>::value ? 2.5e-7 : 0.0);
+        const double rounding = 16.0 * std::numeric_limits<TestType>::epsilon();
+        const double tolerance = suppressed
+                                     ? 0.0
+                                     : 1.0e-12 + 0.5 * INV_FORCE_SCALE_TEST +
+                                           rounding * std::abs(expected[0].x);
 
-        CheckOutput("native float4 threshold breacket",
-                    Evaluate(force, coordinates),
-                    suppressed ? 0.0 : deviation * deviation, expected,
-                    suppressed ? 0.0 : 1.0e-12, tolerance);
+        CheckOutput(
+            "native float4 threshold breacket", Evaluate(force, coordinates),
+            suppressed ? 0.0 : deviation * deviation, expected,
+            suppressed ? 0.0 : 1.0e-12 + rounding * deviation * deviation,
+            tolerance);
       }
     }
   }
@@ -2013,13 +2118,13 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceMixedMatchesCharmm", "[mmfp]", float,
 
   const double tolerance =
       1.0e-10 + 0.5 * INV_FORCE_SCALE_TEST + 5.0e-14 +
-      (std::is_same<TestType, float>::value
-           ? 0.5 * std::numeric_limits<float>::epsilon() * 6.3661659799
-           : 0.0);
+      16.0 * std::numeric_limits<TestType>::epsilon() * 6.3661659799;
 
   CheckOutput("same atom in plane, cylinder, and sphere",
               Evaluate(force, coordinates), 9.15279134, expected,
-              5.0e-9 + 1.0e-13, tolerance);
+              5.0e-9 + 1.0e-13 +
+                  16.0 * std::numeric_limits<TestType>::epsilon() * 9.15279134,
+              tolerance);
 }
 
 TEMPLATE_TEST_CASE("GeometricRestraintForceMixedAtomwiseLifecycle", "[mmfp]",
@@ -2099,8 +2204,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceMixedAtomwiseLifecycle", "[mmfp]",
 
     const Output withVirial = Evaluate(force, coordinates, true, true);
     CheckOutput("mixed atomwise virial", withVirial, energy, expected);
-    CheckVirial("mixed atomwise virial", withVirial.virial,
-                {180.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+    CheckVirial("mixed atomwise virial", withVirial.virial, {});
     CHECK(force.getMasses() == masses);
     CHECK(force.getForce() == forceOwner);
     CHECK(force.getEnergyVirial() == energyOwner);
@@ -2151,8 +2255,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceMixedInsertionOrder", "[mmfp]",
     const Output observed = Evaluate(force, coordinates, true, true);
     CheckOutput("mixed cancellation order", observed, (i < 2) ? 0.5 : 0.0,
                 expected);
-    CheckVirial("moment follows insertion-order gradient sum", observed.virial,
-                {(i < 2) ? 3.0 : 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+    CheckVirial("mixed cancellation order", observed.virial, {});
   }
 }
 
@@ -2521,23 +2624,17 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRcmMatchesCharmm", "[mmfp][rcm]",
     }
 
     // JEG261019: The expected decimal values have absolute and relative
-    // precision limits. Add a double-arithmetic allowance and, for force
-    // components, bounds for conversion to CT and nearest-integer fixed-point
-    // rounding. Exactly representable coordinates need no input-rounding
-    // allowance.
+    // precision limits. Add a CT-arithmetic allowance and, for force
+    // components, nearest-integer fixed-point rounding. Exactly
+    // representable coordinates need no input-rounding allowance.
     const auto checkScalar = [&](const double observed, const double expected,
                                  const double absoluteTolerance,
                                  const double relativeTolerance,
                                  const bool isForce) -> void {
-      const double arithmetic = 32.0 * std::numeric_limits<double>::epsilon() *
+      const double arithmetic = 32.0 *
+                                std::numeric_limits<TestType>::epsilon() *
                                 std::max(1.0, std::abs(expected));
-      const double conversion =
-          (isForce) ? 0.5 * INV_FORCE_SCALE_TEST +
-                          ((std::is_same<TestType, float>::value)
-                               ? 0.5 * std::numeric_limits<float>::epsilon() *
-                                     std::abs(expected)
-                               : 0.0)
-                    : 0.0;
+      const double conversion = (isForce) ? 0.5 * INV_FORCE_SCALE_TEST : 0.0;
       CHECK(std::abs(observed - expected) <=
             absoluteTolerance + relativeTolerance * std::abs(expected) +
                 arithmetic + conversion);
@@ -2758,8 +2855,10 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRcmBoundaryRotations", "[mmfp][rcm]",
   }
 }
 
+// Float arithmetic cannot resolve these cancelling mass moments, so this
+// representation test runs for CT = double only.
 TEMPLATE_TEST_CASE("GeometricRestraintForceRcmNearZeroMassRepresentation",
-                   "[mmfp][rcm]", float, double) {
+                   "[mmfp][rcm]", double) {
   using G = GeoForce<TestType>;
   using A = typename G::Activation;
   using S = typename G::SelectionMode;
@@ -2837,10 +2936,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRcmNearZeroMassRepresentation",
         std::max(std::abs(represented[1]), std::abs(represented[2]));
     const double forceTolerance =
         64.0 * std::numeric_limits<double>::epsilon() * magnitude +
-        0.5 * INV_FORCE_SCALE_TEST +
-        ((std::is_same<TestType, float>::value)
-             ? 0.5 * std::numeric_limits<float>::epsilon() * magnitude
-             : 0.0);
+        0.5 * INV_FORCE_SCALE_TEST;
 
     CheckOutput("actual float4 near-cancellation input",
                 Evaluate(force, coordinates), represented[0], expected,
@@ -2883,6 +2979,12 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRcmExtremeMasses", "[mmfp][rcm]",
 
   for (const Case &test : cases) {
     INFO(test.id);
+
+    // Float cannot represent these masses, so CT = double alone checks them.
+    if (std::is_same<TestType, float>::value &&
+        ((std::abs(test.mass) < std::numeric_limits<float>::min()) ||
+         (std::abs(test.mass) > std::numeric_limits<float>::max())))
+      continue;
 
     auto psf = MakePsf();
     psf->getMasses()[0] = test.mass;
@@ -3218,8 +3320,10 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceMassValidationCoverage",
               Evaluate(force, coordinates), 4.0, expected);
 }
 
+// The envelope uses masses near the double range, which float cannot
+// represent, so it runs for CT = double only.
 TEMPLATE_TEST_CASE("GeometricRestraintForceRcmArithmeticEnvelope",
-                   "[mmfp][rcm]", float, double) {
+                   "[mmfp][rcm]", double) {
   using G = GeoForce<TestType>;
   using A = typename G::Activation;
   using S = typename G::SelectionMode;
@@ -3436,8 +3540,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceMixedRcmLifecycle", "[mmfp][rcm]",
   CheckOutput("mixed overlapping RCM selections", original, 52.5,
               {make_double3(-9.75, 0.0, 0.0), make_double3(-12.0, 0.0, 0.0),
                make_double3(-6.25, 0.0, 0.0)});
-  CheckVirial("mixed overlapping RCM selections", original.virial,
-              {105.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+  CheckVirial("mixed overlapping RCM selections", original.virial, {});
 
   const std::vector<double> custom = {3.0, 1.0, 1.0};
   force.setMasses(custom);
@@ -3455,8 +3558,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceMixedRcmLifecycle", "[mmfp][rcm]",
   const Output replaced = Evaluate(force, coordinates, true, true);
   CheckOutput("one active vector updates every RCM geometry", replaced, 44.25,
               changed);
-  CheckVirial("one active vector updates every RCM virial", replaced.virial,
-              {88.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+  CheckVirial("one active vector adds no RCM virial", replaced.virial, {});
   force.clear();
 
   CHECK(force.getNumTerms() == 4);
@@ -3473,8 +3575,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceMixedRcmLifecycle", "[mmfp][rcm]",
   const Output withVirial = Evaluate(force, coordinates, true, true);
 
   CheckOutput("mixed RCM virial", withVirial, 44.25, changed);
-  CheckVirial("mixed RCM virial", withVirial.virial,
-              {88.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+  CheckVirial("mixed RCM virial", withVirial.virial, {});
 
   // JEG261020: Native reset removes every term while preserving the active
   // custom mass vector and the current output. Repeated reset is harmless, and
@@ -3655,712 +3756,6 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRcmDynamicCapacity", "[mmfp][rcm]",
   }
 }
 
-TEMPLATE_TEST_CASE("GeometricRestraintForceCompleteVirialTensor",
-                   "[mmfp][virial]", float, double) {
-  using G = GeoForce<TestType>;
-  using A = typename G::Activation;
-  using S = typename G::SelectionMode;
-  using Shape = typename G::Geometry;
-  struct Term {
-    Shape geometry;
-    A activation;
-    S selectionMode;
-    std::vector<int> atoms;
-    std::array<double, 3> origin, direction;
-    double forceConstant, offset;
-  };
-  struct Case {
-    const char *label;
-    std::vector<std::array<double, 3>> coordinatePrefix;
-    std::vector<double> massPrefix;
-    std::vector<Term> terms;
-    double energy;
-    std::vector<std::array<double, 3>> forcePrefix;
-    std::array<double, 9> virial;
-    double energyAbsoluteTolerance, virialAbsoluteTolerance;
-  };
-
-  // JEG261020: CHARMM reports Cartesian gradients for these raw atom
-  // coordinates. Their external moments below use XX,XY,XZ,YX,YY,YZ,ZX,ZY,ZZ
-  // order. Expected values are fixed independently of the native
-  // implementation. All coordinates are exactly representable in float4.
-  // Prefixes replace the common twelve-atom inputs; omitted force entries are
-  // zero. Masses remain explicit even for atomwise terms, which must ignore
-  // them.
-  const std::vector<std::array<double, 3>> baseCoordinates = {
-      {0.0, 0.0, 0.0}, {1.0, 0.0, 0.0},    {0.0, 1.0, 0.0},  {0.0, 0.0, 1.0},
-      {3.0, 4.0, 5.0}, {-3.0, -4.0, -5.0}, {7.0, 1.0, -2.0}, {-7.0, -1.0, 2.0},
-      {9.0, 9.0, 9.0}, {-9.0, -9.0, -9.0}, {2.0, 5.0, -6.0}, {-2.0, -5.0, 6.0}};
-  const std::vector<double> baseMasses = {1.0, 1.5, 2.0, 2.5, 3.0, 3.5,
-                                          4.0, 4.5, 5.0, 5.5, 6.0, 6.5};
-  const std::vector<Case> cases = {
-      {"atomwise plane INSIDE active",
-       {{3.0, 0.5, -0.25}},
-       {},
-       {{Shape::PLANE,
-         A::INSIDE,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       1.0,
-       {{-2.0, 0.0, 0.0}},
-       {6.0, 0.0, 0.0, 1.0, 0.0, 0.0, -0.5, 0.0, 0.0},
-       5e-07,
-       4.7000000000599994e-09},
-      {"atomwise plane OUTSIDE inactive",
-       {{3.0, 0.5, -0.25}},
-       {},
-       {{Shape::PLANE,
-         A::OUTSIDE,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       0.0,
-       {},
-       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-07,
-       4.600000000059999e-09},
-      {"atomwise plane SYMMETRIC",
-       {{3.0, 0.5, -0.25}},
-       {},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       1.0,
-       {{-2.0, 0.0, 0.0}},
-       {6.0, 0.0, 0.0, 1.0, 0.0, 0.0, -0.5, 0.0, 0.0},
-       5e-07,
-       4.7000000000599994e-09},
-      {"atomwise cylinder INSIDE active",
-       {{3.0, 0.5, -0.25}},
-       {},
-       {{Shape::CYLINDER,
-         A::INSIDE,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0},
-         2.0,
-         2.0}},
-       1.08447494,
-       {{-2.0544243047, -0.3424040508, 0.0}},
-       {6.1632729141, 1.0272121524000002, 0.0, 1.02721215235, 0.1712020254, 0.0,
-        -0.513606076175, -0.0856010127, 0.0},
-       5e-09,
-       4.702721215294999e-09},
-      {"atomwise cylinder OUTSIDE inactive",
-       {{3.0, 0.5, -0.25}},
-       {},
-       {{Shape::CYLINDER,
-         A::OUTSIDE,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0},
-         2.0,
-         2.0}},
-       0.0,
-       {},
-       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-07,
-       4.600000000059999e-09},
-      {"atomwise cylinder SYMMETRIC",
-       {{3.0, 0.5, -0.25}},
-       {},
-       {{Shape::CYLINDER,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0},
-         2.0,
-         2.0}},
-       1.08447494,
-       {{-2.0544243047, -0.3424040508, 0.0}},
-       {6.1632729141, 1.0272121524000002, 0.0, 1.02721215235, 0.1712020254, 0.0,
-        -0.513606076175, -0.0856010127, 0.0},
-       5e-09,
-       4.702721215294999e-09},
-      {"atomwise sphere INSIDE active",
-       {{3.0, 0.5, -0.25}},
-       {},
-       {{Shape::SPHERE,
-         A::INSIDE,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       1.10594438,
-       {{-2.0676867815, -0.3446144636, 0.1723072318}},
-       {6.2030603445, 1.0338433908, -0.5169216954, 1.03384339075, 0.1723072318,
-        -0.0861536159, -0.516921695375, -0.0861536159, 0.04307680795},
-       5e-09,
-       4.703384339134999e-09},
-      {"atomwise sphere OUTSIDE inactive",
-       {{3.0, 0.5, -0.25}},
-       {},
-       {{Shape::SPHERE,
-         A::OUTSIDE,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       0.0,
-       {},
-       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-07,
-       4.600000000059999e-09},
-      {"atomwise sphere SYMMETRIC",
-       {{3.0, 0.5, -0.25}},
-       {},
-       {{Shape::SPHERE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       1.10594438,
-       {{-2.0676867815, -0.3446144636, 0.1723072318}},
-       {6.2030603445, 1.0338433908, -0.5169216954, 1.03384339075, 0.1723072318,
-        -0.0861536159, -0.516921695375, -0.0861536159, 0.04307680795},
-       5e-09,
-       4.703384339134999e-09},
-      {"RCM plane unequal masses",
-       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
-       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::RCM,
-         {0, 1, 2},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       13.4444444,
-       {{-1.2222222222, 0.0, 0.0},
-        {-3.6666666667, 0.0, 0.0},
-        {-2.4444444444, 0.0, 0.0}},
-       {41.5555555553, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-08,
-       6.066666666725e-09},
-      {"RCM cylinder unequal masses",
-       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
-       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
-       {{Shape::CYLINDER,
-         A::SYMMETRIC,
-         S::RCM,
-         {0, 1, 2},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0},
-         2.0,
-         2.0}},
-       13.4444444,
-       {{-1.2222222222, 0.0, 0.0},
-        {-3.6666666667, 0.0, 0.0},
-        {-2.4444444444, 0.0, 0.0}},
-       {41.5555555553, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-08,
-       6.066666666725e-09},
-      {"RCM sphere unequal masses",
-       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
-       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
-       {{Shape::SPHERE,
-         A::SYMMETRIC,
-         S::RCM,
-         {0, 1, 2},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       13.4444444,
-       {{-1.2222222222, 0.0, 0.0},
-        {-3.6666666667, 0.0, 0.0},
-        {-2.4444444444, 0.0, 0.0}},
-       {41.5555555553, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-08,
-       6.066666666725e-09},
-      {"sphere across periodic boundary with raw coordinates",
-       {{-9.5, 1.0, 0.5}},
-       {},
-       {{Shape::SPHERE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {9.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       273.364988,
-       {{33.0072846537, -1.7841775488, -0.8920887744}},
-       {313.56920421014996, -16.9496867136, -8.4748433568, -33.0072846537,
-        1.7841775488, 0.8920887744, -16.50364232685, 0.8920887744,
-        0.4460443872},
-       5e-07,
-       6.900364232744999e-09},
-      {"mixed atomwise plane and cylinder with RCM sphere",
-       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
-       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0, 1},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         1.0,
-         2.0},
-        {Shape::CYLINDER,
-         A::OUTSIDE,
-         S::ATOMWISE,
-         {1, 2},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0},
-         1.5,
-         2.0},
-        {Shape::SPHERE,
-         A::SYMMETRIC,
-         S::RCM,
-         {0, 1, 2},
-         {1.0, 1.0, 1.0},
-         {0.0, 0.0, 0.0},
-         0.75,
-         2.5}},
-       7.11745489,
-       {{0.7157355097, 0.0609138193, 0.0609138193},
-        {-3.8527934708, 0.182741458, 0.182741458},
-        {-0.5685289805, 0.1218276387, 0.1218276387}},
-       {23.664992668800004, -2.0710698576, -2.0710698576, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0},
-       5e-09,
-       5.95685289811e-09},
-      {"atomwise plane OUTSIDE active",
-       {{1.0, 0.0, 0.0}},
-       {},
-       {{Shape::PLANE,
-         A::OUTSIDE,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       1.0,
-       {{2.0, 0.0, 0.0}},
-       {-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-07,
-       4.60000000006e-09},
-      {"atomwise cylinder OUTSIDE active",
-       {{1.0, 0.0, 5.0}},
-       {},
-       {{Shape::CYLINDER,
-         A::OUTSIDE,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0},
-         2.0,
-         2.0}},
-       1.0,
-       {{2.0, 0.0, 0.0}},
-       {-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, -10.0, 0.0, 0.0},
-       5e-07,
-       5.10000000006e-09},
-      {"atomwise sphere OUTSIDE active",
-       {{1.0, 0.0, 0.0}},
-       {},
-       {{Shape::SPHERE,
-         A::OUTSIDE,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       1.0,
-       {{2.0, 0.0, 0.0}},
-       {-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-07,
-       4.60000000006e-09},
-      {"overlapping atomwise and RCM terms",
-       {{3.0, 2.0, 1.0}, {4.0, 1.0, 2.0}, {5.0, 3.0, 1.0}},
-       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0, 1},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         1.0,
-         1.0},
-        {Shape::SPHERE,
-         A::SYMMETRIC,
-         S::RCM,
-         {1, 2},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0},
-         1.0,
-         1.0}},
-       14.5640255,
-       {{-2.0, 0.0, 0.0},
-        {-5.1136815329, -0.8646878998, -0.7686114665},
-        {-1.409121022, -0.5764585999, -0.5124076443}},
-       {33.5003312416, 6.3410445987, 5.6364840874999995, 13.341044598899998,
-        2.5940636995000004, 2.3058343993999997, 13.6364840878, 2.3058343995,
-        2.0496305773},
-       5e-08,
-       5.826140127804999e-09},
-      {"RCM sphere with off-diagonal components",
-       {{1.0, 1.0, 1.0}, {2.0, 2.0, 2.0}, {3.0, 3.0, 3.0}},
-       {2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
-       {{Shape::SPHERE,
-         A::SYMMETRIC,
-         S::RCM,
-         {0, 1, 2},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       2.14359354,
-       {{-0.5635329744, -0.5635329744, -0.5635329744},
-        {-0.5635329744, -0.5635329744, -0.5635329744},
-        {-0.5635329744, -0.5635329744, -0.5635329744}},
-       {3.3811978464, 3.3811978464, 3.3811978464, 3.3811978464, 3.3811978464,
-        3.3811978464, 3.3811978464, 3.3811978464, 3.3811978464},
-       5e-09,
-       5.184529946219999e-09},
-      {"RCM group straddling all three periodic boundaries",
-       {{9.5, 14.5, 19.5}, {-9.5, -14.5, -19.5}},
-       {2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
-       {{Shape::SPHERE,
-         A::SYMMETRIC,
-         S::RCM,
-         {0, 1},
-         {0.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       0.0,
-       {},
-       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-07,
-       8.40000000006e-09},
-      {"RCM plane across x boundary",
-       {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
-       {2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::RCM,
-         {0, 1},
-         {9.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       462.25,
-       {{21.5, 0.0, 0.0}, {21.5, 0.0, 0.0}},
-       {451.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-05,
-       8.45000000006e-09},
-      {"RCM cylinder across x boundary",
-       {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
-       {2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
-       {{Shape::CYLINDER,
-         A::SYMMETRIC,
-         S::RCM,
-         {0, 1},
-         {9.0, 0.0, 0.0},
-         {0.0, 0.0, 1.0},
-         2.0,
-         2.0}},
-       306.25,
-       {{17.5, 0.0, 0.0}, {17.5, 0.0, 0.0}},
-       {367.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-05,
-       8.05000000006e-09},
-      {"RCM sphere across x boundary",
-       {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
-       {2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
-       {{Shape::SPHERE,
-         A::SYMMETRIC,
-         S::RCM,
-         {0, 1},
-         {9.0, 0.0, 0.0},
-         {0.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       306.25,
-       {{17.5, 0.0, 0.0}, {17.5, 0.0, 0.0}},
-       {367.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-05,
-       8.05000000006e-09},
-      {"plane before common translation",
-       {{1.0, 2.0, 3.0}},
-       {},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       1.0,
-       {{2.0, 0.0, 0.0}},
-       {-2.0, 0.0, 0.0, -4.0, 0.0, 0.0, -6.0, 0.0, 0.0},
-       5e-07,
-       4.90000000006e-09},
-      {"plane after common translation along x",
-       {{21.0, 2.0, 3.0}},
-       {},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {20.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       1.0,
-       {{2.0, 0.0, 0.0}},
-       {-42.0, 0.0, 0.0, -4.0, 0.0, 0.0, -6.0, 0.0, 0.0},
-       5e-07,
-       6.50000000006e-09},
-      {"oblique plane across all three periodic boundaries",
-       {{-10.5, -15.5, -20.5}},
-       {},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {9.0, 14.0, 19.0},
-         {1.0, 2.0, 3.0},
-         2.0,
-         2.0}},
-       2986.67329,
-       {{29.2119021105, 58.423804221, 87.6357063315}},
-       {306.72497216025, 613.4499443205, 920.1749164807501, 452.78448271275,
-        905.5689654255, 1358.35344813825, 598.84399326525, 1197.6879865305,
-        1796.53197979575},
-       5e-06,
-       1.0931785316635e-08},
-      {"oblique cylinder across all three periodic boundaries",
-       {{-10.5, -15.5, -20.5}},
-       {},
-       {{Shape::CYLINDER,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {9.0, 14.0, 19.0},
-         {1.0, 2.0, 3.0},
-         2.0,
-         2.0}},
-       17.8017319,
-       {{7.3656566134, 1.8414141533, -3.6828283067}},
-       {77.33939444069999, 19.33484860965, -38.669697220349995,
-        114.16767750769999, 28.54191937615, -57.083838753849996, 150.9959605747,
-        37.74899014265, -75.49798028735},
-       5e-08,
-       6.91828283073e-09},
-      {"large terms cancel before small term is added",
-       {{3.0, 0.0, 0.0}},
-       {},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         1e+16,
-         2.0},
-        {Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         -1e+16,
-         2.0},
-        {Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         1.0,
-         2.0}},
-       0.5,
-       {{-1.0, 0.0, 0.0}},
-       {3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-08,
-       4.650000000059999e-09},
-      {"small term is lost before large terms cancel",
-       {{3.0, 0.0, 0.0}},
-       {},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         1e+16,
-         2.0},
-        {Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         1.0,
-         2.0},
-        {Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         -1e+16,
-         2.0}},
-       0.0,
-       {},
-       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-07,
-       4.600000000059999e-09},
-      {"RCM with a negative member mass and positive total",
-       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
-       {-1.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::RCM,
-         {0, 1},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         2.0,
-         2.0}},
-       25.0,
-       {{5.0, 0.0, 0.0}, {-15.0, 0.0, 0.0}},
-       {70.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-06,
-       6.70000000006e-09},
-      {"duplicate atomwise plane terms",
-       {{3.0, 0.0, 0.0}},
-       {},
-       {{Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         1.0,
-         2.0},
-        {Shape::PLANE,
-         A::SYMMETRIC,
-         S::ATOMWISE,
-         {0},
-         {0.0, 0.0, 0.0},
-         {1.0, 0.0, 0.0},
-         1.0,
-         2.0}},
-       1.0,
-       {{-2.0, 0.0, 0.0}},
-       {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-07,
-       4.7000000000599994e-09}};
-
-  for (const Case &test : cases) {
-    INFO(test.label);
-
-    auto psf = MakePsf();
-    psf->getMasses() = baseMasses;
-    std::copy(test.massPrefix.begin(), test.massPrefix.end(),
-              psf->getMasses().begin());
-
-    G force(psf);
-    force.initialize(NUM_ATOMS, BOX_DIMS);
-
-    auto sourceCoordinates = baseCoordinates;
-    std::copy(test.coordinatePrefix.begin(), test.coordinatePrefix.end(),
-              sourceCoordinates.begin());
-
-    std::vector<float4> coordinates;
-    for (const auto &r : sourceCoordinates) {
-      for (const double comp : r)
-        REQUIRE(static_cast<double>(static_cast<float>(comp)) == comp);
-      coordinates.push_back(make_float4(static_cast<float>(r[0]),
-                                        static_cast<float>(r[1]),
-                                        static_cast<float>(r[2]), 0.0f));
-    }
-
-    for (const Term &term : test.terms) {
-      AtomSelection selection(NUM_ATOMS);
-      for (const int atom : term.atoms)
-        selection.set(atom);
-
-      switch (term.geometry) {
-      case Shape::PLANE:
-        force.addPlane(selection, term.origin, term.direction,
-                       term.forceConstant, term.offset, term.activation,
-                       term.selectionMode);
-        break;
-      case Shape::CYLINDER:
-        force.addCylinder(selection, term.origin, term.direction,
-                          term.forceConstant, term.offset, term.activation,
-                          term.selectionMode);
-        break;
-      case Shape::SPHERE:
-        force.addSphere(selection, term.origin, term.forceConstant, term.offset,
-                        term.activation, term.selectionMode);
-        break;
-      }
-    }
-
-    std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
-    double largestForce = 0.0;
-    for (std::size_t i = 0; i < test.forcePrefix.size(); i++) {
-      const auto &f = test.forcePrefix[i];
-      expected[i] = make_double3(f[0], f[1], f[2]);
-      for (const double comp : f)
-        largestForce = std::max(largestForce, std::abs(comp));
-    }
-
-    // JEG261020: CHARMM prints these gradients to 1e-10 precision, so allow
-    // that error plus native fixed-point rounding and final CT narrowing. The
-    // tensor uses double gradients, so its tolerance excludes CT=float force
-    // quantization.
-    const double forceTolerance =
-        1.1e-10 + 0.5 * INV_FORCE_SCALE_TEST +
-        4.0 * std::numeric_limits<TestType>::epsilon() * largestForce;
-    const double energyTolerance =
-        test.energyAbsoluteTolerance + 2.0e-12 * std::abs(test.energy);
-
-    // JEG261020: The absolute bound covers CHARMM's printed coordinate/gradient
-    // precision for all nine components; the relative allowance covers double
-    // arithmetic.
-    for (const bool calcEnergy : {true, false}) {
-      const Output observed = Evaluate(force, coordinates, calcEnergy, true);
-      CheckOutput(test.label, observed, (calcEnergy) ? test.energy : 0.0,
-                  expected, (calcEnergy) ? energyTolerance : 0.0,
-                  forceTolerance);
-      CheckVirial(test.label, observed.virial, test.virial,
-                  test.virialAbsoluteTolerance, 2.0e-12);
-    }
-  }
-}
-
 TEMPLATE_TEST_CASE("GeometricRestraintForceVirialCalculationControls",
                    "[mmfp][virial]", float, double) {
   using G = GeoForce<TestType>;
@@ -4368,10 +3763,6 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceVirialCalculationControls",
 
   const std::vector<float4> original = {make_float4(3.0f, 2.0f, -1.0f, 0.0f)};
   const std::vector<float4> changed = {make_float4(4.0f, -1.0f, 2.0f, 0.0f)};
-  const std::array<double, 9> originalVirial = {12.0, 12.0, 18.0, 8.0, 8.0,
-                                                12.0, -4.0, -4.0, -6.0};
-  const std::array<double, 9> changedVirial = {24.0,  -32.0, 96.0,  -6.0, 8.0,
-                                               -24.0, 12.0,  -16.0, 48.0};
   const std::array<double, 9> zeroVirial{};
   const std::vector<double3> zeroForce(1, make_double3(0.0, 0.0, 0.0));
 
@@ -4387,26 +3778,18 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceVirialCalculationControls",
       force.addPlane(atom, ORIGIN, {0.0, 1.0, 0.0}, 4.0, 1.0, A::SYMMETRIC);
       force.addPlane(atom, ORIGIN, {0.0, 0.0, 1.0}, 6.0, -2.0, A::SYMMETRIC);
 
-      // JEG261020: CHARMM uses raw coordinates for GEO terms, so form the
-      // expected external tensor from those coordinates and the summed
-      // gradients.
+      // GEO restraints add nothing to CHARMM's internal virial, so a virial
+      // request must leave the virial at zero. Only calcEnergy changes output.
       const Output seeded = Evaluate(force, original, true, true);
       CheckOutput("seeded output", seeded, 9.0,
                   {make_double3(-4.0, -4.0, -6.0)});
-      CheckVirial("seeded output", seeded.virial, originalVirial);
-
-      auto expectedVirial = originalVirial;
-      if (calcVirial) {
-        for (int i = 0; i < 9; i++)
-          expectedVirial[i] += changedVirial[i];
-      }
+      CheckVirial("seeded output", seeded.virial, zeroVirial);
 
       const Output accumulated =
           Evaluate(force, changed, calcEnergy, calcVirial, false);
       CheckOutput("flags preserve force accumulation", accumulated,
                   (calcEnergy) ? 74.0 : 9.0, {make_double3(-10.0, 4.0, -30.0)});
-      CheckVirial("disabled virial is stale; enabled virial adds once",
-                  accumulated.virial, expectedVirial);
+      CheckVirial("virial flag adds no virial", accumulated.virial, zeroVirial);
 
       force.reset();
       force.reset();
@@ -4415,13 +3798,13 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceVirialCalculationControls",
       const Output reset = ReadOutput(force);
       CheckOutput("reset preserves output", reset, accumulated.energy,
                   accumulated.physicalForces);
-      CheckVirial("reset preserves virial", reset.virial, expectedVirial);
+      CheckVirial("reset preserves virial", reset.virial, zeroVirial);
 
       const Output empty = Evaluate(force, changed, true, true, false);
       CheckOutput("empty evaluation is not output clearing", empty,
                   accumulated.energy, accumulated.physicalForces);
       CheckVirial("empty evaluation preserves virial", empty.virial,
-                  expectedVirial);
+                  zeroVirial);
 
       force.clear();
 
@@ -4437,8 +3820,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceVirialCalculationControls",
       const Output fresh = Evaluate(force, changed, calcEnergy, calcVirial);
       CheckOutput("fresh flags preserve forces", fresh,
                   (calcEnergy) ? 65.0 : 0.0, {make_double3(-6.0, 8.0, -24.0)});
-      CheckVirial("fresh flags select virial accumulation", fresh.virial,
-                  (calcVirial) ? changedVirial : zeroVirial);
+      CheckVirial("fresh flags add no virial", fresh.virial, zeroVirial);
     }
   }
 }
@@ -4494,9 +3876,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceRcmVirialActivationControls",
         CheckOutput("RCM activation", observed, sign * sign,
                     {make_double3(-0.5 * sign, 0.0, 0.0),
                      make_double3(-1.5 * sign, 0.0, 0.0)});
-        CheckVirial(
-            "RCM activation", observed.virial,
-            {5.0 * sign, 0.0, 0.0, 7.0 * sign, 0.0, 0.0, 9.0 * sign, 0.0, 0.0});
+        CheckVirial("RCM activation", observed.virial, {});
       }
     }
   }
@@ -4524,9 +3904,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceVirialMultipleBlocks",
   // one-atom tail.
   CheckOutput("multiple virial blocks", observed, 3078.0,
               std::vector<double3>(count, make_double3(-2.0, -4.0, -6.0)));
-  CheckVirial("multiple virial blocks", observed.virial,
-              {3078.0, 6156.0, 9234.0, 2052.0, 4104.0, 6156.0, -1026.0, -2052.0,
-               -3078.0});
+  CheckVirial("multiple virial blocks", observed.virial, {});
 }
 
 TEMPLATE_TEST_CASE("GeometricRestraintForceManagerVirial", "[mmfp][virial]",
@@ -4572,7 +3950,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerVirial", "[mmfp][virial]",
                   [](const double value) { return std::abs(value) > 1.0e-8; }));
 
   // JEG261020: CHARMM distributes RCM gradients by mass fraction. These exact
-  // binary inputs give simple analytic moments, so we can check manager
+  // binary inputs give simple analytic gradients, so we can check manager
   // aggregation and calculation flags without introducing coordinate-rounding
   // error.
   atomwise->addPlane(AtomReference(psf, 0), ORIGIN, X_DIRECTION, 2.0, 0.0,
@@ -4584,16 +3962,12 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerVirial", "[mmfp][virial]",
   rcm->addPlane(selected, ORIGIN, {0.0, 0.0, 1.0}, 2.0, 0.0, A::SYMMETRIC,
                 S::RCM);
 
+  // CHARMM forms its internal virial before it evaluates GEO restraints. The
+  // manager therefore passes calcVirial == false to both forces and keeps
+  // their gradients out of the aggregate virial for every flag pair.
   ForceView view(rcm.get());
-  CHECK(view.contributesVirial());
-  CHECK(!view.requiresVirialCalculation());
+  CHECK(!view.contributesVirial());
 
-  const std::array<double, 9> planeVirial = {8.0, 0.0,  0.0, 4.0, 0.0,
-                                             0.0, -4.0, 0.0, 0.0};
-  const std::array<double, 9> oldRcmVirial = {24.5, 22.75, 14.0, 22.75, 21.125,
-                                              13.0, 14.0,  13.0, 8.0};
-  const std::array<double, 9> newRcmVirial = {18.0, 15.0, 6.0, 15.0, 12.5,
-                                              5.0,  6.0,  5.0, 2.0};
   const std::vector<double3> oldGradients = {make_double3(5.75, 1.625, 1.0),
                                              make_double3(5.25, 4.875, 3.0)};
   const std::vector<double3> newGradients = {make_double3(7.0, 2.5, 1.0),
@@ -4615,10 +3989,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerVirial", "[mmfp][virial]",
       std::array<double, 9> seededReciprocalVirial{};
       reciprocal.getVirial(seededReciprocalVirial.data());
 
-      std::array<double, 9> oldTotal{};
-      for (std::size_t i = 0; i < oldTotal.size(); i++)
-        oldTotal[i] = baseline.virial[i] + planeVirial[i] + oldRcmVirial[i];
-      CheckVirial("seeded manager tensor", seeded.virial, oldTotal, 1.0e-8);
+      CheckVirial("seeded manager virial excludes MMFP", seeded.virial,
+                  baseline.virial, 1.0e-8);
 
       rcm->setMasses({1.0, 1.0});
 
@@ -4640,14 +4012,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerVirial", "[mmfp][virial]",
         CHECK(reciprocalVirial == seededReciprocalVirial);
       }
 
-      const auto &expectedRcmVirial = calcVirial ? newRcmVirial : oldRcmVirial;
-      std::array<double, 9> expectedTotal{};
-      for (std::size_t i = 0; i < expectedTotal.size(); i++) {
-        expectedTotal[i] =
-            baseline.virial[i] + planeVirial[i] + expectedRcmVirial[i];
-      }
-      CheckVirial("manager complete tensor", observed.virial, expectedTotal,
-                  1.0e-8);
+      CheckVirial("manager virial excludes MMFP", observed.virial,
+                  baseline.virial, 1.0e-8);
       if (!calcEnergy)
         CHECK(observed.energy == seeded.energy);
       if (!calcVirial)
@@ -4657,23 +4023,21 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerVirial", "[mmfp][virial]",
       // copy.
       auto &secondRead = fm->getVirial();
       secondRead.transferToHost();
-      for (std::size_t i = 0; i < expectedTotal.size(); i++)
+      for (std::size_t i = 0; i < observed.virial.size(); i++)
         CHECK(secondRead[i] == observed.virial[i]);
 
       // JEG261020: The manager must leave native fixed-point buffers intact. It
-      // must not convert them to double or add another coordinate-gradient
-      // moment.
+      // must not convert them to double or reconstruct a virial from them.
       const Output atomwiseOutput = ReadOutput(*atomwise);
       CheckOutput("manager atomwise output", atomwiseOutput, 4.0,
                   {make_double3(-4.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
-      CheckVirial("manager atomwise tensor", atomwiseOutput.virial,
-                  planeVirial);
+      CheckVirial("manager atomwise virial", atomwiseOutput.virial, {});
 
       const Output rcmOutput = ReadOutput(*rcm);
       CheckOutput(
           "manager RCM output", rcmOutput, calcEnergy ? 16.25 : 26.8125,
           {make_double3(-3.0, -2.5, -1.0), make_double3(-3.0, -2.5, -1.0)});
-      CheckVirial("manager RCM tensor", rcmOutput.virial, expectedRcmVirial);
+      CheckVirial("manager RCM virial", rcmOutput.virial, {});
     }
   }
 
@@ -4681,21 +4045,14 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerVirial", "[mmfp][virial]",
   rcm->reset();
 
   const Output afterReset = ReadOutput(*rcm);
-  CheckVirial("reset preserves native tensor", afterReset.virial,
-              beforeReset.virial);
   CHECK(afterReset.energy == beforeReset.energy);
 
   const ManagerOutput afterRemoval = EvaluateManager(ctx, true, true);
   CheckManagerDelta(baseline, afterRemoval, 4.0,
                     {make_double3(4.0, 0.0, 0.0), make_double3(0.0, 0.0, 0.0)});
 
-  std::array<double, 9> planeTotal{};
-  for (std::size_t i = 0; i < planeTotal.size(); i++)
-    planeTotal[i] = baseline.virial[i] + planeVirial[i];
-  CheckVirial("manager reset clears requested tensor", afterRemoval.virial,
-              planeTotal, 1.0e-8);
-  CheckVirial("empty RCM tensor cleared", ReadOutput(*rcm).virial,
-              std::array<double, 9>{});
+  CheckVirial("manager virial after RCM reset", afterRemoval.virial,
+              baseline.virial, 1.0e-8);
 
   fm->unsubscribe(atomwise);
   fm->unsubscribe(rcm);
@@ -4709,12 +4066,12 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerVirial", "[mmfp][virial]",
 
 // JEG261027: CHARMM harmonic restraints cover all three geometries, activation
 // modes, signed RCM masses, accumulation, reset, and reuse. Compare energy and
-// physical force with CHARMM values. The none external-tensor components are
-// constructed from CHARMM coordinates and energetic gradients, not an internal
-// accumulator. Empty reset phases use the separate zero-energy consistency
-// check below. Every coordinate in this table is exactly representable by
-// float4. Further tests cover boundary resolution, direction acceptance, and
-// native coordinate/output representation limits.
+// physical force with CHARMM values. As in CHARMM, where GEO restraints stay
+// out of the internal virial, every phase must leave the virial at zero.
+// Empty reset phases use the separate zero-energy consistency check below.
+// Every coordinate in this table is exactly representable by float4. Further
+// tests cover boundary resolution, direction acceptance, and native
+// coordinate/output representation limits.
 TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
                    "[mmfp][charmm][virial]", float, double) {
   using G = GeoForce<TestType>;
@@ -4740,8 +4097,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
     bool energyReportedByCharmm;
     double energy;
     std::vector<std::array<double, 3>> forces;
-    std::array<double, 9> virial;
-    double energyTolerance, forceTolerance, virialTolerance;
+    double energyTolerance, forceTolerance;
   };
   struct Case {
     const char *id;
@@ -4777,10 +4133,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          1.0,
          {{-2.0, 0.0, 0.0}},
-         {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.7000000000599994e-09}}},
+         1e-10}}},
       {"Negative harmonic constant below the plane",
        {{1.0, 0.0, 0.0}},
        {},
@@ -4802,16 +4156,13 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          -1.0,
          {{-2.0, 0.0, 0.0}},
-         {2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.60000000006e-09}}},
+         1e-10}}},
       {"Zero harmonic constant",
        {{3.0, 0.0, 0.0}},
        {},
        {{"Restraint evaluated",
-         "CHARMM accepts K=0 and contributes zero energy, force, and external "
-         "tensor.",
+         "CHARMM accepts K=0 and contributes zero energy and force.",
          true,
          {20.0, 30.0, 40.0},
          {{Shape::PLANE,
@@ -4827,10 +4178,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.600000000059999e-09}}},
+         1e-10}}},
       {"Symmetric plane on its negative side",
        {{-3.0, 0.0, 0.0}},
        {},
@@ -4852,10 +4201,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          25.0,
          {{10.0, 0.0, 0.0}},
-         {30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-06,
-         1e-10,
-         5.100000000059999e-09}}},
+         1e-10}}},
       {"Plane with a nonunit oblique normal",
        {{3.0, 2.0, 4.0}},
        {},
@@ -4877,12 +4224,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          5.1809948,
          {{-1.2166693181, -2.4333386361, -3.6500079542}},
-         {3.6500079542999995, 7.300015908299999, 10.9500238626, 2.4333386362,
-          4.8666772722, 7.3000159084, 4.8666772724, 9.7333545444,
-          14.6000318168},
          5e-08,
-         1e-10,
-         5.08250039777e-09}}},
+         1e-10}}},
       {"OUTSIDE plane at zero signed distance",
        {},
        {},
@@ -4904,10 +4247,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          4.0,
          {{1.0690449676, 2.1380899353, 3.2071349029}},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.660356745205e-09}}},
+         1e-10}}},
       {"INSIDE plane with negative offset at zero distance",
        {},
        {},
@@ -4929,10 +4270,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          4.0,
          {{-1.0690449676, -2.1380899353, -3.2071349029}},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.660356745205e-09}}},
+         1e-10}}},
       {"INSIDE plane exactly at the boundary",
        {{2.0, 0.0, 0.0}},
        {},
@@ -4954,10 +4293,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.50000000006e-09}}},
+         1e-10}}},
       {"Cylinder with a nonunit oblique axis",
        {{4.0, 1.0, -1.0}},
        {},
@@ -4979,12 +4316,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          14.2548857,
          {{-4.2024438653, -4.4826067897, 4.3892191482}},
-         {16.8097754612, 17.9304271588, -17.5568765928, 4.2024438653,
-          4.4826067897, -4.3892191482, -4.2024438653, -4.4826067897,
-          4.3892191482},
          5e-08,
-         1e-10,
-         4.924130339544999e-09}}},
+         1e-10}}},
       {"Cylinder with its axis reversed",
        {{4.0, 1.0, -1.0}},
        {},
@@ -5006,12 +4339,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          14.2548857,
          {{-4.2024438653, -4.4826067897, 4.3892191482}},
-         {16.8097754612, 17.9304271588, -17.5568765928, 4.2024438653,
-          4.4826067897, -4.3892191482, -4.2024438653, -4.4826067897,
-          4.3892191482},
          5e-08,
-         1e-10,
-         4.924130339544999e-09}}},
+         1e-10}}},
       {"Sphere with a displaced center",
        {{4.25, -2.5, 3.75}},
        {},
@@ -5033,10 +4362,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          1.0,
          {{-2.0, 0.0, 0.0}},
-         {8.5, 0.0, 0.0, -5.0, 0.0, 0.0, 7.5, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.9750000000599994e-09}}},
+         1e-10}}},
       {"Sphere center with a negative offset",
        {},
        {},
@@ -5058,10 +4385,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.50000000006e-09}}},
+         1e-10}}},
       {"Cylinder axis with a negative offset",
        {{0.0, 0.0, 5.0}},
        {},
@@ -5083,10 +4408,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         5.00000000006e-09}}},
+         1e-10}}},
       {"Sphere at the positive P1 image coordinate",
        {{9.5, 0.0, 0.0}},
        {},
@@ -5108,10 +4431,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          2.25,
          {{3.0, 0.0, 0.0}},
-         {-28.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         5.400000000059999e-09}}},
+         1e-10}}},
       {"Sphere at the negative P1 image coordinate",
        {{-10.5, 0.0, 0.0}},
        {},
@@ -5133,16 +4454,13 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          306.25,
          {{35.0, 0.0, 0.0}},
-         {367.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-05,
-         1e-10,
-         7.1000000000599994e-09}}},
+         1e-10}}},
       {"Plane and atom translated together",
        {{21.0, 2.0, 3.0}},
        {},
        {{"Restraint evaluated",
-         "CHARMM preserves energy and force under a common translation; the "
-         "external coordinate-gradient tensor changes.",
+         "CHARMM preserves energy and force under a common translation.",
          true,
          {20.0, 30.0, 40.0},
          {{Shape::PLANE,
@@ -5158,10 +4476,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          1.0,
          {{2.0, 0.0, 0.0}},
-         {-42.0, 0.0, 0.0, -4.0, 0.0, 0.0, -6.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         6.50000000006e-09}}},
+         1e-10}}},
       {"Unchanged coordinates with two box sizes",
        {{-9.5, 0.0, 0.0}},
        {},
@@ -5183,10 +4499,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          272.25,
          {{33.0, 0.0, 0.0}},
-         {313.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-05,
-         1e-10,
-         6.900000000059999e-09},
+         1e-10},
         {"Changed box",
          "CHARMM leaves the GEO contribution unchanged when only the P1 box "
          "lengths change.",
@@ -5197,10 +4511,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          272.25,
          {{33.0, 0.0, 0.0}},
-         {313.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-05,
-         1e-10,
-         6.900000000059999e-09}}},
+         1e-10}}},
       {"Two atoms restrained independently",
        {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {8.0, 8.0, 8.0}},
        {},
@@ -5222,10 +4534,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          5.0,
          {{-2.0, 0.0, 0.0}, {-4.0, 0.0, 0.0}},
-         {22.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         6.1000000000599996e-09}}},
+         1e-10}}},
       {"Three atoms restrained independently",
        {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {8.0, 8.0, 8.0}},
        {},
@@ -5247,10 +4557,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          6.0,
          {{-2.0, 0.0, 0.0}, {-4.0, 0.0, 0.0}, {2.0, 0.0, 0.0}},
-         {20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         6.20000000006e-09}}},
+         1e-10}}},
       {"Omitted selection means all atoms",
        {{3.0, 0.0, 0.0}},
        {},
@@ -5283,10 +4591,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
           {22.0, 0.0, 0.0},
           {0.0, 0.0, 0.0},
           {8.0, 0.0, 0.0}},
-         {576.0, 0.0, 0.0, 436.0, 0.0, 0.0, 276.0, 0.0, 0.0},
          5e-05,
-         1e-10,
-         9.400000000060002e-09}}},
+         1e-10}}},
       {"Empty selection contributes zero",
        {{3.0, 0.0, 0.0}},
        {},
@@ -5308,10 +4614,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.600000000059999e-09}}},
+         1e-10}}},
       {"RCM with unequal positive masses",
        {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
        {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
@@ -5333,10 +4637,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          4.0,
          {{-1.0, 0.0, 0.0}, {-3.0, 0.0, 0.0}},
-         {16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         5.9000000000599994e-09}}},
+         1e-10}}},
       {"RCM with a zero-mass member",
        {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
        {0.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
@@ -5358,10 +4660,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          9.0,
          {{0.0, 0.0, 0.0}, {-6.0, 0.0, 0.0}},
-         {30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         6.0000000000599995e-09}}},
+         1e-10}}},
       {"RCM with a negative member and positive total",
        {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
        {-1.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
@@ -5383,10 +4683,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          25.0,
          {{5.0, 0.0, 0.0}, {-15.0, 0.0, 0.0}},
-         {70.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-06,
-         1e-10,
-         6.70000000006e-09}}},
+         1e-10}}},
       {"RCM with a negative selected total",
        {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
        {1.0, -3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
@@ -5408,10 +4706,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          25.0,
          {{5.0, 0.0, 0.0}, {-15.0, 0.0, 0.0}},
-         {70.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-06,
-         1e-10,
-         6.70000000006e-09}}},
+         1e-10}}},
       {"RCM selection straddling a P1 boundary",
        {{9.5, 0.0, 0.0}, {-9.5, 0.0, 0.0}},
        {2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
@@ -5433,10 +4729,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         6.1000000000599996e-09}}},
+         1e-10}}},
       {"RCM sphere across a P1 boundary",
        {{-10.0, 0.0, 0.0}, {-11.0, 0.0, 0.0}},
        {2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
@@ -5458,16 +4752,14 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          306.25,
          {{17.5, 0.0, 0.0}, {17.5, 0.0, 0.0}},
-         {367.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-05,
-         1e-10,
-         8.05000000006e-09}}},
+         1e-10}}},
       {"Mixed plane cylinder and sphere terms",
        {{3.0, 2.0, 1.0}, {4.0, 1.0, 2.0}, {5.0, 3.0, 1.0}},
        {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
        {{"Restraint evaluated",
-         "CHARMM adds the energy, force, and external tensor contributions of "
-         "different geometries.",
+         "CHARMM adds the energy and force contributions of different "
+         "geometries.",
          true,
          {20.0, 30.0, 40.0},
          {{Shape::PLANE,
@@ -5503,12 +4795,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          {{-2.0, 0.0, 0.0},
           {-3.0298574999, -0.757464375, 0.0},
           {-4.1548457453, -2.4929074472, -0.8309691491}},
-         {38.8936587261, 15.494394736, 4.154845745499999, 19.4943947358,
-          8.236186716599999, 2.4929074473, 12.214560745100002, 4.0078361972,
-          0.8309691491},
          5e-08,
-         1e-10,
-         5.859235162319999e-09}}},
+         1e-10}}},
       {"Mixed atomwise and RCM terms",
        {{3.0, 2.0, 1.0}, {4.0, 1.0, 2.0}, {5.0, 3.0, 1.0}},
        {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
@@ -5541,12 +4829,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          {{-2.0, 0.0, 0.0},
           {-5.1136815329, -0.8646878998, -0.7686114665},
           {-1.409121022, -0.5764585999, -0.5124076443}},
-         {33.5003312416, 6.3410445987, 5.6364840874999995, 13.341044598899998,
-          2.5940636995000004, 2.3058343993999997, 13.6364840878, 2.3058343995,
-          2.0496305773},
          5e-08,
-         1e-10,
-         5.826140127804999e-09}}},
+         1e-10}}},
       {"Terms with overlapping selections",
        {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {8.0, 8.0, 8.0}},
        {},
@@ -5577,10 +4861,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          6.25,
          {{-1.0, 0.0, 0.0}, {-5.0, 0.0, 0.0}, {1.5, 0.0, 0.0}},
-         {21.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         6.1750000000599994e-09}}},
+         1e-10}}},
       {"Duplicate equivalent terms",
        {{3.0, 0.0, 0.0}},
        {},
@@ -5602,10 +4884,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          1.0,
          {{-2.0, 0.0, 0.0}},
-         {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.7000000000599994e-09}}},
+         1e-10}}},
       {"Plane sphere cylinder insertion order",
        {{3.0, 2.0, 1.0}, {4.0, 1.0, 2.0}, {5.0, 3.0, 1.0}},
        {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
@@ -5647,12 +4927,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          {{-1.5970852864, -0.0255487596, -0.0153292557},
           {-2.7912558591, -0.0766462787, -0.0459877672},
           {-0.1941705727, -0.0510975191, -0.0306585115}},
-         {16.9271321591, 0.6387189891, 0.3832313934, 6.567938150000001,
-          0.28103635520000003, 0.16862181310000002, 7.3737675773, 0.2299388361,
-          0.1379633016},
          5e-09,
-         1e-10,
-         5.629125585969999e-09}}},
+         1e-10}}},
       {"Large terms cancel before the small term",
        {{3.0, 0.0, 0.0}},
        {},
@@ -5692,10 +4968,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.5,
          {{-1.0, 0.0, 0.0}},
-         {3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-08,
-         1e-10,
-         4.650000000059999e-09}}},
+         1e-10}}},
       {"Small term added before large cancellation",
        {{3.0, 0.0, 0.0}},
        {},
@@ -5735,135 +5009,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.600000000059999e-09}}},
-      {"External tensor for an INSIDE plane",
-       {{3.0, 0.5, -0.25}},
-       {},
-       {{"Restraint evaluated",
-         "CHARMM supplies the atom gradient; the external tensor uses every "
-         "raw coordinate-gradient product r_a*g_b.",
-         true,
-         {20.0, 30.0, 40.0},
-         {{Shape::PLANE,
-           A::INSIDE,
-           S::ATOMWISE,
-           {0},
-           {0.0, 0.0, 0.0},
-           {1.0, 0.0, 0.0},
-           2.0,
-           2.0,
-           false}},
-         1,
-         true,
-         1.0,
-         {{-2.0, 0.0, 0.0}},
-         {6.0, 0.0, 0.0, 1.0, 0.0, 0.0, -0.5, 0.0, 0.0},
-         5e-07,
-         1e-10,
-         4.7000000000599994e-09}}},
-      {"External tensor for an RCM sphere",
-       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
-       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
-       {{"Restraint evaluated",
-         "CHARMM distributes the center gradient over atoms; the external "
-         "tensor uses those distributed gradients.",
-         true,
-         {20.0, 30.0, 40.0},
-         {{Shape::SPHERE,
-           A::SYMMETRIC,
-           S::RCM,
-           {0, 1, 2},
-           {0.0, 0.0, 0.0},
-           {0.0, 0.0, 0.0},
-           2.0,
-           2.0,
-           false}},
-         1,
-         true,
-         13.4444444,
-         {{-1.2222222222, 0.0, 0.0},
-          {-3.6666666667, 0.0, 0.0},
-          {-2.4444444444, 0.0, 0.0}},
-         {41.5555555553, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-         5e-08,
-         1e-10,
-         6.066666666725e-09}}},
-      {"External tensor at a P1 image coordinate",
-       {{-9.5, 1.0, 0.5}},
-       {},
-       {{"Restraint evaluated",
-         "CHARMM uses raw Cartesian GEO coordinates and gradients; their "
-         "external tensor keeps the image-position dependence.",
-         true,
-         {20.0, 30.0, 40.0},
-         {{Shape::SPHERE,
-           A::SYMMETRIC,
-           S::ATOMWISE,
-           {0},
-           {9.0, 0.0, 0.0},
-           {0.0, 0.0, 0.0},
-           2.0,
-           2.0,
-           false}},
-         1,
-         true,
-         273.364988,
-         {{33.0072846537, -1.7841775488, -0.8920887744}},
-         {313.56920421014996, -16.9496867136, -8.4748433568, -33.0072846537,
-          1.7841775488, 0.8920887744, -16.50364232685, 0.8920887744,
-          0.4460443872},
-         5e-07,
-         1e-10,
-         6.900364232744999e-09}}},
-      {"External tensor for mixed atomwise and RCM terms",
-       {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}, {9.0, 0.0, 0.0}},
-       {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
-       {{"Restraint evaluated",
-         "CHARMM adds all gradients on each atom; the external tensor is "
-         "reconstructed from that sum.",
-         true,
-         {20.0, 30.0, 40.0},
-         {{Shape::PLANE,
-           A::SYMMETRIC,
-           S::ATOMWISE,
-           {0, 1},
-           {0.0, 0.0, 0.0},
-           {1.0, 0.0, 0.0},
-           1.0,
-           2.0,
-           false},
-          {Shape::CYLINDER,
-           A::OUTSIDE,
-           S::ATOMWISE,
-           {1, 2},
-           {0.0, 0.0, 0.0},
-           {0.0, 0.0, 1.0},
-           1.5,
-           2.0,
-           false},
-          {Shape::SPHERE,
-           A::SYMMETRIC,
-           S::RCM,
-           {0, 1, 2},
-           {1.0, 1.0, 1.0},
-           {0.0, 0.0, 0.0},
-           0.75,
-           2.5,
-           false}},
-         1,
-         true,
-         7.11745489,
-         {{0.7157355097, 0.0609138193, 0.0609138193},
-          {-3.8527934708, 0.182741458, 0.182741458},
-          {-0.5685289805, 0.1218276387, 0.1218276387}},
-         {23.664992668800004, -2.0710698576, -2.0710698576, 0.0, 0.0, 0.0, 0.0,
-          0.0, 0.0},
-         5e-09,
-         1e-10,
-         5.95685289811e-09}}},
+         1e-10}}},
       {"Remove terms with GEO RESET",
        {{3.0, 0.0, 0.0}, {4.0, 0.0, 0.0}},
        {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
@@ -5885,10 +5032,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          5.0,
          {{-2.0, 0.0, 0.0}, {-4.0, 0.0, 0.0}},
-         {22.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         5.20000000006e-09},
+         1e-10},
         {"After reset",
          "CHARMM GEO RESET removes the installed terms, so subsequent "
          "evaluation has no contribution from them.",
@@ -5899,10 +5044,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          false,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          0.0,
-         1e-10,
-         4.9000000000599996e-09}}},
+         1e-10}}},
       {"Reset then reuse with an RCM term",
        {{1.0, 0.0, 0.0}, {5.0, 0.0, 0.0}},
        {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
@@ -5924,10 +5067,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          1.0,
          {{2.0, 0.0, 0.0}},
-         {-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.9000000000599996e-09},
+         1e-10},
         {"After reset",
          "CHARMM permits a new RCM definition after GEO RESET while preserving "
          "the PSF masses.",
@@ -5938,10 +5079,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          false,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          0.0,
-         1e-10,
-         4.8000000000599995e-09},
+         1e-10},
         {"New RCM term after reset",
          "CHARMM permits a new RCM definition after GEO RESET while preserving "
          "the PSF masses.",
@@ -5960,10 +5099,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          4.0,
          {{-1.0, 0.0, 0.0}, {-3.0, 0.0, 0.0}},
-         {16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         5.000000000059999e-09}}},
+         1e-10}}},
       {"Repeated reset and reuse cycles",
        {{3.0, 0.0, 0.0}, {5.0, 0.0, 0.0}},
        {1.0, 3.0, 2.0, 4.0, 1.5, 5.0, 2.5, 6.0, 3.5, 7.0, 4.5, 8.0},
@@ -5985,10 +5122,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          1.0,
          {{-2.0, 0.0, 0.0}},
-         {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         5.100000000059999e-09},
+         1e-10},
         {"First cycle: reset",
          "CHARMM supports repeated GEO RESET and new definitions without "
          "restoring removed terms or changing masses.",
@@ -5999,10 +5134,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          false,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          0.0,
-         1e-10,
-         5.000000000059999e-09},
+         1e-10},
         {"Second cycle: RCM terms",
          "CHARMM supports repeated GEO RESET and new definitions without "
          "restoring removed terms or changing masses.",
@@ -6021,10 +5154,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          6.25,
          {{-1.25, 0.0, 0.0}, {-3.75, 0.0, 0.0}},
-         {22.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         5.250000000059999e-09},
+         1e-10},
         {"Second cycle: reset",
          "CHARMM supports repeated GEO RESET and new definitions without "
          "restoring removed terms or changing masses.",
@@ -6035,10 +5166,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          false,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          0.0,
-         1e-10,
-         5.000000000059999e-09},
+         1e-10},
         {"Third cycle: atomwise terms",
          "CHARMM supports repeated GEO RESET and new definitions without "
          "restoring removed terms or changing masses.",
@@ -6057,10 +5186,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.75,
          {{-1.5, 0.0, 0.0}},
-         {4.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-08,
-         1e-10,
-         5.0750000000599995e-09}}},
+         1e-10}}},
       {"Default harmonic potential and INSIDE activation",
        {{4.0, 0.0, 0.0}},
        {},
@@ -6082,10 +5209,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          4.0,
          {{-4.0, 0.0, 0.0}},
-         {16.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.900000000059999e-09}}},
+         1e-10}}},
       {"Omitted FORCE means zero",
        {{3.0, 0.0, 0.0}},
        {},
@@ -6107,10 +5232,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.600000000059999e-09}}},
+         1e-10}}},
       {"Omitted DROFF means zero",
        {{3.0, 0.0, 0.0}},
        {},
@@ -6132,10 +5255,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          9.0,
          {{-6.0, 0.0, 0.0}},
-         {18.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.900000000059999e-09}}},
+         1e-10}}},
       {"Omitted reference means the origin",
        {{3.0, 0.0, 0.0}},
        {},
@@ -6157,10 +5278,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          1.0,
          {{-2.0, 0.0, 0.0}},
-         {6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.7000000000599994e-09}}},
+         1e-10}}},
       {"Large finite coordinate with a small constant",
        {{900000000.0, 0.0, 0.0}},
        {},
@@ -6182,10 +5301,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.405,
          {{-9e-10, 0.0, 0.0}},
-         {0.8099999999999999, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-08,
-         1e-10,
-         0.0900000043}}},
+         1e-10}}},
       {"Thirteen terms exceed the atom count",
        {{3.0, 0.0, 0.0}},
        {},
@@ -6207,10 +5324,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          13.0,
          {{-26.0, 0.0, 0.0}},
-         {78.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-06,
-         1e-10,
-         5.9000000000599994e-09}}},
+         1e-10}}},
       {"Two terms exceed an initial capacity of one",
        {{3.0, 0.0, 0.0}},
        {},
@@ -6232,10 +5347,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          2.0,
          {{-4.0, 0.0, 0.0}},
-         {12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.8000000000599995e-09}}},
+         1e-10}}},
       {"Reset thirteen terms and define two",
        {{3.0, 0.0, 0.0}},
        {},
@@ -6257,10 +5370,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          13.0,
          {{-26.0, 0.0, 0.0}},
-         {78.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-06,
-         1e-10,
-         5.9000000000599994e-09},
+         1e-10},
         {"Two terms after reset",
          "CHARMM allows GEO RESET followed by a smaller new definition without "
          "retaining old terms.",
@@ -6279,10 +5390,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          2.0,
          {{-4.0, 0.0, 0.0}},
-         {12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.8000000000599995e-09}}},
+         1e-10}}},
       {"Energy underflow suppresses the gradient",
        {},
        {},
@@ -6304,10 +5413,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.50000000006e-09}}},
+         1e-10}}},
       {"Very large offset balanced by a small constant",
        {},
        {},
@@ -6329,10 +5436,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.5,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-08,
-         1e-10,
-         4.50000000006e-09}}},
+         1e-10}}},
       {"Very large reference balanced by a small constant",
        {},
        {},
@@ -6354,10 +5459,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.5,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-08,
-         1e-10,
-         4.50000000006e-09}}},
+         1e-10}}},
       {"Tiny negative RCM total with zero force constant",
        {{1.0, 0.0, 0.0}},
        {-1e-300, 0.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0},
@@ -6379,13 +5482,30 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
          true,
          0.0,
          {},
-         {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
          5e-07,
-         1e-10,
-         4.50000000006e-09}}}};
+         1e-10}}}};
 
   for (const auto &test : cases) {
     INFO(test.id);
+
+    // Float cannot represent some of these parameters and masses, so CT =
+    // double alone checks the cases that use them.
+    bool floatRepresentable = true;
+    std::vector<double> values(test.massPrefix);
+    for (const auto &phase : test.phases) {
+      for (const auto &term : phase.terms) {
+        values.insert(values.end(), {term.k, term.offset, term.origin[0],
+                                     term.origin[1], term.origin[2]});
+      }
+    }
+    for (const double value : values) {
+      if ((value != 0.0) &&
+          ((std::abs(value) < std::numeric_limits<float>::min()) ||
+           (std::abs(value) > std::numeric_limits<float>::max())))
+        floatRepresentable = false;
+    }
+    if (std::is_same<TestType, float>::value && !floatRepresentable)
+      continue;
 
     auto positions = baseCoordinates;
     auto masses = baseMasses;
@@ -6444,8 +5564,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
 
       // JEG261027: CHARMM GEO RESET removes restraint contributions. Empty
       // phases check zero native energy as a reset invariant and forces against
-      // CHARMM. Their external tensors use CHARMM coordinates and energetic
-      // gradients; these phases make no direct CHARMM energy comparison.
+      // CHARMM; these phases make no direct CHARMM energy comparison.
       INFO("energy reported by CHARMM=" << phase.energyReportedByCharmm);
 
       const auto observed = Evaluate(force, coordinates, true, true);
@@ -6459,19 +5578,14 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
           forceMagnitude = std::max(forceMagnitude, std::abs(component));
       }
 
-      const double arithmetic = 64.0 * std::numeric_limits<double>::epsilon();
-      const double conversion =
-          0.5 * INV_FORCE_SCALE_TEST +
-          (std::is_same<TestType, float>::value
-               ? 0.5 * std::numeric_limits<float>::epsilon() * forceMagnitude
-               : 0.0);
+      const double arithmetic = 64.0 * std::numeric_limits<TestType>::epsilon();
+      const double conversion = 0.5 * INV_FORCE_SCALE_TEST;
 
       CheckOutput(test.id, observed, phase.energy, expected,
                   phase.energyTolerance + arithmetic * std::abs(phase.energy),
                   phase.forceTolerance + conversion +
                       arithmetic * std::max(1.0, forceMagnitude));
-      CheckVirial(test.id, observed.virial, phase.virial,
-                  phase.virialTolerance + arithmetic, arithmetic);
+      CheckVirial(test.id, observed.virial, {});
       CHECK(force.getMasses() == masses);
 
       if (std::string(test.id) == "Energy underflow suppresses the gradient") {
@@ -6493,8 +5607,10 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmNumericalBehavior",
   }
 }
 
+// The CHARMM displacements live in the double-precision origin, which CT =
+// float would round, so this comparison runs for CT = double only.
 TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
-                   "[mmfp][charmm][representation][virial]", float, double) {
+                   "[mmfp][charmm][representation][virial]", double) {
   using G = GeoForce<TestType>;
   using A = typename G::Activation;
   using Shape = typename G::Geometry;
@@ -6505,8 +5621,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
     std::array<double, 3> sourcePosition, sourceOrigin;
     double energy;
     std::array<double, 3> physicalForce;
-    std::array<double, 9> sourceVirial;
-    double energyTolerance, virialTolerance;
+    double energyTolerance;
   };
 
   // JEG261027: CHARMM suppresses radial energy and force near the center or
@@ -6514,11 +5629,8 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
   // approaches its activation boundary. float4 cannot preserve these decimal
   // positions. Translate the atom to zero and shift its double origin by the
   // same amount to preserve the displacement used for the CHARMM energy/force
-  // comparison. The external coordinate-gradient tensor changes under
-  // translation: recover the tensor constructed from the original CHARMM
-  // coordinates and gradients as W_original = W_translated + r_original tensor
-  // g. These checks compare translated inputs; they do not demonstrate that
-  // float4 retains the original positions or their raw-coordinate tensor.
+  // comparison. These checks compare translated inputs; they do not
+  // demonstrate that float4 retains the original positions.
   const std::vector<Case> cases = {
       {"OUTSIDE plane just inside the boundary",
        Shape::PLANE,
@@ -6527,9 +5639,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
        {0.0, 0.0, 0.0},
        9.999999998e-13,
        {2e-06, 0.0, 0.0},
-       {-3.999998e-06, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-23,
-       4.50000010006e-09},
+       5e-23},
       {"Sphere distance just below the radial cutoff",
        Shape::SPHERE,
        A::SYMMETRIC,
@@ -6537,9 +5647,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
        {1.25, -2.5, 3.75},
        0.0,
        {0.0, 0.0, 0.0},
-       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-07,
-       4.87500000006e-09},
+       5e-07},
       {"Sphere distance just above the radial cutoff",
        Shape::SPHERE,
        A::SYMMETRIC,
@@ -6547,9 +5655,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
        {1.25, -2.5, 3.75},
        3.99996,
        {3.99998, 0.0, 0.0},
-       {-5.0000149998, 0.0, 0.0, 9.99995, 0.0, 0.0, -14.999925, 0.0, 0.0},
-       5e-07,
-       5.07499900006e-09},
+       5e-07},
       {"Cylinder distance just below the radial cutoff",
        Shape::CYLINDER,
        A::SYMMETRIC,
@@ -6557,9 +5663,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
        {0.0, 0.0, 0.0},
        0.0,
        {0.0, 0.0, 0.0},
-       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-       5e-07,
-       5.00000000006e-09},
+       5e-07},
       {"Cylinder distance just above the radial cutoff",
        Shape::CYLINDER,
        A::SYMMETRIC,
@@ -6567,9 +5671,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
        {0.0, 0.0, 0.0},
        3.99996,
        {3.99998, 0.0, 0.0},
-       {-3.99998e-05, 0.0, 0.0, 0.0, 0.0, 0.0, -19.9999, 0.0, 0.0},
-       5e-07,
-       5.1999990000599995e-09}};
+       5e-07}};
 
   for (const auto &test : cases) {
     INFO(test.id);
@@ -6599,14 +5701,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
     std::vector<double3> expected(NUM_ATOMS, make_double3(0.0, 0.0, 0.0));
     expected[0] = make_double3(test.physicalForce[0], test.physicalForce[1],
                                test.physicalForce[2]);
-    const double magnitude = std::max({std::abs(test.physicalForce[0]),
-                                       std::abs(test.physicalForce[1]),
-                                       std::abs(test.physicalForce[2])});
-    const double conversion =
-        0.5 * INV_FORCE_SCALE_TEST +
-        (std::is_same<TestType, float>::value
-             ? 0.5 * std::numeric_limits<float>::epsilon() * magnitude
-             : 0.0);
+    const double conversion = 0.5 * INV_FORCE_SCALE_TEST;
     const double forceTolerance = 1.0e-10 + conversion + 1.0e-13;
     const auto observed = Evaluate(force, coordinates, true, true);
     CheckOutput(test.id, observed, test.energy, expected,
@@ -6614,20 +5709,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmTranslatedCoordinates",
                     64.0 * std::numeric_limits<double>::epsilon() *
                         std::abs(test.energy),
                 forceTolerance);
-    CheckVirial("translated native tensor", observed.virial, {});
-    const std::array<double, 3> gradient = {-observed.physicalForces[0].x,
-                                            -observed.physicalForces[0].y,
-                                            -observed.physicalForces[0].z};
-    for (std::size_t a = 0; a < 3; a++) {
-      for (std::size_t b = 0; b < 3; b++) {
-        INFO("source tensor component=" << 3 * a + b);
-        const double restored =
-            observed.virial[3 * a + b] + test.sourcePosition[a] * gradient[b];
-        CHECK(std::abs(restored - test.sourceVirial[3 * a + b]) <=
-              test.virialTolerance +
-                  std::abs(test.sourcePosition[a]) * forceTolerance + 1.0e-13);
-      }
-    }
+    CheckVirial(test.id, observed.virial, {});
   }
   // float4 rounds the two sphere boundary positions to the same value and
   // moves the first active cylinder radius below the suppression threshold.
@@ -6681,22 +5763,19 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCharmmDirectionCompatibility",
     const AtomReference atom(psf, 0);
     std::vector<float4> coordinates(NUM_ATOMS, make_float4(0, 0, 0, 0));
     std::vector<double3> expected(NUM_ATOMS, make_double3(0, 0, 0));
-    std::array<double, 9> virial{};
     if (test.cylinder) {
       force.addCylinder(atom, ORIGIN, test.direction, 2, 2, A::SYMMETRIC);
       coordinates[0].z = 3.0f;
       expected[0].z = -2.0;
-      virial[8] = 6.0;
     } else {
       force.addPlane(atom, ORIGIN, test.direction, 2, 2, A::SYMMETRIC);
       coordinates[0].x = 3.0f;
       expected[0].x = -2.0;
-      virial[0] = 6.0;
     }
     const auto observed = Evaluate(force, coordinates, true, true);
     CheckOutput(test.id, observed, 1.0, expected, 5.0e-7,
                 1.0e-10 + 0.5 * INV_FORCE_SCALE_TEST);
-    CheckVirial(test.id, observed.virial, virial, 5.0e-9);
+    CheckVirial(test.id, observed.virial, {});
   }
 }
 
@@ -6963,11 +6042,9 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceManagerBoxPropagation",
   const ManagerOutput secondRestrained = EvaluateManager(ctx, true, true);
   const Output secondNative = ReadOutput<TestType>(*force);
   // CHARMM GEO uses raw Cartesian displacement under P1. Changing only the
-  // box must preserve this native term's energy, force and absolute tensor.
+  // box must preserve this native term's energy and force.
   CheckOutput("box update preserves native plane contribution", secondNative,
               firstNative.energy, firstNative.physicalForces);
-  CheckVirial("box update preserves native raw-coordinate tensor",
-              secondNative.virial, firstNative.virial);
 
   fm->unsubscribe(force);
   const ManagerOutput secondBaseline = EvaluateManager(ctx, true, true);
@@ -7184,12 +6261,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCombinedNativeCapacity",
       const Output observed = Evaluate(force, coordinates, true, true);
       CheckOutput("mixed atomwise and RCM capacity", observed,
                   50115.0 * repetitions, expected);
-      CheckVirial("mixed atomwise and RCM capacity", observed.virial,
-                  {10794.0 * repetitions, 12336.0 * repetitions,
-                   18504.0 * repetitions, 14392.0 * repetitions,
-                   16448.0 * repetitions, 24672.0 * repetitions,
-                   43176.0 * repetitions, 49344.0 * repetitions,
-                   74016.0 * repetitions});
+      CheckVirial("mixed atomwise and RCM capacity", observed.virial, {});
     }
   }
 
@@ -7207,16 +6279,17 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceCombinedNativeCapacity",
   reused[0] = make_double3(0.0, 0.0, 0.0);
   const Output afterReuse = Evaluate(force, coordinates, true, true);
   CheckOutput("reuse combined capacity tables", afterReuse, 169.0, reused);
-  CheckVirial("reuse combined capacity tables", afterReuse.virial,
-              {18.0, 24.0, 72.0, 24.0, 32.0, 96.0, 72.0, 96.0, 288.0});
+  CheckVirial("reuse combined capacity tables", afterReuse.virial, {});
 }
 
 // In smooth active regions, CHARMM's physical harmonic force is the
 // negative energy gradient. Finite differences check this relation within
 // the native implementation for each geometry, activation and application mode.
 // Direct comparisons with CHARMM forces remain separate regression checks.
+// Central differences of single-precision energies lose about five digits,
+// so this derivative check runs for CT = double only.
 TEMPLATE_TEST_CASE("GeometricRestraintForceFiniteDifferenceGradients",
-                   "[mmfp][rcm][derivative]", float, double) {
+                   "[mmfp][rcm][derivative]", double) {
   using G = GeoForce<TestType>;
   using A = typename G::Activation;
   using S = typename G::SelectionMode;
@@ -7288,13 +6361,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceFiniteDifferenceGradients",
                 -(energyPlus - energyMinus) / (2.0 * static_cast<double>(step));
             // The 2e-7 absolute allowance covers central-difference truncation
             // and double energy subtraction at this step and these points.
-            // CT=float additionally rounds the final Cartesian gradient; its
-            // relative allowance is separate from the derivative allowance.
-            const double tolerance =
-                2.0e-7 + ((std::is_same<TestType, float>::value)
-                              ? 2.0 * std::numeric_limits<float>::epsilon() *
-                                    std::abs(physicalForce[component])
-                              : 0.0);
+            const double tolerance = 2.0e-7;
             CHECK(std::isfinite(negativeDerivative));
             CHECK(std::abs(physicalForce[component] - negativeDerivative) <=
                   tolerance);

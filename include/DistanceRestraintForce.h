@@ -11,6 +11,7 @@
 #pragma once
 
 #include "AtomReference.h"
+#include "CharmmPSF.h"
 #include "CudaContainer.h"
 #include "CudaEnergyVirial.h"
 #include "Force.h"
@@ -51,10 +52,11 @@ enum class DistanceRestraintCondition : int {
  * one term and its pair data to flattened host mirrors. The corresponding
  * device mirrors are synchronized lazily before calculation.
  *
- * The force remains atom-count based and topology-agnostic. It does not retain
- * AtomReference objects, retain a CharmmPSF, compare source topologies, or
- * require the two endpoints of a pair to originate from the same topology. Only
- * the extracted integer indices are stored.
+ * Construction copies only the atom count of a CharmmPSF. The force remains
+ * topology-agnostic: it does not retain that PSF or AtomReference objects,
+ * compare source topologies, or require the two endpoints of a pair to
+ * originate from the same topology. Only the extracted integer indices are
+ * stored.
  *
  * Like CHARMM, the force uses raw primary-coordinate pair distances for
  * nonperiodic systems and orthorhombic P1 boxes. Stored box dimensions exist
@@ -63,8 +65,10 @@ enum class DistanceRestraintCondition : int {
  *
  * @tparam AT Device force-accumulator representation. The supported public
  * specializations use apoCHARMM's fixed-point force representation.
- * @tparam CT Arithmetic representation used for pair-gradient conversion to
- * the device force accumulator.
+ * @tparam CT Representation of the force arithmetic, including the per-term
+ * reduction and each term's energy value, which is converted to double before
+ * it is added to the energy storage, so the sum over terms is double. The
+ * library explicitly instantiates `float` and `double`.
  *
  * @warning Only exponent values whose CHARMM behavior has been verified are
  * accepted, although CHARMM itself accepts a wider range.
@@ -86,21 +90,37 @@ public:
 
 public:
   /**
-   * @brief Prevents construction without an explicit atom count.
+   * @brief Prevents construction without a PSF atom count.
+   *
+   * @see CharmmPSF
    */
   DistanceRestraintForce(void) = delete;
 
   /**
-   * @brief Constructs a distance-restraint force for a fixed atom count.
+   * @brief Constructs a distance-restraint force from a PSF atom count.
    *
-   * The object initially owns no restraint terms, and its global scale starts
-   * at one, as in CHARMM. The atom count remains fixed for the lifetime of the
-   * object.
+   * Only the positive atom count is copied; PSF masses are not read. The PSF
+   * and its shared owner are borrowed only for this call and are not
+   * retained. The object initially owns no restraint terms, and its global
+   * scale starts at one, as in CHARMM. The atom count remains fixed for the
+   * lifetime of the object.
    *
-   * @param[in] numAtoms Dimensionless number of atoms represented by coordinate
-   * and force arrays.
+   * @param[in] psf Non-null PSF with an initialized positive atom count, the
+   * number of atoms represented by coordinate and force arrays.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if
+   * the PSF atom count is negative.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `psf` is null or its atom count is zero.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if CUDA
+   * allocation or stream creation fails.
+   * @throws std::bad_alloc If host storage, shared ownership state, or an error
+   * diagnostic cannot be allocated.
+   * @throws std::length_error If requested storage or an error diagnostic
+   * exceeds an implementation-defined limit.
+   *
+   * @post `getForce()->size() == psf->getNumAtoms()`.
    */
-  DistanceRestraintForce(const int numAtoms);
+  explicit DistanceRestraintForce(const std::shared_ptr<const CharmmPSF> &psf);
 
   /**
    * @brief Prevents copying CUDA stream and output ownership state.
@@ -155,11 +175,12 @@ public:
    * their source CharmmPSF objects after returning. The force stores only the
    * values returned by `AtomReference::getAtomIndex()`.
    *
-   * Each extracted index must be in the force-local range `[0, numAtoms)`, even
-   * when the reference is valid for a larger source topology. The two extracted
-   * indices in one pair must be distinct. References from different topologies
-   * with distinct valid extracted indices are accepted; references from
-   * different topologies with the same extracted index are rejected.
+   * Each extracted index must be in the force-local range `[0, N)`, where `N`
+   * is the atom count copied at construction, even when the reference is valid
+   * for a larger source topology. The two extracted indices in one pair must be
+   * distinct. References from different topologies with distinct valid
+   * extracted indices are accepted; references from different topologies with
+   * the same extracted index are rejected.
    *
    * Pair order and coefficient correspondence are preserved exactly. Repeated
    * pairs remain accepted.
@@ -207,6 +228,9 @@ public:
 
   /**
    * @brief Initializes the restraint through the `ForceManager` interface.
+   *
+   * The method checks the atom count, stores the box, and synchronizes dirty
+   * flattened parameter mirrors to device storage.
    *
    * @param[in] numAtoms Atom count supplied by the manager.
    * @param[in] boxDimensions Three box lengths in `[x, y, z]` order.
@@ -272,12 +296,8 @@ private:
   /** Global factor applied to every active restraint term. */
   double m_Scale;
 
-  /** Stored X box dimension. */
-  double m_BoxDimX;
-  /** Stored Y box dimension. */
-  double m_BoxDimY;
-  /** Stored Z box dimension. */
-  double m_BoxDimZ;
+  /** Stored box dimensions in `[x, y, z]` order. */
+  std::array<double, 3> m_BoxDimensions;
 
   /** True when flattened host mirrors are newer than their device mirrors. */
   bool m_DeviceDataDirty;

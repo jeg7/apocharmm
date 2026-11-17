@@ -40,6 +40,10 @@ namespace {
 
 using ResdForce = DistanceRestraintForce<long long int, float>;
 
+// Central differences of single-precision energies lose about five digits,
+// so the derivative checks evaluate in double precision.
+using DoubleResdForce = DistanceRestraintForce<long long int, double>;
+
 constexpr int NUM_ATOMS = 3;
 constexpr int REFERENCE_PSF_NUM_ATOMS = 4;
 constexpr double EXACT_GRADIENT_TOLERANCE = 0.0;
@@ -134,7 +138,9 @@ void AddStandardRestraint(ResdForce &restraint,
   return;
 }
 
-void ClearAndCalculate(ResdForce &restraint, CudaContainer<float4> &xyzq,
+template <typename CT>
+void ClearAndCalculate(DistanceRestraintForce<long long int, CT> &restraint,
+                       CudaContainer<float4> &xyzq,
                        const bool calcEnergy = true,
                        const bool calcVirial = true) {
   restraint.clear();
@@ -143,7 +149,9 @@ void ClearAndCalculate(ResdForce &restraint, CudaContainer<float4> &xyzq,
   return;
 }
 
-std::vector<double3> CopyResdGradients(ResdForce &restraint) {
+template <typename CT>
+std::vector<double3>
+CopyResdGradients(DistanceRestraintForce<long long int, CT> &restraint) {
   const std::shared_ptr<Force<long long int>> force = restraint.getForce();
   std::vector<long long int> gx(force->size());
   std::vector<long long int> gy(force->size());
@@ -161,7 +169,8 @@ std::vector<double3> CopyResdGradients(ResdForce &restraint) {
   return observedGradients;
 }
 
-double GetResdEnergy(ResdForce &restraint) {
+template <typename CT>
+double GetResdEnergy(DistanceRestraintForce<long long int, CT> &restraint) {
   const std::shared_ptr<cudaStream_t> stream = restraint.getStream();
   cudaCheck(cudaStreamSynchronize(*stream));
   restraint.getEnergyVirial()->copyToHost(*stream);
@@ -169,7 +178,9 @@ double GetResdEnergy(ResdForce &restraint) {
   return restraint.getEnergyVirial()->getEnergy("resd");
 }
 
-std::array<double, 9> CopyStoredVirial(ResdForce &restraint) {
+template <typename CT>
+std::array<double, 9>
+CopyStoredVirial(DistanceRestraintForce<long long int, CT> &restraint) {
   const std::shared_ptr<cudaStream_t> stream = restraint.getStream();
   cudaCheck(cudaStreamSynchronize(*stream));
   restraint.getEnergyVirial()->copyToHost(*stream);
@@ -180,9 +191,10 @@ std::array<double, 9> CopyStoredVirial(ResdForce &restraint) {
   return virial;
 }
 
-std::array<double, 9>
-CalculateManagerStyleVirial(ResdForce &restraint, CudaContainer<float4> &xyzq,
-                            const std::vector<double> &boxDimensions) {
+template <typename CT>
+std::array<double, 9> CalculateManagerStyleVirial(
+    DistanceRestraintForce<long long int, CT> &restraint,
+    CudaContainer<float4> &xyzq, const std::vector<double> &boxDimensions) {
   REQUIRE(boxDimensions.size() == 3);
 
   const std::shared_ptr<cudaStream_t> stream = restraint.getStream();
@@ -239,8 +251,10 @@ void CheckZeroTotalGradient(const std::string &label,
   return;
 }
 
+template <typename CT>
 void CheckResdOutput(
-    ResdForce &restraint, const std::string &label, const double expectedEnergy,
+    DistanceRestraintForce<long long int, CT> &restraint,
+    const std::string &label, const double expectedEnergy,
     const std::vector<double3> &expectedGradients,
     const double energyTolerance = EXACT_ENERGY_TOLERANCE,
     const double gradientTolerance = EXACT_GRADIENT_TOLERANCE) {
@@ -252,7 +266,8 @@ void CheckResdOutput(
   return;
 }
 
-double EvaluateEnergy(ResdForce &restraint,
+template <typename CT>
+double EvaluateEnergy(DistanceRestraintForce<long long int, CT> &restraint,
                       const std::vector<float4> &coordinates) {
   CudaContainer<float4> xyzq = coordinates;
   ClearAndCalculate(restraint, xyzq, true, false);
@@ -280,9 +295,11 @@ void SetCoordinateComponent(float4 &coordinate, const int component,
   return;
 }
 
+template <typename CT>
 void CheckCentralFiniteDifference(
-    ResdForce &restraint, const std::string &label,
-    const std::vector<float4> &coordinates, const double expectedEnergy,
+    DistanceRestraintForce<long long int, CT> &restraint,
+    const std::string &label, const std::vector<float4> &coordinates,
+    const double expectedEnergy,
     const std::vector<double3> &expectedGradients) {
   REQUIRE(coordinates.size() == expectedGradients.size());
 
@@ -362,7 +379,7 @@ void InitializeResdIntegrationSystem(ResdIntegrationSystem &system) {
 
 std::shared_ptr<ResdForce>
 MakeStandardIntegrationRestraint(const int numAtoms) {
-  auto restraint = std::make_shared<ResdForce>(numAtoms);
+  auto restraint = std::make_shared<ResdForce>(MakeTestPsf(numAtoms));
   AddStandardRestraint(*restraint, 2.0, 0.0);
   return restraint;
 }
@@ -434,15 +451,28 @@ void CheckResdManagerContribution(
 TEST_CASE("DistanceRestraintForceConstructorAndMetadata") {
   CHECK(std::is_default_constructible<ResdForce>::value == false);
 
-  apo_test::CheckApoCharmmError([]() -> void { (void)ResdForce(0); },
+  apo_test::CheckApoCharmmError([]() -> void { (void)ResdForce(nullptr); },
                                 ApoCharmmErrorCode::InvalidArgument,
-                                "Atom count must be positive; observed 0");
+                                "CharmmPSF must not be null");
 
-  apo_test::CheckApoCharmmError([]() -> void { (void)ResdForce(-1); },
-                                ApoCharmmErrorCode::InvalidArgument,
-                                "Atom count must be positive; observed -1");
+  apo_test::CheckApoCharmmError(
+      []() -> void { (void)ResdForce(std::make_shared<CharmmPSF>()); },
+      ApoCharmmErrorCode::NotInitialized,
+      "CharmmPSF atom count is not initialized; observed -1");
 
-  ResdForce restraint(NUM_ATOMS);
+  apo_test::CheckApoCharmmError(
+      []() -> void { (void)ResdForce(MakeTestPsf(0)); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Atom count must be positive; observed 0");
+
+  auto psf = MakeTestPsf(NUM_ATOMS);
+  const std::weak_ptr<CharmmPSF> weakPsf = psf;
+  ResdForce restraint(psf);
+
+  // Only the atom count is copied; the PSF is not retained.
+  psf->setNumAtoms(NUM_ATOMS + 1);
+  psf.reset();
+  CHECK(weakPsf.expired());
 
   CHECK(decltype(restraint)::contributesVirial == true);
 
@@ -459,7 +489,7 @@ TEST_CASE("DistanceRestraintForceConstructorAndMetadata") {
 }
 
 TEST_CASE("DistanceRestraintForceZeroTermsProduceZeroOutput") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
 
@@ -470,7 +500,7 @@ TEST_CASE("DistanceRestraintForceZeroTermsProduceZeroOutput") {
 }
 
 TEST_CASE("DistanceRestraintForceDefaultScaleIsOne") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   AddStandardRestraint(restraint);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -482,7 +512,7 @@ TEST_CASE("DistanceRestraintForceDefaultScaleIsOne") {
 }
 
 TEST_CASE("DistanceRestraintForceAcceptsReferencesFromDifferentTopologies") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
 
   const std::shared_ptr<CharmmPSF> firstPsf = MakeTestPsf(NUM_ATOMS);
@@ -504,7 +534,7 @@ TEST_CASE("DistanceRestraintForceAcceptsReferencesFromDifferentTopologies") {
 
 TEST_CASE(
     "DistanceRestraintForceRejectsEqualExtractedIndicesAcrossTopologies") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
 
   const std::shared_ptr<CharmmPSF> firstPsf = MakeTestPsf(NUM_ATOMS);
   const std::shared_ptr<CharmmPSF> secondPsf = MakeTestPsf(NUM_ATOMS);
@@ -523,7 +553,7 @@ TEST_CASE(
 }
 
 TEST_CASE("DistanceRestraintForceAcceptsRepeatedAtomReferencePairs") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
 
   const std::vector<std::array<AtomReference, 2>> repeatedPairs = {
@@ -540,7 +570,7 @@ TEST_CASE("DistanceRestraintForceAcceptsRepeatedAtomReferencePairs") {
 }
 
 TEST_CASE("DistanceRestraintForceRetainsNeitherReferencesNorSourceTopologies") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
 
   std::weak_ptr<const CharmmPSF> weakFirstPsf;
@@ -572,7 +602,7 @@ TEST_CASE("DistanceRestraintForceRetainsNeitherReferencesNorSourceTopologies") {
 }
 
 TEST_CASE("DistanceRestraintForceRejectsEmptyPairList") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
 
   apo_test::CheckApoCharmmError(
       [&restraint]() -> void {
@@ -583,7 +613,7 @@ TEST_CASE("DistanceRestraintForceRejectsEmptyPairList") {
 }
 
 TEST_CASE("DistanceRestraintForceRejectsPairCoefficientCountMismatch") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
 
   apo_test::CheckApoCharmmError(
       [&restraint]() -> void {
@@ -596,7 +626,7 @@ TEST_CASE("DistanceRestraintForceRejectsPairCoefficientCountMismatch") {
 
 TEST_CASE(
     "DistanceRestraintForceValidatesExtractedIndicesAgainstItsAtomCount") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
 
   SECTION("FirstExtractedIndexEqualsForceAtomCount") {
     const std::vector<std::array<AtomReference, 2>> atomReferencePairs = {
@@ -629,7 +659,7 @@ TEST_CASE(
 }
 
 TEST_CASE("DistanceRestraintForceRejectsNonfiniteCoefficient") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   const double infinity = std::numeric_limits<double>::infinity();
   const std::vector<double> coefficients = {infinity};
 
@@ -643,7 +673,7 @@ TEST_CASE("DistanceRestraintForceRejectsNonfiniteCoefficient") {
 }
 
 TEST_CASE("DistanceRestraintForceRejectsNonfiniteForceConstant") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   const double infinity = std::numeric_limits<double>::infinity();
 
   apo_test::CheckApoCharmmError(
@@ -656,7 +686,7 @@ TEST_CASE("DistanceRestraintForceRejectsNonfiniteForceConstant") {
 }
 
 TEST_CASE("DistanceRestraintForceImplementsForceConstantSignRules") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
 
@@ -686,7 +716,7 @@ TEST_CASE("DistanceRestraintForceImplementsForceConstantSignRules") {
 }
 
 TEST_CASE("DistanceRestraintForceRejectsNonfiniteReferenceValue") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   const double infinity = std::numeric_limits<double>::infinity();
 
   apo_test::CheckApoCharmmError(
@@ -699,7 +729,7 @@ TEST_CASE("DistanceRestraintForceRejectsNonfiniteReferenceValue") {
 }
 
 TEST_CASE("DistanceRestraintForceRejectsUnsupportedDistanceExponent") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
 
   apo_test::CheckApoCharmmError(
       [&restraint]() -> void {
@@ -711,7 +741,7 @@ TEST_CASE("DistanceRestraintForceRejectsUnsupportedDistanceExponent") {
 }
 
 TEST_CASE("DistanceRestraintForceRejectsInvalidEnergyExponent") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
 
   SECTION("NegativeEnergyExponent") {
     apo_test::CheckApoCharmmError(
@@ -736,7 +766,7 @@ TEST_CASE("DistanceRestraintForceRejectsInvalidEnergyExponent") {
 }
 
 TEST_CASE("DistanceRestraintForceRejectsInvalidActivationCondition") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   const DistanceRestraintCondition invalidCondition =
       static_cast<DistanceRestraintCondition>(2);
 
@@ -750,7 +780,7 @@ TEST_CASE("DistanceRestraintForceRejectsInvalidActivationCondition") {
 }
 
 TEST_CASE("DistanceRestraintForceRejectsIdenticalAtomIndices") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   const std::vector<std::array<AtomReference, 2>> identicalPair = {
       std::array<AtomReference, 2>{ATOM_ONE, ATOM_ONE}};
 
@@ -764,7 +794,7 @@ TEST_CASE("DistanceRestraintForceRejectsIdenticalAtomIndices") {
 }
 
 TEST_CASE("DistanceRestraintForceValidatesBoxDimensions") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   const double infinity = std::numeric_limits<double>::infinity();
 
   SECTION("WrongBoxDimensionCount") {
@@ -810,7 +840,7 @@ TEST_CASE("DistanceRestraintForceValidatesBoxDimensions") {
 }
 
 TEST_CASE("DistanceRestraintForceRejectsInitializeAtomCountMismatch") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
 
   CHECK_NOTHROW(restraint.initialize(NUM_ATOMS, BOX_DIMENSIONS));
 
@@ -823,7 +853,7 @@ TEST_CASE("DistanceRestraintForceRejectsInitializeAtomCountMismatch") {
 }
 
 TEST_CASE("DistanceRestraintForceValidatesScale") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
   const double infinity = std::numeric_limits<double>::infinity();
@@ -861,7 +891,7 @@ TEST_CASE("DistanceRestraintForceValidatesScale") {
 }
 
 TEST_CASE("DistanceRestraintForceResetRemovesAllTerms") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   AddStandardRestraint(restraint);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -877,7 +907,7 @@ TEST_CASE("DistanceRestraintForceResetRemovesAllTerms") {
 }
 
 TEST_CASE("DistanceRestraintForceResetRestoresScaleToOne") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   AddStandardRestraint(restraint);
   restraint.setScale(3.0);
@@ -895,7 +925,7 @@ TEST_CASE("DistanceRestraintForceResetRestoresScaleToOne") {
 }
 
 TEST_CASE("DistanceRestraintForceCanAddNewTermsAfterReset") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   AddStandardRestraint(restraint);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -912,7 +942,7 @@ TEST_CASE("DistanceRestraintForceCanAddNewTermsAfterReset") {
 }
 
 TEST_CASE("DistanceRestraintForceClearPreservesDefinitions") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   AddStandardRestraint(restraint);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -934,7 +964,7 @@ TEST_CASE("DistanceRestraintForceClearPreservesDefinitions") {
 
 TEST_CASE(
     "DistanceRestraintForceRepeatedClearCalculateCyclesHaveNoStaleOutput") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   AddStandardRestraint(restraint);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -949,7 +979,7 @@ TEST_CASE(
 
 TEST_CASE(
     "DistanceRestraintForceSynchronizesDefinitionsAddedAfterCalculation") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   AddStandardRestraint(restraint);
   restraint.setScale(3.0);
@@ -966,7 +996,7 @@ TEST_CASE(
 }
 
 TEST_CASE("DistanceRestraintForceFailedAddPreservesPriorDefinitions") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   AddStandardRestraint(restraint);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -990,7 +1020,7 @@ TEST_CASE("DistanceRestraintForceFailedAddPreservesPriorDefinitions") {
 }
 
 TEST_CASE("DistanceRestraintForceCalculatesOneQuadraticPair") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 1.0, 1, 2);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1010,7 +1040,7 @@ TEST_CASE("DistanceRestraintForceCalculatesOneQuadraticPair") {
 }
 
 TEST_CASE("DistanceRestraintForceQuadraticPairAtReferenceValueIsStationary") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 2.0, 1, 2);
   CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1031,7 +1061,7 @@ TEST_CASE("DistanceRestraintForceQuadraticPairAtReferenceValueIsStationary") {
 
 TEST_CASE("DistanceRestraintForceAppliesPairCoefficientsAlgebraically") {
   SECTION("CoefficientTwo") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, {2.0}, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1050,7 +1080,7 @@ TEST_CASE("DistanceRestraintForceAppliesPairCoefficientsAlgebraically") {
   }
 
   SECTION("CoefficientNegativeOne") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, {-1.0}, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1069,7 +1099,7 @@ TEST_CASE("DistanceRestraintForceAppliesPairCoefficientsAlgebraically") {
   }
 
   SECTION("CoefficientOneHalf") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, {0.5}, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1088,7 +1118,7 @@ TEST_CASE("DistanceRestraintForceAppliesPairCoefficientsAlgebraically") {
   }
 
   SECTION("CoefficientZeroIsRejected") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     apo_test::CheckApoCharmmError(
         [&restraint]() -> void {
           restraint.addRestraint(SINGLE_PAIR, {0.0}, 2.0, 0.0, 1, 2);
@@ -1099,7 +1129,7 @@ TEST_CASE("DistanceRestraintForceAppliesPairCoefficientsAlgebraically") {
 }
 
 TEST_CASE("DistanceRestraintForceCalculatesSignedTwoPairReactionCoordinate") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   const std::vector<std::array<AtomReference, 2>> atomPairs = TWO_PAIR_CHAIN;
   const std::vector<double> coefficients = {1.0, -1.0};
@@ -1130,7 +1160,7 @@ TEST_CASE("DistanceRestraintForceCalculatesSignedTwoPairReactionCoordinate") {
 
 TEST_CASE("DistanceRestraintForceAccumulatesSeveralPairsSharingOneAtom") {
   constexpr int numAtoms = 5;
-  ResdForce restraint(numAtoms);
+  ResdForce restraint(MakeTestPsf(numAtoms));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   const std::vector<std::array<AtomReference, 2>> atomPairs = THREE_PAIR_STAR;
   restraint.addRestraint(atomPairs, {1.0, 1.0, 1.0}, 2.0, 0.0, 1, 2);
@@ -1163,7 +1193,7 @@ TEST_CASE("DistanceRestraintForceAccumulatesSeveralPairsSharingOneAtom") {
 }
 
 TEST_CASE("DistanceRestraintForceAccumulatesMultipleTermsInOneObject") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 1.0, 1, 2);
   restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 4.0, 0.0, 1, 2);
@@ -1184,7 +1214,7 @@ TEST_CASE("DistanceRestraintForceAccumulatesMultipleTermsInOneObject") {
 }
 
 TEST_CASE("DistanceRestraintForceAccumulatesMultipleTermsSharingAtoms") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   restraint.addRestraint(SINGLE_PAIR, {1.0}, 2.0, 1.0, 1, 2);
   restraint.addRestraint(SECOND_PAIR, {1.0}, 4.0, 1.0, 1, 2);
@@ -1211,7 +1241,7 @@ TEST_CASE("DistanceRestraintForceAccumulatesMultipleTermsSharingAtoms") {
 
 TEST_CASE("DistanceRestraintForceCalculatesSupportedDistanceExponents") {
   SECTION("IVALOne") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1229,7 +1259,7 @@ TEST_CASE("DistanceRestraintForceCalculatesSupportedDistanceExponents") {
   }
 
   SECTION("IVALTwo") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 2, 2);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1248,7 +1278,7 @@ TEST_CASE("DistanceRestraintForceCalculatesSupportedDistanceExponents") {
   }
 
   SECTION("IVALSix") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 6, 2);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1272,7 +1302,7 @@ TEST_CASE("DistanceRestraintForceCalculatesSupportedDistanceExponents") {
 
 TEST_CASE("DistanceRestraintForceCalculatesSupportedEnergyExponents") {
   SECTION("EVALOne") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 1.0, 1, 1);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1286,7 +1316,7 @@ TEST_CASE("DistanceRestraintForceCalculatesSupportedEnergyExponents") {
   }
 
   SECTION("EVALTwo") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 1.0, 1, 2);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1300,7 +1330,7 @@ TEST_CASE("DistanceRestraintForceCalculatesSupportedEnergyExponents") {
   }
 
   SECTION("EVALThree") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 1.0, 1, 3);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1316,7 +1346,7 @@ TEST_CASE("DistanceRestraintForceCalculatesSupportedEnergyExponents") {
   }
 
   SECTION("EVALFour") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 1.0, 1, 4);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1333,7 +1363,7 @@ TEST_CASE("DistanceRestraintForceCalculatesSupportedEnergyExponents") {
 
 TEST_CASE("DistanceRestraintForceUsesSignedPowersForNegativeDeviation") {
   SECTION("OddEVALProducesNegativeEnergy") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 3.0, 1, 3);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1349,7 +1379,7 @@ TEST_CASE("DistanceRestraintForceUsesSignedPowersForNegativeDeviation") {
   }
 
   SECTION("EvenEVALProducesPositiveEnergyAndNegativeDerivative") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 3.0, 1, 4);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1366,7 +1396,7 @@ TEST_CASE("DistanceRestraintForceUsesSignedPowersForNegativeDeviation") {
 
 TEST_CASE("DistanceRestraintForceImplementsPositiveActivation") {
   SECTION("InactiveForNegativeDeviation") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 3.0, 1, 2,
                            DistanceRestraintCondition::POSITIVE);
@@ -1380,7 +1410,7 @@ TEST_CASE("DistanceRestraintForceImplementsPositiveActivation") {
   }
 
   SECTION("ActiveAtBoundary") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 2.0, 1, 1,
                            DistanceRestraintCondition::POSITIVE);
@@ -1396,7 +1426,7 @@ TEST_CASE("DistanceRestraintForceImplementsPositiveActivation") {
   }
 
   SECTION("ActiveForPositiveDeviation") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 1.0, 1, 2,
                            DistanceRestraintCondition::POSITIVE);
@@ -1414,7 +1444,7 @@ TEST_CASE("DistanceRestraintForceImplementsPositiveActivation") {
 
 TEST_CASE("DistanceRestraintForceImplementsNegativeActivation") {
   SECTION("ActiveForNegativeDeviation") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 3.0, 1, 2,
                            DistanceRestraintCondition::NEGATIVE);
@@ -1430,7 +1460,7 @@ TEST_CASE("DistanceRestraintForceImplementsNegativeActivation") {
   }
 
   SECTION("ActiveAtBoundary") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 2.0, 1, 1,
                            DistanceRestraintCondition::NEGATIVE);
@@ -1446,7 +1476,7 @@ TEST_CASE("DistanceRestraintForceImplementsNegativeActivation") {
   }
 
   SECTION("InactiveForPositiveDeviation") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 1.0, 1, 2,
                            DistanceRestraintCondition::NEGATIVE);
@@ -1465,7 +1495,7 @@ TEST_CASE("DistanceRestraintForceAppliesRequestedScale") {
 
   for (const double scale : scales) {
     CAPTURE(scale);
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     AddStandardRestraint(restraint);
     restraint.setScale(scale);
@@ -1485,7 +1515,7 @@ TEST_CASE("DistanceRestraintForceAppliesRequestedScale") {
 }
 
 TEST_CASE("DistanceRestraintForceIsTranslationInvariant") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   AddStandardRestraint(restraint, 2.0, 0.0);
 
@@ -1543,7 +1573,7 @@ TEST_CASE("DistanceRestraintForceIsTranslationInvariant") {
 
 TEST_CASE("DistanceRestraintForceInternalTermsConserveTotalGradient") {
   constexpr int numAtoms = 4;
-  ResdForce restraint(numAtoms);
+  ResdForce restraint(MakeTestPsf(numAtoms));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   restraint.addRestraint(TWO_PAIR_CHAIN, {1.0, -1.0}, 2.0, -2.0, 1, 2);
   CudaContainer<float4> xyzq = std::vector<float4>{
@@ -1597,7 +1627,7 @@ TEST_CASE("DistanceRestraintForceHonorsCalculationFlags") {
       0.0};
 
   SECTION("CalcEnergyFalse") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     AddStandardRestraint(restraint);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1612,7 +1642,7 @@ TEST_CASE("DistanceRestraintForceHonorsCalculationFlags") {
   }
 
   SECTION("CalcVirialFalse") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     AddStandardRestraint(restraint);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1628,7 +1658,7 @@ TEST_CASE("DistanceRestraintForceHonorsCalculationFlags") {
   }
 
   SECTION("CalcEnergyAndCalcVirialFalse") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     AddStandardRestraint(restraint);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -1645,7 +1675,7 @@ TEST_CASE("DistanceRestraintForceHonorsCalculationFlags") {
 }
 
 TEST_CASE("DistanceRestraintForceMultipleEvaluationsHaveNoStaleAccumulation") {
-  ResdForce restraint(NUM_ATOMS);
+  ResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   AddStandardRestraint(restraint);
 
@@ -1681,7 +1711,7 @@ TEST_CASE("DistanceRestraintForceMultipleEvaluationsHaveNoStaleAccumulation") {
 
 TEST_CASE("DistanceRestraintForceGradientsMatchCentralFiniteDifferences") {
   SECTION("MultiPairTerm") {
-    ResdForce restraint(NUM_ATOMS);
+    DoubleResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(TWO_PAIR_CHAIN, {1.0, 0.5}, 1.5, 0.25, 1, 2);
     const std::vector<float4> coordinates = {
@@ -1707,7 +1737,7 @@ TEST_CASE("DistanceRestraintForceGradientsMatchCentralFiniteDifferences") {
   }
 
   SECTION("NegativeCoefficient") {
-    ResdForce restraint(NUM_ATOMS);
+    DoubleResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, {-0.75}, 1.25, 0.5, 1, 2);
     const std::vector<float4> coordinates = {
@@ -1733,7 +1763,7 @@ TEST_CASE("DistanceRestraintForceGradientsMatchCentralFiniteDifferences") {
   }
 
   SECTION("DistanceExponentGreaterThanOne") {
-    ResdForce restraint(NUM_ATOMS);
+    DoubleResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, {0.5}, 1.5, 2.0, 2, 2);
     const std::vector<float4> coordinates = {
@@ -1759,7 +1789,7 @@ TEST_CASE("DistanceRestraintForceGradientsMatchCentralFiniteDifferences") {
   }
 
   SECTION("OddEnergyExponent") {
-    ResdForce restraint(NUM_ATOMS);
+    DoubleResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 1.5, 3.5, 1, 3);
     const std::vector<float4> coordinates = {
@@ -1786,7 +1816,7 @@ TEST_CASE("DistanceRestraintForceGradientsMatchCentralFiniteDifferences") {
   }
 
   SECTION("ActiveOneSidedTerm") {
-    ResdForce restraint(NUM_ATOMS);
+    DoubleResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 1.5, 2.0, 1, 2,
                            DistanceRestraintCondition::POSITIVE);
@@ -1816,7 +1846,7 @@ TEST_CASE("DistanceRestraintForceGradientsMatchCentralFiniteDifferences") {
 
 TEST_CASE("DistanceRestraintForceUsesRawCoordinatesAcrossBoxFaces") {
   SECTION("PositiveBoxFaceCrossing") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq =
@@ -1854,7 +1884,7 @@ TEST_CASE("DistanceRestraintForceUsesRawCoordinatesAcrossBoxFaces") {
   }
 
   SECTION("NegativeBoxFaceCrossing") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq =
@@ -1892,7 +1922,7 @@ TEST_CASE("DistanceRestraintForceUsesRawCoordinatesAcrossBoxFaces") {
   }
 
   SECTION("TranslatingOneAtomByOneFullBoxChangesRawDistance") {
-    ResdForce restraint(NUM_ATOMS);
+    ResdForce restraint(MakeTestPsf(NUM_ATOMS));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 1, 2);
     CudaContainer<float4> baseXyzq =
@@ -1956,7 +1986,7 @@ TEST_CASE("DistanceRestraintForceUsesRawCoordinatesAcrossBoxFaces") {
 
   SECTION("SeveralPairsUseDifferentRawImageShifts") {
     constexpr int numAtoms = 4;
-    ResdForce restraint(numAtoms);
+    ResdForce restraint(MakeTestPsf(numAtoms));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     const std::vector<std::array<AtomReference, 2>> atomPairs = THREE_PAIR_STAR;
     restraint.addRestraint(atomPairs, {1.0, 1.0, 1.0}, 2.0, 0.0, 1, 2);
@@ -1995,7 +2025,7 @@ TEST_CASE("DistanceRestraintForceUsesRawCoordinatesAcrossBoxFaces") {
 }
 
 TEST_CASE("DistanceRestraintForceVirialMatchesFiniteStrainDerivative") {
-  ResdForce restraint(NUM_ATOMS);
+  DoubleResdForce restraint(MakeTestPsf(NUM_ATOMS));
   restraint.setBoxDimensions(BOX_DIMENSIONS);
   restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 1, 2);
   const std::vector<float4> coordinates = {
@@ -2071,9 +2101,38 @@ TEST_CASE("DistanceRestraintForceVirialMatchesFiniteStrainDerivative") {
   }
 }
 
+TEST_CASE("DistanceRestraintForceArithmeticFollowsCT") {
+  // A reference value 2^-30 above r^2 = 9 is exact in double arithmetic and
+  // rounds away when it is converted to float.
+  const double referenceValue = 9.0 + std::ldexp(1.0, -30);
+  const double forceConstant = std::ldexp(1.0, 20);
+  CudaContainer<float4> xyzq = std::vector<float4>{
+      make_float4(0.0f, 0.0f, 0.0f, 0.0f), make_float4(3.0f, 0.0f, 0.0f, 0.0f),
+      make_float4(9.0f, 9.0f, 9.0f, 0.0f)};
+
+  DoubleResdForce doubleRestraint(MakeTestPsf(NUM_ATOMS));
+  doubleRestraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, forceConstant,
+                               referenceValue, 2, 2);
+  ClearAndCalculate(doubleRestraint, xyzq);
+
+  // D = -2^-30 gives the energy 2^19 * 2^-60 and the pair coefficient
+  // 2^20 * -2^-30 * 2 = -2^-9, applied to dx = -3.
+  CheckResdOutput(doubleRestraint, "RESD double arithmetic",
+                  std::ldexp(1.0, -41),
+                  MakeExpectedXGradients(3.0 * std::ldexp(1.0, -9),
+                                         -3.0 * std::ldexp(1.0, -9)));
+
+  ResdForce floatRestraint(MakeTestPsf(NUM_ATOMS));
+  floatRestraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, forceConstant,
+                              referenceValue, 2, 2);
+  ClearAndCalculate(floatRestraint, xyzq);
+  CheckResdOutput(floatRestraint, "RESD float arithmetic", 0.0,
+                  MakeExpectedXGradients(0.0, 0.0));
+}
+
 TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   SECTION("OddNegativeDeviation") {
-    ResdForce restraint(2);
+    ResdForce restraint(MakeTestPsf(2));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 3.0, 1, 3);
     CudaContainer<float4> xyzq =
@@ -2094,7 +2153,7 @@ TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   }
 
   SECTION("EvenNegativeDeviation") {
-    ResdForce restraint(2);
+    ResdForce restraint(MakeTestPsf(2));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 3.0, 1, 4);
     CudaContainer<float4> xyzq =
@@ -2115,7 +2174,7 @@ TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   }
 
   SECTION("PositiveBoundary") {
-    ResdForce restraint(2);
+    ResdForce restraint(MakeTestPsf(2));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 2.0, 1, 1,
                            DistanceRestraintCondition::POSITIVE);
@@ -2137,7 +2196,7 @@ TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   }
 
   SECTION("NegativeBoundary") {
-    ResdForce restraint(2);
+    ResdForce restraint(MakeTestPsf(2));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 2.0, 1, 1,
                            DistanceRestraintCondition::NEGATIVE);
@@ -2159,7 +2218,7 @@ TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   }
 
   SECTION("OrthorhombicBoxFaceCrossing") {
-    ResdForce restraint(2);
+    ResdForce restraint(MakeTestPsf(2));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq =
@@ -2183,7 +2242,7 @@ TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   }
 
   SECTION("SignedMultiPairTerm") {
-    ResdForce restraint(3);
+    ResdForce restraint(MakeTestPsf(3));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(TWO_PAIR_CHAIN, {1.0, -1.0}, 2.0, -2.0, 1, 2);
     CudaContainer<float4> xyzq = STANDARD_COORDINATES;
@@ -2203,7 +2262,7 @@ TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   }
 
   SECTION("OffAxisVirialAtOrigin") {
-    ResdForce restraint(2);
+    ResdForce restraint(MakeTestPsf(2));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq =
@@ -2226,7 +2285,7 @@ TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   }
 
   SECTION("OffAxisVirialAfterTranslation") {
-    ResdForce restraint(2);
+    ResdForce restraint(MakeTestPsf(2));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq =
@@ -2250,7 +2309,7 @@ TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   }
 
   SECTION("DiagonalOrthorhombicRawCoordinates") {
-    ResdForce restraint(2);
+    ResdForce restraint(MakeTestPsf(2));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 2.0, 0.0, 1, 2);
     CudaContainer<float4> xyzq =
@@ -2275,7 +2334,7 @@ TEST_CASE("DistanceRestraintForceMatchesCharmmReferences") {
   }
 
   SECTION("MixedFourTermAccumulation") {
-    ResdForce restraint(2);
+    ResdForce restraint(MakeTestPsf(2));
     restraint.setBoxDimensions(BOX_DIMENSIONS);
     restraint.addRestraint(SINGLE_PAIR, {1.0}, 2.0, 1.0, 1, 2);
     restraint.addRestraint(SINGLE_PAIR, {0.5}, 3.0, 1.0, 2, 3,
@@ -2507,8 +2566,7 @@ TEST_CASE("DistanceRestraintForceSupportsMultipleSubscribedObjects",
 
   auto firstRestraint =
       MakeStandardIntegrationRestraint(system.context->getNumAtoms());
-  auto secondRestraint =
-      std::make_shared<ResdForce>(system.context->getNumAtoms());
+  auto secondRestraint = std::make_shared<ResdForce>(system.context->getPsf());
   secondRestraint->addRestraint(SINGLE_PAIR, UNIT_COEFFICIENT, 4.0, 0.0, 1, 2);
 
   CHECK_NOTHROW(SubscribeIntegrationRestraint(system.forceManager,

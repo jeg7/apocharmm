@@ -20,6 +20,7 @@ import apo_test_helpers as apo_test
 TOLERANCE: float = 1.0e-7
 BOX_DIMENSIONS: tuple[float, float, float] = (20.0, 21.0, 22.0)
 FFT_GRID: tuple[int, int, int] = (32, 34, 36)
+OUTPUT_BOX_DIMENSIONS: tuple[float, float, float] = (50.0, 50.0, 50.0)
 
 
 class TestForce:
@@ -371,11 +372,96 @@ def check_subscription_wrapper() -> None:
     return
 
 
+def check_output_getters() -> None:
+    print("Checking ForceManager energy, force, and virial getters...")
+
+    prm_path: str = apo_test.require_file(
+        apo_test.get_toppar_dir() / "toppar_water_ions.str"
+    )
+    psf_path: str = apo_test.require_file(apo_test.get_data_dir() / "nacl_pair.psf")
+    crd_path: str = apo_test.require_file(apo_test.get_data_dir() / "nacl_pair.cor")
+
+    prm = apo.CharmmParameters(prm_path)
+    psf = apo.CharmmPsf(psf_path)
+    crd = apo.CharmmCrd(crd_path)
+    fm = apo.ForceManager(psf, prm)
+
+    getter_names: tuple[str, str, str] = (
+        "getPotentialEnergy",
+        "getForces",
+        "getVirial",
+    )
+
+    try:
+        for name in getter_names:
+            apo_test.expect_apo_error(
+                f"ForceManager.{name} requires an initialized manager",
+                getattr(fm, name),
+                apo.APO_STATUS_NOT_INITIALIZED,
+                "ForceManager must be initialized before this operation",
+                expected_context=f"ForceManager.{name}()",
+            )
+
+        fm.setBoxDimensions(OUTPUT_BOX_DIMENSIONS)
+        ctx = apo.CharmmContext(fm)
+
+        try:
+            apo_test.assert_equal(
+                "ForceManager initialized by CharmmContext", fm.isInitialized(), True
+            )
+
+            ctx.setCoordinates(crd)
+            ctx.calculatePotentialEnergy()
+
+            energy: float = fm.getPotentialEnergy()
+            forces: list[list[float]] = fm.getForces()
+            virial: list[list[float]] = fm.getVirial()
+
+            apo_test.assert_equal("getPotentialEnergy type", type(energy), float)
+            apo_test.assert_finite_scalar("getPotentialEnergy", energy)
+            apo_test.assert_equal(
+                "getForces shape", [len(row) for row in forces], [3, 3]
+            )
+            apo_test.assert_finite_nested_sequence("getForces", forces)
+            apo_test.assert_equal(
+                "getVirial shape", [len(row) for row in virial], [3, 3, 3]
+            )
+            apo_test.assert_finite_nested_sequence("getVirial", virial)
+
+            repeated_forces: list[list[float]] = fm.getForces()
+
+            apo_test.assert_equal(
+                "getForces returns new lists", repeated_forces is not forces, True
+            )
+            apo_test.assert_equal(
+                "repeated getters return the same outputs",
+                (fm.getPotentialEnergy(), repeated_forces, fm.getVirial()),
+                (energy, forces, virial),
+            )
+        finally:
+            ctx.close()
+
+        fm.close()
+
+        for name in getter_names:
+            apo_test.expect_exception(
+                f"closed ForceManager rejects {name}", RuntimeError, getattr(fm, name)
+            )
+    finally:
+        fm.close()
+        crd.close()
+        psf.close()
+        prm.close()
+
+    return
+
+
 def main(argc: int, argv: list[str]) -> int:
     check_default_state()
     check_setters_and_getters()
     check_validation()
     check_subscription_wrapper()
+    check_output_getters()
 
     print("\033[32m" + "PASS: ForceManager Python API tests completed." + "\033[0m")
 

@@ -11,54 +11,63 @@
 #pragma once
 
 #include "AtomSelection.h"
+#include "CharmmPSF.h"
 #include "CudaContainer.h"
 #include "CudaEnergyVirial.h"
 #include "Force.h"
+#include "cuda_utils.h"
 
+#include <array>
 #include <cuda_runtime.h>
 #include <memory>
 #include <vector>
 
 /**
- * @brief Computes a periodic harmonic restraint on a selected group center.
+ * @brief Computes a CHARMM CONS HMCM harmonic restraint on a group center.
  *
  * The selected atoms define either a uniformly weighted geometric center or a
- * mass-weighted center. The first selected atom is used as an anchor while
- * selected coordinates are unwrapped through an orthorhombic periodic box.
- * Let `w_i` be one when mass weighting is disabled, or the configured mass
- * when it is enabled. The resulting center is:
+ * mass-weighted center. As in CHARMM, the center is built from the raw
+ * Cartesian coordinates, without unwrapping. Let `w_i` be one when mass
+ * weighting is disabled, or, when it is enabled, the stored mass, which
+ * construction copies from a CharmmPSF and `setMasses()` replaces:
  *
  * @code
  * W = sum over selected atoms i of w_i
- * C = (1 / W) * sum over selected atoms i of w_i * r_i_unwrapped
+ * C = (1 / W) * sum over selected atoms i of w_i * r_i
  * @endcode
  *
- * A three-element mask selects the Cartesian components used in the
- * center-to-reference displacement. Active components are minimum-imaged
- * relative to the reference position; inactive components are zero. For
- * displacement magnitude `r`, force constant `k`, and reference distance
- * `r0`, the implemented energy is:
+ * A three-element mask selects the Cartesian components of the raw
+ * center-to-reference displacement `d = C - R`; inactive components are zero,
+ * so the center is restrained to a point, a line, or a plane. For force
+ * constant `k` and reference distance `r0`:
  *
  * @code
- * U_hmcm = k * r^2             when r0 == 0
- * U_hmcm = k * (r - r0)^2      when r0 > 0
+ * s = norm(d)
+ * U_hmcm = k * (s - r0)^2
+ * gradient_i = w_i * (d * 2 * k / W * (s - r0) / s)
  * @endcode
  *
- * The per-atom force array receives each atom's weight fraction times the
- * potential gradient with respect to the center. apoCHARMM's force aggregation
- * subtracts this stored gradient to obtain the physical restoring force.
- * Energy is accumulated in the named term `hmcm`.
+ * Both are evaluated in CHARMM's operation order. A zero `s` gives a zero
+ * gradient; CHARMM also gives zero there when `r0` is zero, but divides by
+ * zero otherwise. The force array receives `gradient_i`, which apoCHARMM's
+ * force aggregation subtracts to obtain the physical restoring force. Energy
+ * is accumulated in the named term `hmcm`. As in CHARMM, force constants,
+ * reference distances, and masses may have either sign, provided the selected
+ * total weight is finite and nonzero. The restraint contributes no virial, and
+ * the stored box lengths do not affect evaluation.
  *
- * Configuration is split between host scalar state and synchronized
- * host/device arrays. Selection or weight changes rebuild device-resident
- * selected-index and selected-weight arrays and can reallocate their storage.
- * `calcForce()` enqueues a three-kernel pipeline on a private CUDA stream and
- * does not synchronize before returning.
+ * Configuration is split between host scalar state and host/device arrays.
+ * Selection or weight changes rebuild the host selected-index and
+ * selected-weight arrays; `initialize()` and `calcForce()` transfer them and
+ * resize device storage before use. `calcForce()` enqueues a three-kernel
+ * pipeline on a private CUDA stream and does not synchronize before returning.
  *
  * @tparam AT Device force-accumulator representation. The library explicitly
  * instantiates `long long int`, using apoCHARMM's fixed-point force scale.
- * @tparam CT Arithmetic representation used while distributing the center
- * gradient. The library explicitly instantiates `float` and `double`.
+ * @tparam CT Representation of the force arithmetic, including the center
+ * reductions and the energy value, which is converted to double before it is
+ * added to the energy storage. The library explicitly instantiates `float` and
+ * `double`.
  *
  * @warning The class provides no internal host-thread synchronization. Callers
  * must serialize configuration, clearing, force evaluation, and destruction.
@@ -67,45 +76,67 @@
  * CUDA-resource lifecycle.
  * @warning Call `clear()` before the first calculation and before every
  * calculation that requires fresh rather than accumulated output.
+ * @warning `CharmmContext` recenters every bond-connected group whose center
+ * leaves the half box. A selection spanning several groups, or a reference
+ * point outside the centered cell, can therefore move the raw center by a box
+ * length, as CHARMM's image centering can.
  *
  * @see harmonic_center_of_mass_restraint_force
  * @see AtomSelection
  * @see ForceManager
  */
 template <typename AT, typename CT> class HarmonicCenterOfMassRestraintForce {
-public:
-  /**
-   * @brief Reports that this restraint contributes periodic virial state.
-   *
-   * `ForceManager` passes `calcVirial == true` to this force only when global
-   * virial calculation is requested. The restraint then accumulates periodic
-   * shift-force records into its `CudaEnergyVirial` object.
-   */
-  static constexpr bool contributesVirial = true;
+private:
+  using CT4 = typename CudaVectorType<CT, 4>::type;
 
 public:
   /**
-   * @brief Prevents construction without an explicit atom count.
+   * @brief Reports that this restraint does not contribute to virial
+   * aggregation.
+   *
+   * CHARMM evaluates CONS HMCM after it forms its internal virial. Likewise,
+   * ForceManager passes `calcVirial == false` to this force and excludes it
+   * from the aggregate virial.
+   */
+  static constexpr bool contributesVirial = false;
+
+public:
+  /**
+   * @brief Prevents construction without a PSF atom-count and mass snapshot.
+   *
+   * @see CharmmPSF
    */
   HarmonicCenterOfMassRestraintForce(void) = delete;
 
   /**
-   * @brief Constructs a restraint for a fixed positive atom count.
+   * @brief Constructs a restraint from a PSF atom-count and mass snapshot.
    *
+   * The positive atom count and complete mass vector are copied. The PSF and
+   * its shared owner are borrowed only for this call and are not retained.
    * Every atom is initially selected. The force constant and reference
-   * distance are zero, mass weighting is disabled, all stored masses are one,
-   * the reference position is `(0, 0, 0)`, every Cartesian mask component is
-   * active, and box dimensions are unset at zero.
+   * distance are zero, mass weighting is disabled, the stored masses are the
+   * copied PSF masses, the reference position is `(0, 0, 0)`, every Cartesian
+   * mask component is active, and box dimensions are unset at zero. As with
+   * CHARMM's WEIG or MASS keyword, enabling mass weighting then uses the PSF
+   * masses.
    *
-   * Construction creates coherent host/device mass, selected-index,
-   * selected-weight, partial-sum, and restraint-state storage. It also creates
-   * the `hmcm` energy term, a `Force<AT>` sized for `numAtoms`, and a private
-   * CUDA stream. Output force and energy storage must be cleared before use.
+   * Construction copies the masses into host storage, builds the host
+   * selected-index and selected-weight arrays, which the first `initialize()`
+   * or `calcForce()` transfers, and allocates partial-sum and restraint-state
+   * storage. It also creates the `hmcm` energy term, a `Force<AT>` sized for
+   * the atom count, and a private CUDA stream. Output force and energy storage
+   * must be cleared before use.
    *
-   * @param[in] numAtoms Dimensionless atom count. The value must be greater
-   * than zero and remains fixed for the lifetime of the restraint.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `numAtoms` is not positive.
+   * @param[in] psf Non-null PSF with an initialized positive atom count and
+   * exactly one finite mass, in atomic mass units, per atom. As in CHARMM, a
+   * mass may have either sign. The count remains fixed for the lifetime of
+   * the restraint.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if
+   * the PSF atom count is negative.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `psf` is null, its atom count is zero, or a mass is NaN or infinite.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if the PSF
+   * mass-vector length differs from its atom count.
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if CUDA
    * allocation, transfer, synchronization, force allocation, or stream
    * creation fails.
@@ -114,10 +145,14 @@ public:
    * @throws std::length_error If requested storage or an error diagnostic
    * exceeds an implementation-defined limit.
    *
-   * @post `getForce()->size() == numAtoms`.
-   * @post Every atom is selected with uniform weight one.
+   * @post `getForce()->size() == psf->getNumAtoms()`.
+   * @post Every atom is selected with uniform weight one, and later changes to
+   * the PSF masses do not affect the restraint.
+   * @see setMassWeighting
+   * @see setMasses
    */
-  HarmonicCenterOfMassRestraintForce(const int numAtoms);
+  explicit HarmonicCenterOfMassRestraintForce(
+      const std::shared_ptr<const CharmmPSF> &psf);
 
   /**
    * @brief Destroys the private CUDA stream and releases owned resources.
@@ -138,28 +173,27 @@ public:
    *
    * The selection is copied. Its selected indices are materialized in
    * ascending order, and selected weights are rebuilt from either one or the
-   * configured masses. Both arrays are copied to device memory. Partial-sum
-   * storage is resized to one element per 256-thread calculation block and
-   * internal state is cleared.
+   * configured masses. The next `initialize()` or `calcForce()` copies both
+   * arrays to device memory, resizes partial-sum storage to one element per
+   * 256-thread calculation block, and clears internal state.
    *
    * @param[in] selection Selection with exactly the restraint's fixed atom
    * count and at least one selected atom. The object is borrowed for the call,
    * copied, and not retained by reference.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if the atom count differs, no atom is
-   * selected, or mass weighting is active and the selected masses sum to zero.
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if selected
-   * arrays cannot be allocated, transferred, or synchronized.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * the atom count differs, no atom is selected, or mass weighting is active
+   * and the selected masses do not have a finite nonzero total with finite
+   * fractions.
    * @throws std::bad_alloc If selection, index, weight, or diagnostic storage
    * cannot be allocated.
    * @throws std::length_error If copied storage or a diagnostic exceeds an
    * implementation-defined limit.
    *
    * @post On success, the restraint owns an independent selection copy and
-   * selected device arrays describe exactly that selection.
+   * the selected host arrays describe exactly that selection.
    * @warning Failure after selection assignment begins can leave the copied
-   * selection or selected count newer than the device index and weight arrays.
-   * @warning Successful rebuilding can invalidate device pointers previously
+   * selection or selected count newer than the host index and weight arrays.
+   * @warning The next transfer can invalidate device pointers previously
    * borrowed from the selected arrays or partial-sum storage.
    */
   void setSelection(const AtomSelection &selection);
@@ -170,18 +204,16 @@ public:
    * The value is retained in host scalar state and passed by value to later
    * kernel launches. This method performs no CUDA transfer or synchronization.
    *
-   * @param[in] forceConstant Finite, non-negative force constant in
-   * kilocalories per mole per square angstrom.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `forceConstant` is negative, NaN,
-   * or infinite.
+   * @param[in] forceConstant Finite force constant in kilocalories per mole per
+   * square angstrom. As in CHARMM, a negative value is accepted.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `forceConstant` is NaN or infinite.
    * @throws std::bad_alloc If an error diagnostic cannot be allocated.
    * @throws std::length_error If an error diagnostic exceeds an
    * implementation-defined limit.
    *
    * @post On success, subsequent evaluations use `forceConstant`.
-   * @note Zero disables force evaluation and permits `calcForce()` to return
-   * without configured box dimensions.
+   * @note Zero disables force evaluation.
    */
   void setForceConstant(const double forceConstant);
 
@@ -194,9 +226,8 @@ public:
    *
    * @param[in] referencePosition Exactly three finite Cartesian coordinates in
    * `[x, y, z]` order and angstrom units.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if the vector length is not three or
-   * any component is NaN or infinite.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * the vector length is not three or any component is NaN or infinite.
    * @throws std::bad_alloc If an error diagnostic cannot be allocated.
    * @throws std::length_error If an error diagnostic exceeds an
    * implementation-defined limit.
@@ -208,9 +239,9 @@ public:
   /**
    * @brief Sets the Cartesian reference position and active-component mask.
    *
-   * Active components use minimum-image center-to-reference displacement.
-   * Inactive components contribute neither energy nor gradient. The position
-   * and mask are copied into host scalar state; no CUDA transfer occurs.
+   * Active components use the raw center-to-reference displacement. Inactive
+   * components contribute neither energy nor gradient. The position and mask
+   * are copied into host scalar state; no CUDA transfer occurs.
    *
    * @param[in] referencePosition Exactly three finite coordinates in
    * `[x, y, z]` order and angstrom units.
@@ -234,53 +265,52 @@ public:
   /**
    * @brief Sets the target radial distance from the reference position.
    *
-   * A zero target selects `k * r^2`. A positive target selects
-   * `k * (r - referenceDistance)^2`. The scalar is stored on the host and no
-   * CUDA transfer occurs.
+   * The energy is `k * (s - referenceDistance)^2` for the masked displacement
+   * magnitude `s`. The scalar is stored on the host and no CUDA transfer
+   * occurs.
    *
-   * @param[in] referenceDistance Finite, non-negative target distance in
-   * angstroms.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `referenceDistance` is negative,
-   * NaN, or infinite.
+   * @param[in] referenceDistance Finite target distance in angstroms. As in
+   * CHARMM, a negative value is accepted.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `referenceDistance` is NaN or infinite.
    * @throws std::bad_alloc If an error diagnostic cannot be allocated.
    * @throws std::length_error If an error diagnostic exceeds an
    * implementation-defined limit.
    *
    * @post On success, subsequent evaluations use `referenceDistance`.
-   * @note For a positive target and an exactly zero current displacement, the
-   * implementation assigns a zero gradient at the nondifferentiable point.
+   * @note For a nonzero target and an exactly zero current displacement, the
+   * implementation assigns a zero gradient at the nondifferentiable point,
+   * where CHARMM divides by zero.
    */
   void setReferenceDistance(const double referenceDistance);
 
   /**
    * @brief Sets per-atom masses and enables mass weighting.
    *
-   * The full atom-order array is copied into owned host/device storage. The
-   * selected weights are then rebuilt from the copied masses and transferred to
-   * device memory. Only relative selected masses affect the normalized center;
-   * multiplying every selected mass by the same positive factor has no effect.
+   * The full atom-order array is copied into owned host storage. The
+   * selected weights are then rebuilt from the copied masses; the next
+   * `initialize()` or `calcForce()` transfers them to device memory. Only
+   * relative selected masses affect the normalized center; multiplying every
+   * selected mass by the same positive factor has no effect.
    *
-   * @param[in] masses Exactly one finite, non-negative value per atom, in atom
-   * order and normally atomic mass units. The vector is borrowed for the call,
-   * copied, and not retained by reference. Selected masses must have positive
-   * total weight.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if the vector length differs from the
-   * atom count, a mass is negative, NaN, or infinite, or selected masses sum to
-   * zero.
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if mass or
-   * selected-weight storage cannot be allocated, transferred, or synchronized.
-   * @throws std::bad_alloc If host, device-metadata, or diagnostic storage
-   * cannot be allocated.
+   * @param[in] masses Exactly one finite value per atom, in atom order and
+   * normally atomic mass units. As in CHARMM, a value may have either sign.
+   * The vector is borrowed for the call, copied, and not retained by
+   * reference. Selected masses must have a finite nonzero total and finite
+   * fractions.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * the vector length differs from the atom count, a mass is NaN or infinite,
+   * or the selected masses do not have a finite nonzero total with finite
+   * fractions.
+   * @throws std::bad_alloc If host or diagnostic storage cannot be allocated.
    * @throws std::length_error If copied storage or a diagnostic exceeds an
    * implementation-defined limit.
    *
-   * @post On success, mass weighting is enabled and host/device selected
-   * weights correspond to `masses`.
+   * @post On success, mass weighting is enabled and the selected host weights
+   * correspond to `masses`.
    * @warning Failure after mass assignment begins can leave new masses or a new
-   * weighting mode paired with older selected device arrays.
-   * @warning Successful rebuilding can invalidate previously borrowed selected
+   * weighting mode paired with older selected host arrays.
+   * @warning The next transfer can invalidate previously borrowed selected
    * array or partial-sum device pointers.
    */
   void setMasses(const std::vector<double> &masses);
@@ -288,26 +318,26 @@ public:
   /**
    * @brief Enables mass weighting or restores uniform weighting.
    *
-   * The selected-weight array is rebuilt and copied to device memory. `true`
-   * uses the current per-atom masses; `false` assigns every selected atom
+   * The selected-weight array is rebuilt in host memory; the next
+   * `initialize()` or `calcForce()` copies it to device memory. `true` uses the
+   * stored per-atom masses, which are the PSF masses copied at construction
+   * until `setMasses()` replaces them; `false` assigns every selected atom
    * weight one. The stored mass array is retained when weighting is disabled.
    *
    * @param[in] useMassWeighting `true` to use configured masses or `false` to
    * use uniform dimensionless weights.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if weighting is enabled while the
-   * selected masses have zero total weight.
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if selected
-   * arrays cannot be allocated, transferred, or synchronized.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * weighting is enabled while the selected masses do not have a finite nonzero
+   * total with finite fractions.
    * @throws std::bad_alloc If selected-index, selected-weight, or diagnostic
    * storage cannot be allocated.
    * @throws std::length_error If rebuilt storage or a diagnostic exceeds an
    * implementation-defined limit.
    *
-   * @post On success, selected device weights match the requested mode.
+   * @post On success, the selected host weights match the requested mode.
    * @warning Failure after the mode flag changes can leave the mode and
-   * selected device arrays inconsistent.
-   * @warning Successful rebuilding can invalidate previously borrowed selected
+   * selected host arrays inconsistent.
+   * @warning The next transfer can invalidate previously borrowed selected
    * array or partial-sum device pointers.
    */
   void setMassWeighting(const bool useMassWeighting);
@@ -315,11 +345,10 @@ public:
   /**
    * @brief Sets the orthorhombic periodic box lengths.
    *
-   * The three values are copied into host scalar state. They are used to unwrap
-   * selected atoms relative to the first selected atom and to minimum-image the
-   * active center-to-reference displacement. No CUDA transfer or
-   * synchronization occurs, and changing the box does not rescale the reference
-   * position.
+   * The three values are copied into host scalar state for the manager
+   * lifecycle. As in CHARMM, evaluation uses raw coordinates, so the box does
+   * not affect the restraint. No CUDA transfer or synchronization occurs, and
+   * changing the box does not rescale the reference position.
    *
    * @param[in] boxDimensions Exactly three finite positive lengths in
    * `[x, y, z]` order and angstrom units.
@@ -330,8 +359,7 @@ public:
    * @throws std::length_error If an error diagnostic exceeds an
    * implementation-defined limit.
    *
-   * @post On success, subsequent nonzero-force evaluations use the supplied
-   * orthorhombic box.
+   * @post On success, the stored box equals `boxDimensions`.
    * @warning Triclinic box vectors and angles are not represented by this API.
    */
   void setBoxDimensions(const std::vector<double> &boxDimensions);
@@ -341,7 +369,8 @@ public:
    * @brief Returns shared ownership of energy and virial storage.
    *
    * No transfer or synchronization occurs. The object contains the named
-   * energy term `hmcm` and periodic virial work storage.
+   * energy term `hmcm`. This force never writes the object's virial, which
+   * remains zero.
    *
    * @return A copied shared owner of the restraint's `CudaEnergyVirial` object.
    * The object can outlive this restraint, but no restraint remains to update
@@ -380,9 +409,10 @@ public:
    * @brief Initializes the restraint for an atom count and periodic box.
    *
    * This is the `ForceManager` initialization hook. It verifies that the
-   * manager atom count matches construction and then delegates to
-   * `setBoxDimensions()`. It does not allocate a new force array, rebuild the
-   * selection, clear outputs, or set a separate initialized flag.
+   * manager atom count matches construction, delegates to `setBoxDimensions()`,
+   * and transfers changed selected arrays to the device. It does not allocate a
+   * new force array, rebuild the selection, clear outputs, or set a separate
+   * initialized flag.
    *
    * @param[in] numAtoms Dimensionless atom count supplied by the manager. It
    * must equal the fixed construction count.
@@ -391,12 +421,14 @@ public:
    * @throws ApoCharmmError With code
    * `ApoCharmmErrorCode::InvalidArgument` if the atom count differs or the box
    * contract is violated.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if transferring
+   * the selected arrays or resizing reduction storage fails.
    * @throws std::bad_alloc If an error diagnostic cannot be allocated.
    * @throws std::length_error If an error diagnostic exceeds an
    * implementation-defined limit.
    *
-   * @post On success, subsequent nonzero-force calculations have valid box
-   * dimensions.
+   * @post On success, the stored box equals `boxDimensions`, and the device
+   * selected arrays and reduction storage match the host arrays.
    */
   void initialize(const int numAtoms, const std::vector<double> &boxDimensions);
 
@@ -417,16 +449,17 @@ public:
   /**
    * @brief Enqueues center calculation, state calculation, and force updates.
    *
-   * The method reads `m_NumAtoms` device `float4` coordinate-charge records,
-   * computes the selected center under orthorhombic periodic imaging, computes
-   * the energy and center gradient, and distributes that gradient to selected
-   * atoms in proportion to their weights. All three kernels use the private
-   * stream and return after immediate launch checks.
+   * Changed selected arrays are first transferred to the device, which
+   * synchronizes the device. The method then reads `m_NumAtoms` device `float4`
+   * coordinate-charge records, computes the selected center from raw
+   * coordinates, computes the energy and the CHARMM gradient factors, and
+   * distributes them to the selected atoms in proportion to their weights. All
+   * three kernels use the private stream and return after immediate launch
+   * checks.
    *
    * Force output is always accumulated. Energy is accumulated only when
-   * `calcEnergy` is true. Periodic virial shift-force records are accumulated
-   * only when `calcVirial` is true. Disabled outputs retain their previous
-   * values and can therefore be stale.
+   * `calcEnergy` is true; a disabled energy retains its previous value and can
+   * therefore be stale.
    *
    * @param[in] xyzq Borrowed non-NULL CUDA-device pointer to at least
    * `m_NumAtoms` contiguous `float4` records in `[x, y, z, charge]` order.
@@ -434,13 +467,11 @@ public:
    * must remain valid until the private stream completes all queued work.
    * @param[in] calcEnergy Whether to add the current restraint energy to the
    * device `hmcm` term.
-   * @param[in] calcVirial Whether to add periodic shift-force records used by
-   * later virial aggregation.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if the force constant is nonzero and
-   * positive box dimensions have not been set.
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if any kernel
-   * launch reports an immediate CUDA failure.
+   * @param[in] calcVirial Accepted for the force-manager interface but ignored
+   * because this restraint contributes no virial.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if transferring
+   * changed selected arrays fails or any kernel launch reports an immediate
+   * CUDA failure.
    *
    * @pre `xyzq` is device-accessible, correctly sized, and does not overlap an
    * incompatible concurrent write.
@@ -448,45 +479,48 @@ public:
    * required.
    * @post Successful return means all requested kernels were enqueued; it does
    * not mean device execution has completed.
-   * @note If the force constant is zero, the method returns without reading
-   * `xyzq`, validating the box, or modifying outputs.
+   * @note If the force constant is zero, the method returns without
+   * transferring data, reading `xyzq`, or modifying outputs.
    * @warning A later asynchronous CUDA failure is reported only by a subsequent
    * CUDA synchronization or CUDA API operation.
    * @warning A launch failure after earlier kernels were enqueued can leave a
    * partially updated calculation once the stream completes.
-   * @warning Virial center-shift bookkeeping represents only image counts from
-   * `-1` through `1` on each axis. A larger center-to-reference image count is
-   * omitted from that bookkeeping even though force and energy are evaluated.
    */
   void calcForce(const float4 *xyzq, const bool calcEnergy,
                  const bool calcVirial);
 
 private:
   /**
-   * @brief Rebuilds selected indices, selected weights, and reduction storage.
+   * @brief Rebuilds the selected indices and weights in host memory.
    *
    * The method materializes ascending selected atom indices, chooses mass or
-   * uniform weights, verifies positive total selected weight, copies indices
-   * and weights to device memory, resizes block partial sums, and clears
-   * partial and restraint state. The `CudaContainer` operations perform
-   * device-wide synchronization.
+   * uniform weights, verifies a finite nonzero selected total with finite
+   * fractions, stores the indices and weights in the host mirrors, and marks
+   * them for transfer.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if selected total weight is not
-   * positive.
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if allocation,
-   * transfer, clearing, or synchronization fails.
-   * @throws std::bad_alloc If temporary or container host storage cannot be
-   * allocated.
-   * @throws std::length_error If temporary or container storage exceeds an
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * the selected total weight is not finite and nonzero, or a selected weight
+   * fraction is not finite.
+   * @throws std::bad_alloc If temporary or host storage cannot be allocated.
+   * @throws std::length_error If temporary or host storage exceeds an
    * implementation-defined limit.
    *
-   * @post On success, selected arrays and reduction storage match
-   * `m_Selection` and `m_UseMassWeighting`.
-   * @warning The method is sequential rather than transactional and can
-   * invalidate previously borrowed device pointers through reallocation.
+   * @post On success, the selected host arrays match `m_Selection` and
+   * `m_UseMassWeighting`.
+   * @warning The method is sequential rather than transactional.
    */
   void updateSelectedAtoms(void);
+
+  /**
+   * @brief Transfers dirty selected arrays and resizes reduction storage.
+   *
+   * When the selected arrays have changed, the method copies the selected
+   * indices and weights to device memory, resizes the block partial sums, and
+   * clears the partial and restraint-state records. The `CudaContainer`
+   * operations perform device-wide synchronization and can invalidate
+   * previously borrowed device pointers through reallocation.
+   */
+  void syncDeviceData(void);
 
 private:
   /** Fixed dimensionless atom count established during construction. */
@@ -496,7 +530,7 @@ private:
 
   /** Harmonic coefficient in kilocalories per mole per square angstrom. */
   double m_ForceConstant;
-  /** Non-negative target center distance in angstroms. */
+  /** Target center distance in angstroms. */
   double m_ReferenceDistance;
   /** Selects configured masses or uniform weights. */
   bool m_UseMassWeighting;
@@ -505,39 +539,33 @@ private:
   CudaContainer<int> m_AtomIndices;
   /** Owned host/device selected weights corresponding to `m_AtomIndices`. */
   CudaContainer<double> m_AtomWeights;
-  /** Owned host/device per-atom masses in atom order. */
-  CudaContainer<double> m_Masses;
+  /** Owned host per-atom masses in atom order. */
+  std::vector<double> m_Masses;
 
   /** One device reduction record per 256-thread selected-atom block. */
-  CudaContainer<double4> m_PartialSums;
+  CudaContainer<CT4> m_PartialSums;
 
   /**
-   * Two device state records. Element zero stores
-   * `{dU/dCx, dU/dCy, dU/dCz, 1 / totalWeight}`. Element one stores the
-   * center-to-reference periodic image counts as `{x, y, z, 0}`.
+   * One device state record whose components x, y, and z store the per-axis
+   * gradient factors `d * 2 * k / W * (s - r0) / s`.
    */
-  CudaContainer<double4> m_RestraintState;
+  CudaContainer<CT4> m_RestraintState;
 
-  /** Host-only orthorhombic X box length in angstroms. */
-  double m_BoxDimX;
-  /** Host-only orthorhombic Y box length in angstroms. */
-  double m_BoxDimY;
-  /** Host-only orthorhombic Z box length in angstroms. */
-  double m_BoxDimZ;
+  /** Host-only orthorhombic box lengths in angstroms, in `[x, y, z]` order. */
+  std::array<double, 3> m_BoxDimensions;
 
-  /** Host-only reference position in angstroms; component `w` is unused. */
-  double4 m_ReferencePosition;
-  /** Dimensionless X-component activation flag, either zero or one. */
-  int m_ReferenceMaskX;
-  /** Dimensionless Y-component activation flag, either zero or one. */
-  int m_ReferenceMaskY;
-  /** Dimensionless Z-component activation flag, either zero or one. */
-  int m_ReferenceMaskZ;
+  /** True when the selected host arrays are newer than their device mirrors. */
+  bool m_DeviceDataDirty;
+
+  /** Host-only reference position in angstroms, in `[x, y, z]` order. */
+  std::array<double, 3> m_ReferencePosition;
+  /** Dimensionless `[x, y, z]` activation flags, each zero or one. */
+  std::array<int, 3> m_ReferenceMask;
 
   /** Owned host selection used when rebuilding selected arrays. */
   AtomSelection m_Selection;
 
-  /** Shared owner of the `hmcm` energy and periodic virial state. */
+  /** Shared owner of the `hmcm` energy storage. */
   std::shared_ptr<CudaEnergyVirial> m_EnergyVirial;
   /** Shared owner of device structure-of-arrays force storage. */
   std::shared_ptr<Force<AT>> m_Forces;

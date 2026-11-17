@@ -55,11 +55,6 @@ class CharmmContext;
  * convertible to `bool`. When the operation is absent, the view treats the
  * forces as compatible with every valid `PBC` value.
  *
- * Optional `static constexpr bool computesVirial = true` declares that
- * `calcForce()` supplies the complete virial tensor. Such a force participates
- * in aggregation but skips manager-side force conversion and reconstruction.
- * The absent trait defaults to false, preserving existing force behavior.
- *
  * Optional `clear(const bool calcEnergy, const bool calcVirial)` clears the
  * forces and only requested energy/virial outputs. Without it, the original
  * `clear()` is used.
@@ -95,7 +90,6 @@ public:
   ForceView(ForceType *inputForce)
       : m_Force(static_cast<void *>(inputForce)),
         m_ContributesVirial(ForceType::contributesVirial),
-        m_ComputesVirial(ForceView::queryVirialCalculation(inputForce, 0)),
         supportsPBC_impl{[](void *force, const PBC pbc) -> bool {
           ForceType *ptr = static_cast<ForceType *>(force);
           return ForceView::queryPBCSupport(ptr, pbc, 0);
@@ -245,26 +239,7 @@ public:
    */
   bool contributesVirial(void) const { return m_ContributesVirial; }
 
-  /** Reports whether the manager must construct this force's virial. */
-  bool requiresVirialCalculation(void) const {
-    return m_ContributesVirial && !m_ComputesVirial;
-  }
-
 private:
-  /**
-   * Detects complete native virial calculation, retaining the legacy default.
-   */
-  template <typename ForceType>
-  static auto queryVirialCalculation(ForceType *, int)
-      -> decltype(static_cast<bool>(ForceType::computesVirial)) {
-    return static_cast<bool>(ForceType::computesVirial);
-  }
-
-  template <typename ForceType>
-  static bool queryVirialCalculation(ForceType *, long int) {
-    return false;
-  }
-
   /** Dispatches selective clearing when available for a concrete force type. */
   template <typename ForceType>
   static auto clearOutput(ForceType *force, const bool calcEnergy,
@@ -303,9 +278,6 @@ private:
 
   /** Compile-time virial capability captured from the concrete force type. */
   bool m_ContributesVirial;
-
-  /** True when calcForce supplies a complete virial without reconstruction. */
-  bool m_ComputesVirial;
 
   /**
    * Type-erased dispatch table. Every entry expects `m_Force` to still point
@@ -1360,8 +1332,7 @@ public:
    * The method clears aggregate force storage, waits for each component and
    * subscribed stream, and adds every fixed-point force into the aggregate
    * double-precision force array. When requested, it converts force storage for
-   * virial reconstruction, except for subscribed forces declaring complete
-   * native virials. It reconstructs eligible virials, copies energies to host
+   * virial calculation, computes eligible virials, copies energies to host
    * storage, sums standard and subscribed energy terms on the aggregate stream,
    * and optionally prints the decomposition.
    *

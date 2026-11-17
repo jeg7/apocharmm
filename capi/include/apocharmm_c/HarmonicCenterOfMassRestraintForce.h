@@ -15,6 +15,7 @@
 #define __APOCHARMM_C_HARMONIC_CENTER_OF_MASS_RESTRAINT_FORCE_H__
 
 #include "apocharmm_c/AtomSelection.h"
+#include "apocharmm_c/CharmmPsf.h"
 #include "apocharmm_c/Export.h"
 #include "apocharmm_c/ForceManager.h"
 #include "apocharmm_c/Status.h"
@@ -60,38 +61,49 @@ typedef struct apo_harmonic_center_of_mass_restraint_force
     apo_harmonic_center_of_mass_restraint_force;
 
 /**
- * @brief Creates an owned harmonic center-of-mass restraint handle.
+ * @brief Creates an owned harmonic center-of-mass restraint handle from a PSF
+ * atom-count and mass snapshot.
  *
- * The native object uses fixed-point `long long int` force storage and
- * single-precision gradient-distribution arithmetic. All atoms begin selected,
- * weighting is uniform, all stored masses are one, the force constant and
- * reference distance are zero, the reference position is `(0, 0, 0)`, all
- * Cartesian mask components are active, and box dimensions are unset.
+ * The native object uses fixed-point `long long int` force storage,
+ * single-precision arithmetic for forces and the restraint energy, and
+ * double-precision energy accumulation. All atoms begin selected,
+ * weighting is uniform, the stored masses are copied from the PSF, the force
+ * constant and reference distance are zero, the reference position is
+ * `(0, 0, 0)`, all Cartesian mask components are active, and box dimensions
+ * are unset. The native constructor copies the PSF atom count and complete
+ * mass vector; finite masses of either sign are accepted, and enabling mass
+ * weighting then uses them.
  *
  * @param[out] out Non-NULL pointer to the caller's handle slot. The function
- * stores `NULL` in `*out` before native construction and stores a newly owned
+ * stores `NULL` in `*out` before validating `psf` and stores a newly owned
  * handle on success.
- * @param[in] num_atoms Dimensionless atom count. The value must be greater than
- * zero and is already represented as C `int` by the function signature.
+ * @param[in] psf Borrowed live PSF handle with an initialized positive atom
+ * count and exactly one finite mass per atom. The handle is borrowed only for
+ * this call; neither it nor its native PSF is retained.
  * @retval APO_STATUS_OK `*out` contains a newly owned handle that must be
  * released with
  * @ref apo_harmonic_center_of_mass_restraint_force_destroy.
- * @retval APO_STATUS_INVALID_ARGUMENT `out` is `NULL` or `num_atoms` is not
- * positive.
+ * @retval APO_STATUS_INVALID_ARGUMENT `out` or `psf` is `NULL`, the PSF handle
+ * contains no native object, the atom count is zero, or a mass is NaN or
+ * infinite.
+ * @retval APO_STATUS_NOT_INITIALIZED The native PSF atom count is negative.
  * @retval APO_STATUS_CUDA_ERROR Native CUDA allocation, transfer,
  * synchronization, force allocation, or stream creation failed.
- * @retval APO_STATUS_RUNTIME_ERROR Handle allocation, host allocation,
- * diagnostic construction, or another standard or nonstandard C++ operation
- * failed.
+ * @retval APO_STATUS_RUNTIME_ERROR The PSF mass count differs from its atom
+ * count, or handle allocation, host allocation, diagnostic construction, or
+ * another standard or nonstandard C++ operation failed.
  *
  * @post On every failure after a valid `out` pointer is accepted,
  * `*out == NULL`.
+ * @post On success, destroying the PSF handle or mutating its native PSF does
+ * not change the restraint's atom count or masses.
  * @note The function clears the calling thread's previous diagnostic at entry.
  * Success leaves it empty; failure leaves nonempty text available through
  * @ref apo_last_error.
  */
 APOCHARMM_C_API apo_status apo_harmonic_center_of_mass_restraint_force_create(
-    apo_harmonic_center_of_mass_restraint_force **out, const int num_atoms);
+    apo_harmonic_center_of_mass_restraint_force **out,
+    const apo_charmm_psf *psf);
 
 /**
  * @brief Destroys an owned harmonic center-of-mass restraint handle.
@@ -118,21 +130,19 @@ APOCHARMM_C_API void apo_harmonic_center_of_mass_restraint_force_destroy(
  * @brief Copies the nonempty atom selection used to define the group center.
  *
  * Selected indices and either uniform or mass-based selected weights are
- * rebuilt and copied to device storage. No C handle or caller selection storage
- * is retained.
+ * rebuilt in host storage; the next initialization or calculation copies them
+ * to the device. No C handle or caller selection storage is retained.
  *
  * @param[in,out] restraint Borrowed live restraint handle. The handle is not
  * retained.
  * @param[in] selection Borrowed live selection handle with the same atom count
  * as `restraint` and at least one selected atom. The native selection is
  * copied.
- * @retval APO_STATUS_OK The selection and selected device arrays were updated.
+ * @retval APO_STATUS_OK The selection and selected host arrays were updated.
  * @retval APO_STATUS_INVALID_ARGUMENT Either handle is `NULL`, either handle
  * contains no native object, atom counts differ, the selection is empty, or
- * mass weighting is active and selected masses sum to zero.
- * @retval APO_STATUS_CUDA_ERROR Selected-index, selected-weight, partial-sum,
- * or state storage could not be allocated, transferred, cleared, or
- * synchronized.
+ * mass weighting is active and the selected masses have a zero or non-finite
+ * total or a non-finite weight fraction.
  * @retval APO_STATUS_RUNTIME_ERROR Copying selection or temporary storage,
  * constructing a diagnostic, or another standard or nonstandard C++ operation
  * failed.
@@ -142,7 +152,7 @@ APOCHARMM_C_API void apo_harmonic_center_of_mass_restraint_force_destroy(
  * Success leaves it empty; failure leaves text available through
  * @ref apo_last_error.
  * @warning Failure after native mutation begins can leave the copied selection
- * or selected count newer than the device index and weight arrays.
+ * or selected count newer than the host index and weight arrays.
  */
 APOCHARMM_C_API apo_status
 apo_harmonic_center_of_mass_restraint_force_set_selection(
@@ -157,11 +167,12 @@ apo_harmonic_center_of_mass_restraint_force_set_selection(
  *
  * @param[in,out] restraint Borrowed live restraint handle. The handle is not
  * retained.
- * @param[in] force_constant Finite, non-negative coefficient in kilocalories
- * per mole per square angstrom. Zero disables evaluation.
+ * @param[in] force_constant Finite coefficient in kilocalories per mole per
+ * square angstrom. As in CHARMM, it may have either sign. Zero disables
+ * evaluation.
  * @retval APO_STATUS_OK The scalar force constant was updated.
  * @retval APO_STATUS_INVALID_ARGUMENT `restraint` is `NULL`, the handle
- * contains no native object, or `force_constant` is negative, NaN, or infinite.
+ * contains no native object, or `force_constant` is NaN or infinite.
  * @retval APO_STATUS_RUNTIME_ERROR Diagnostic construction or another standard
  * or nonstandard C++ operation failed.
  *
@@ -178,8 +189,9 @@ apo_harmonic_center_of_mass_restraint_force_set_force_constant(
 /**
  * @brief Copies the Cartesian reference position and component mask.
  *
- * Active components are minimum-imaged during evaluation; inactive components
- * contribute neither energy nor gradient. Position and mask values are copied
+ * As in CHARMM, active components use the raw center-to-reference
+ * displacement without minimum imaging; inactive components contribute
+ * neither energy nor gradient. Position and mask values are copied
  * into native host scalar state. No caller buffer is retained and no CUDA
  * transfer occurs.
  *
@@ -215,20 +227,18 @@ apo_harmonic_center_of_mass_restraint_force_set_reference_position(
     const int *reference_mask, const size_t reference_mask_len);
 
 /**
- * @brief Sets the non-negative target distance from the reference position.
+ * @brief Sets the target distance from the reference position.
  *
- * Zero selects the potential `k * r^2`; a positive value selects
- * `k * (r - reference_distance)^2`. The value is copied into native host scalar
- * state and no CUDA transfer occurs.
+ * The potential is `k * (r - reference_distance)^2`, so zero gives
+ * `k * r^2`. As in CHARMM, a negative value is accepted. The value is copied
+ * into native host scalar state and no CUDA transfer occurs.
  *
  * @param[in,out] restraint Borrowed live restraint handle. The handle is not
  * retained.
- * @param[in] reference_distance Finite, non-negative target distance in
- * angstroms.
+ * @param[in] reference_distance Finite target distance in angstroms.
  * @retval APO_STATUS_OK The reference distance was updated.
  * @retval APO_STATUS_INVALID_ARGUMENT `restraint` is `NULL`, the handle
- * contains no native object, or `reference_distance` is negative, NaN, or
- * infinite.
+ * contains no native object, or `reference_distance` is NaN or infinite.
  * @retval APO_STATUS_RUNTIME_ERROR Diagnostic construction or another standard
  * or nonstandard C++ operation failed.
  *
@@ -246,24 +256,24 @@ apo_harmonic_center_of_mass_restraint_force_set_reference_distance(
  * @brief Copies per-atom masses and enables mass weighting.
  *
  * Only relative selected masses affect the normalized center. The complete
- * array and rebuilt selected weights are copied to owned device storage. No
+ * array is copied to owned host storage and the selected weights are rebuilt;
+ * the next initialization or calculation copies the weights to the device. No
  * caller buffer is retained.
  *
  * @param[in,out] restraint Borrowed live restraint handle. The handle is not
  * retained.
  * @param[in] masses Non-NULL pointer to `masses_len` contiguous `double` values
- * in atom order, normally in atomic mass units. Every value must be finite and
- * non-negative.
+ * in atom order, normally in atomic mass units. Every value must be finite;
+ * as in CHARMM, it may have either sign.
  * @param[in] masses_len Dimensionless number of values in `masses`. It must
- * equal the restraint atom count, and selected values must have positive total
- * weight.
+ * equal the restraint atom count, and the selected values must have a finite
+ * nonzero total and finite weight fractions.
  * @retval APO_STATUS_OK Masses were copied, mass weighting was enabled, and
- * selected device weights were rebuilt.
+ * selected host weights were rebuilt.
  * @retval APO_STATUS_INVALID_ARGUMENT `restraint` or `masses` is `NULL`, the
  * handle contains no native object, the length differs from the atom count, a
- * mass is negative, NaN, or infinite, or selected masses sum to zero.
- * @retval APO_STATUS_CUDA_ERROR Mass or selected-weight storage could not be
- * allocated, transferred, cleared, or synchronized.
+ * mass is NaN or infinite, or the selected masses have a zero or non-finite
+ * total or a non-finite weight fraction.
  * @retval APO_STATUS_RUNTIME_ERROR Copying the C array, allocating temporary
  * storage, constructing a diagnostic, or another standard or nonstandard C++
  * operation failed.
@@ -273,7 +283,7 @@ apo_harmonic_center_of_mass_restraint_force_set_reference_distance(
  * Success leaves it empty; failure leaves text available through
  * @ref apo_last_error.
  * @warning Failure after native mutation begins can leave new masses or an
- * enabled weighting mode paired with older selected device arrays.
+ * enabled weighting mode paired with older selected host arrays.
  */
 APOCHARMM_C_API apo_status
 apo_harmonic_center_of_mass_restraint_force_set_masses(
@@ -283,21 +293,21 @@ apo_harmonic_center_of_mass_restraint_force_set_masses(
 /**
  * @brief Enables mass weighting or restores uniform selected weights.
  *
- * Enabling uses the masses most recently supplied to the restraint. Disabling
- * assigns every selected atom dimensionless weight one without discarding the
- * stored mass array. Selected weights are rebuilt and copied to device storage.
+ * Enabling uses the stored masses: the PSF masses copied at creation until
+ * @ref apo_harmonic_center_of_mass_restraint_force_set_masses replaces them.
+ * Disabling assigns every selected atom dimensionless weight one without
+ * discarding the stored mass array. Selected weights are rebuilt in host
+ * storage; the next initialization or calculation copies them to the device.
  *
  * @param[in,out] restraint Borrowed live restraint handle. The handle is not
  * retained.
  * @param[in] flag `true` to use configured masses or `false` to use uniform
  * selected weights.
- * @retval APO_STATUS_OK The selected weighting mode and device weights were
+ * @retval APO_STATUS_OK The selected weighting mode and host weights were
  * updated.
  * @retval APO_STATUS_INVALID_ARGUMENT `restraint` is `NULL`, the handle
- * contains no native object, or `flag` is true and selected masses sum to zero.
- * @retval APO_STATUS_CUDA_ERROR Selected-index, selected-weight, partial-sum,
- * or state storage could not be allocated, transferred, cleared, or
- * synchronized.
+ * contains no native object, or `flag` is true and the selected masses have a
+ * zero or non-finite total or a non-finite weight fraction.
  * @retval APO_STATUS_RUNTIME_ERROR Allocating temporary storage, constructing a
  * diagnostic, or another standard or nonstandard C++ operation failed.
  *
@@ -305,7 +315,7 @@ apo_harmonic_center_of_mass_restraint_force_set_masses(
  * Success leaves it empty; failure leaves text available through
  * @ref apo_last_error.
  * @warning Failure after the native mode flag changes can leave the mode and
- * selected device arrays inconsistent.
+ * selected host arrays inconsistent.
  */
 APOCHARMM_C_API apo_status
 apo_harmonic_center_of_mass_restraint_force_set_mass_weighting(
@@ -372,8 +382,8 @@ apo_force_manager_subscribe_harmonic_center_of_mass_restraint_force(
  * or nonstandard C++ operation failed.
  *
  * @post On success, the restraint no longer participates in manager box
- * propagation, clearing, force evaluation, force aggregation, energy
- * aggregation, or virial aggregation.
+ * propagation, clearing, force evaluation, force aggregation, or energy
+ * aggregation.
  * @post On lookup or validation failure, manager subscription state is
  * unchanged.
  * @note The function clears the calling thread's previous diagnostic at entry.

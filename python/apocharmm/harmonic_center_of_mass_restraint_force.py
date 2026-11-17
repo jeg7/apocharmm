@@ -24,6 +24,7 @@ import ctypes
 from ._base import _ApoObject
 from ._lib import lib
 from .atom_selection import AtomSelection
+from .charmm_psf import CharmmPsf
 from .error import configure_status_function
 from .force_manager import ForceManager
 
@@ -38,7 +39,7 @@ def _initialize_prototypes() -> None:
 
     configure_status_function(
         lib().apo_harmonic_center_of_mass_restraint_force_create,
-        [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int],
+        [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p],
         "HarmonicCenterOfMassRestraintForce construction",
     )
 
@@ -111,15 +112,20 @@ class HarmonicCenterOfMassRestraintForce(_ApoObject):
     @brief Configures an owned native harmonic group-center restraint.
 
     The selected atoms define a uniformly weighted geometric center by default
-    or a mass-weighted center after masses are supplied or mass weighting is
-    enabled. The native force applies periodic CONS HMCM-style energy and
-    gradient behavior described on the subsystem page.
+    or a mass-weighted center after `setMassWeighting(True)` or `setMasses()`.
+    Weighting uses the PSF masses copied at construction, like CHARMM's `WEIG`
+    or `MASS` keyword, until `setMasses()` replaces them. The native force
+    follows CHARMM `CONS HMCM` and builds the center from the raw coordinates,
+    as described on the subsystem page.
 
     This wrapper owns one C handle for the native
     `HarmonicCenterOfMassRestraintForce<long long int, float>` specialization.
-    Python iterables are materialized, converted to native scalar types, copied
-    into temporary contiguous `ctypes` arrays, and copied again into native
-    storage. No caller iterable or buffer is retained.
+    Construction borrows a `CharmmPsf` only for the call: native code copies its
+    atom count and complete mass vector, and this wrapper retains neither the
+    Python PSF wrapper nor its native PSF. Python iterables are materialized,
+    converted to native scalar types, copied into temporary contiguous `ctypes`
+    arrays, and copied again into native storage. No caller iterable or buffer
+    is retained.
 
     `ForceManager.subscribe()` retains this wrapper only after native
     subscription succeeds. The native manager independently retains the
@@ -143,46 +149,46 @@ class HarmonicCenterOfMassRestraintForce(_ApoObject):
 
     _destroy_function_name = "apo_harmonic_center_of_mass_restraint_force_destroy"
 
-    def __init__(self, num_atoms: int) -> None:
+    def __init__(self, psf: CharmmPsf) -> None:
         """
-        @brief Constructs a restraint for a fixed atom count.
+        @brief Constructs a restraint from a PSF atom-count and mass snapshot.
 
-        `num_atoms` is checked with `isinstance(value, int)`, range-checked for
-        signed 32-bit C `int`, and passed to native construction. The wrapper
-        owns the returned handle and sets `default_force_tag` to `"hmcm"`.
+        The native constructor borrows `psf` only for the call and copies its
+        atom count and complete mass vector. Mass weighting starts disabled;
+        `setMassWeighting(True)` then weights the center with the copied PSF
+        masses, like CHARMM's `WEIG` or `MASS` keyword. The wrapper owns the
+        returned handle, does not retain `psf`, and sets `default_force_tag` to
+        `"hmcm"`.
 
-        @param[in] num_atoms Positive dimensionless atom count representable by
-        signed 32-bit C `int`. Because Python `bool` is an `int` subclass,
-        `True` reaches native construction as one and `False` is rejected
-        natively as zero.
-        @throws TypeError If `num_atoms` is not a Python `int`.
-        @throws ValueError If `num_atoms` is outside the signed 32-bit C `int`
-        range.
-        @throws ApoCharmmError If native validation rejects a non-positive
-        value, CUDA setup fails, or native allocation fails.
-        @throws RuntimeError If native construction reports success but returns
-        a NULL handle.
+        @param[in] psf Live `CharmmPsf` with a positive atom count and exactly
+        one finite mass per atom. As in CHARMM, a mass may have either sign.
+        @throws TypeError If `psf` is not a `CharmmPsf`.
+        @throws RuntimeError If `psf` has been closed or if native construction
+        reports success but returns a NULL handle.
+        @throws ApoCharmmError With native status
+        `APO_STATUS_INVALID_ARGUMENT` if the atom count is zero or a mass is NaN
+        or infinite; `APO_STATUS_NOT_INITIALIZED` if the atom count is negative;
+        `APO_STATUS_CUDA_ERROR` if CUDA setup fails; or
+        `APO_STATUS_RUNTIME_ERROR` if the PSF mass count differs from its atom
+        count or native allocation fails.
         @throws MemoryError If Python or `ctypes` bookkeeping cannot allocate
         storage.
 
-        @post On success, this wrapper owns a live native handle and
-        `default_force_tag == "hmcm"`.
+        @post On success, this wrapper owns a live native handle,
+        `default_force_tag == "hmcm"`, and closing `psf` does not change the
+        restraint's atom count or masses.
         """
         super().__init__()
 
-        if not isinstance(num_atoms, int):
-            raise TypeError("num_atoms must be an int")
-
-        if num_atoms < -(2**31) or num_atoms > 2**31 - 1:
-            raise ValueError("num_atoms must fit in int")
+        if not isinstance(psf, CharmmPsf):
+            raise TypeError("HarmonicCenterOfMassRestraintForce expects a CharmmPsf")
 
         _initialize_prototypes()
 
         handle: ctypes.c_void_p = ctypes.c_void_p()
-        c_num_atoms: ctypes.c_int = ctypes.c_int(num_atoms)
 
         lib().apo_harmonic_center_of_mass_restraint_force_create(
-            ctypes.byref(handle), c_num_atoms
+            ctypes.byref(handle), psf.handle
         )
 
         if handle.value is None:
@@ -213,18 +219,18 @@ class HarmonicCenterOfMassRestraintForce(_ApoObject):
 
         The native selection is copied; this wrapper retains no Python
         reference to `selection`. Native selected-index and selected-weight
-        arrays are rebuilt and copied to device memory.
+        arrays are rebuilt in host memory and copied to device memory before
+        the next calculation.
 
         @param[in] selection Live `AtomSelection` with the same atom count as
         this restraint and at least one selected atom.
         @throws TypeError If `selection` is not an `AtomSelection`.
         @throws RuntimeError If this wrapper or `selection` has been closed.
         @throws ApoCharmmError If native handle, atom-count, nonempty-selection,
-        or positive-total-weight validation fails, native allocation fails, or
-        the native CUDA update fails.
+        or positive-total-weight validation fails or native allocation fails.
 
         @warning A native failure after mutation begins can leave newer
-        selection state paired with older selected device arrays.
+        selection state paired with older selected host arrays.
         """
         _initialize_prototypes()
 
@@ -248,7 +254,7 @@ class HarmonicCenterOfMassRestraintForce(_ApoObject):
         evaluation.
 
         @param[in] force_constant Any Python object accepted by `float()`. The
-        converted value must be finite and non-negative.
+        converted value must be finite; as in CHARMM, it may have either sign.
         @throws TypeError If `float(force_constant)` rejects the object.
         @throws ValueError If Python floating-point conversion rejects the
         value.
@@ -335,12 +341,12 @@ class HarmonicCenterOfMassRestraintForce(_ApoObject):
         @brief Sets the target radial distance from the reference position.
 
         `reference_distance` is converted with `float()` and then to C `double`.
-        Zero selects `k * r^2`; a positive value selects
-        `k * (r - reference_distance)^2`.
+        The potential is `k * (r - reference_distance)^2`, so zero gives
+        `k * r^2`.
 
         @param[in] reference_distance Any Python object accepted by `float()`.
-        The converted distance must be finite, non-negative, and is measured in
-        angstroms.
+        The converted distance must be finite and is measured in angstroms;
+        as in CHARMM, it may be negative.
         @throws TypeError If `float(reference_distance)` rejects the object.
         @throws ValueError If Python floating-point conversion rejects the
         value.
@@ -348,9 +354,9 @@ class HarmonicCenterOfMassRestraintForce(_ApoObject):
         @throws RuntimeError If this wrapper has been closed.
         @throws ApoCharmmError If native validation rejects the converted value.
 
-        @note For a positive target and exactly zero current displacement, the
-        native implementation assigns a zero gradient at the
-        nondifferentiable point.
+        @note At exactly zero current displacement, the native implementation
+        assigns a zero gradient; CHARMM divides by zero there unless the target
+        is also zero.
         """
         _initialize_prototypes()
 
@@ -371,12 +377,13 @@ class HarmonicCenterOfMassRestraintForce(_ApoObject):
         `masses` is consumed as an iterable, every element is converted with
         `float()`, and the result is copied through a temporary contiguous C
         `double` array. Native code copies the complete atom-order array and
-        rebuilds selected device weights. No caller iterable or buffer is
-        retained.
+        rebuilds the selected weights, which reach device memory before the
+        next calculation. No caller iterable or buffer is retained.
 
         Values normally use atomic mass units. Only relative selected masses
-        affect the normalized center. Every mass must be finite and
-        non-negative, and selected masses must have positive total weight.
+        affect the normalized center. Every mass must be finite and, as in
+        CHARMM, may have either sign; the selected masses must have a finite
+        nonzero total and finite weight fractions.
 
         @param[in] masses Iterable producing exactly one value per atom, in atom
         order. Every element must be accepted by `float()`.
@@ -387,13 +394,12 @@ class HarmonicCenterOfMassRestraintForce(_ApoObject):
         @throws MemoryError If the temporary list or C array cannot be
         allocated.
         @throws RuntimeError If this wrapper has been closed.
-        @throws ApoCharmmError If native length, finite-value, non-negativity,
-        or positive-total-weight validation fails, or a native CUDA update
-        fails.
+        @throws ApoCharmmError If native length, finite-value, total-weight, or
+        weight-fraction validation fails.
 
         @post On success, mass weighting is enabled.
         @warning A native failure after mutation begins can leave new masses or
-        a new weighting mode paired with older selected device arrays.
+        a new weighting mode paired with older selected host arrays.
         """
         _initialize_prototypes()
 
@@ -415,18 +421,21 @@ class HarmonicCenterOfMassRestraintForce(_ApoObject):
 
         The implementation passes `flag` to `ctypes.c_bool` without an explicit
         Python type check. False-valued objects disable mass weighting and
-        true-valued objects enable it. Native selected weights are rebuilt and
-        copied to device storage; disabling does not discard stored masses.
+        true-valued objects enable it. Enabling uses the stored masses: the PSF
+        masses copied at construction until `setMasses()` replaces them. Native
+        selected weights are rebuilt in host memory and copied to device storage
+        before the next calculation; disabling does not discard stored masses.
 
         @param[in] flag Object whose truth value can initialize
         `ctypes.c_bool`. Use an actual Python `bool` for an unambiguous API call.
         @throws Exception If custom truth-value conversion raises an exception.
         @throws RuntimeError If this wrapper has been closed.
-        @throws ApoCharmmError If enabling produces zero selected total mass, a
-        native allocation fails, or the native CUDA update fails.
+        @throws ApoCharmmError If enabling produces a zero or non-finite selected
+        total mass or a non-finite weight fraction, or a native allocation
+        fails.
 
         @warning A native failure after the mode flag changes can leave the
-        weighting mode and selected device arrays inconsistent.
+        weighting mode and selected host arrays inconsistent.
         """
         _initialize_prototypes()
 

@@ -14,33 +14,54 @@
 #include "cuda_utils.h"
 #include "gpu_utils.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <string>
 
 template <typename AT, typename CT>
 HarmonicCenterOfMassRestraintForce<AT, CT>::HarmonicCenterOfMassRestraintForce(
-    const int numAtoms)
-    : m_NumAtoms(numAtoms), m_NumSelected(numAtoms), m_ForceConstant(0.0),
+    const std::shared_ptr<const CharmmPSF> &psf)
+    : m_NumAtoms(0), m_NumSelected(0), m_ForceConstant(0.0),
       m_ReferenceDistance(0.0), m_UseMassWeighting(false), m_AtomIndices(),
       m_AtomWeights(), m_Masses(), m_PartialSums(), m_RestraintState(),
-      m_BoxDimX(0.0), m_BoxDimY(0.0), m_BoxDimZ(0.0),
-      m_ReferencePosition(make_double4(0.0, 0.0, 0.0, 0.0)),
-      m_ReferenceMaskX(1), m_ReferenceMaskY(1), m_ReferenceMaskZ(1),
+      m_BoxDimensions{0.0, 0.0, 0.0}, m_DeviceDataDirty(true),
+      m_ReferencePosition{0.0, 0.0, 0.0}, m_ReferenceMask{1, 1, 1},
       m_Selection(0, AtomSelection::InitialValue::ALL), m_EnergyVirial(nullptr),
       m_Forces(nullptr), m_Stream(nullptr) {
+  APOCHARMM_REQUIRE(psf != nullptr, ApoCharmmErrorCode::InvalidArgument,
+                    "CharmmPSF must not be null");
+
+  const int numAtoms = psf->getNumAtoms();
+  APOCHARMM_REQUIRE(numAtoms >= 0, ApoCharmmErrorCode::NotInitialized,
+                    "CharmmPSF atom count is not initialized; observed " +
+                        std::to_string(numAtoms));
   APOCHARMM_REQUIRE(numAtoms > 0, ApoCharmmErrorCode::InvalidArgument,
                     "Atom count must be positive; observed " +
                         std::to_string(numAtoms));
 
-  m_Masses.resize(numAtoms);
+  const std::vector<double> &masses = psf->getMasses();
+  APOCHARMM_REQUIRE(masses.size() == static_cast<std::size_t>(numAtoms),
+                    ApoCharmmErrorCode::Runtime,
+                    "PSF mass count mismatch; expected " +
+                        std::to_string(numAtoms) + ", observed " +
+                        std::to_string(masses.size()));
+  for (std::size_t i = 0; i < masses.size(); i++) {
+    APOCHARMM_REQUIRE(
+        std::isfinite(masses[i]), ApoCharmmErrorCode::InvalidArgument,
+        "Mass at index " + std::to_string(i) + " must be finite; observed " +
+            std::to_string(masses[i]));
+  }
+
+  m_NumAtoms = numAtoms;
+
+  m_Masses = masses;
   m_PartialSums.resize(1);
-  m_RestraintState.resize(2);
+  m_RestraintState.resize(1);
   m_Selection.setNumAtoms(numAtoms, AtomSelection::InitialValue::ALL);
 
-  m_Masses.set(1.0);
-  m_PartialSums.set(make_double4(0.0, 0.0, 0.0, 0.0));
-  m_RestraintState.set(make_double4(0.0, 0.0, 0.0, 0.0));
+  m_PartialSums.set(CT4{});
+  m_RestraintState.set(CT4{});
 
   this->updateSelectedAtoms();
 
@@ -91,10 +112,6 @@ void HarmonicCenterOfMassRestraintForce<AT, CT>::setForceConstant(
                     "Force constant must be finite; observed " +
                         std::to_string(forceConstant));
 
-  APOCHARMM_REQUIRE(forceConstant >= 0.0, ApoCharmmErrorCode::InvalidArgument,
-                    "Force constant must be non-negative; observed " +
-                        std::to_string(forceConstant));
-
   m_ForceConstant = forceConstant;
 
   return;
@@ -142,13 +159,11 @@ void HarmonicCenterOfMassRestraintForce<AT, CT>::setReferencePosition(
                     ApoCharmmErrorCode::InvalidArgument,
                     "Reference mask must activate at least one coordinate");
 
-  m_ReferencePosition.x = referencePosition[0];
-  m_ReferencePosition.y = referencePosition[1];
-  m_ReferencePosition.z = referencePosition[2];
+  std::copy(referencePosition.begin(), referencePosition.end(),
+            m_ReferencePosition.begin());
 
-  m_ReferenceMaskX = referenceMask[0];
-  m_ReferenceMaskY = referenceMask[1];
-  m_ReferenceMaskZ = referenceMask[2];
+  std::copy(referenceMask.begin(), referenceMask.end(),
+            m_ReferenceMask.begin());
 
   return;
 }
@@ -159,11 +174,6 @@ void HarmonicCenterOfMassRestraintForce<AT, CT>::setReferenceDistance(
   APOCHARMM_REQUIRE(std::isfinite(referenceDistance),
                     ApoCharmmErrorCode::InvalidArgument,
                     "Reference distance must be finite; observed " +
-                        std::to_string(referenceDistance));
-
-  APOCHARMM_REQUIRE(referenceDistance >= 0.0,
-                    ApoCharmmErrorCode::InvalidArgument,
-                    "Reference distance must be non-negative; observed " +
                         std::to_string(referenceDistance));
 
   m_ReferenceDistance = referenceDistance;
@@ -185,11 +195,6 @@ void HarmonicCenterOfMassRestraintForce<AT, CT>::setMasses(
         std::isfinite(masses[i]), ApoCharmmErrorCode::InvalidArgument,
         "Mass at index " + std::to_string(i) + " must be finite; observed " +
             std::to_string(masses[i]));
-
-    APOCHARMM_REQUIRE(masses[i] >= 0.0, ApoCharmmErrorCode::InvalidArgument,
-                      "Mass at index " + std::to_string(i) +
-                          " must be non-negative; observed " +
-                          std::to_string(masses[i]));
   }
 
   m_Masses = masses;
@@ -227,33 +232,13 @@ void HarmonicCenterOfMassRestraintForce<AT, CT>::setBoxDimensions(
             " must be positive; observed " + std::to_string(boxDimensions[i]));
   }
 
-  if ((m_BoxDimX == boxDimensions[0]) && (m_BoxDimY == boxDimensions[1]) &&
-      (m_BoxDimZ == boxDimensions[2]))
+  if ((m_BoxDimensions[0] == boxDimensions[0]) &&
+      (m_BoxDimensions[1] == boxDimensions[1]) &&
+      (m_BoxDimensions[2] == boxDimensions[2]))
     return;
 
-  // JEG260615: After some thought, I am not entirely convinced this is correct.
-  // So I have commented it out.
-  /* *
-  if ((m_BoxDimX != 0.0) && (m_BoxDimY != 0.0) && (m_BoxDimZ != 0.0)) {
-    // JEG260512: This only works for cubic, tetragonal, and orthorhombic boxes.
-    // If we ever want to do other crystals (e.g. triclinic) we would need to
-    // update all of the code to use the A, B, C, alpha, beta, gamma matrix.
-    const double dx = boxDimensions[0] / m_BoxDimX;
-    const double dy = boxDimensions[1] / m_BoxDimY;
-    const double dz = boxDimensions[2] / m_BoxDimZ;
-
-    if (m_ReferenceMaskX != 0)
-      m_ReferencePosition.x *= dx;
-    if (m_ReferenceMaskY != 0)
-      m_ReferencePosition.y *= dy;
-    if (m_ReferenceMaskZ != 0)
-      m_ReferencePosition.z *= dz;
-  }
-  * */
-
-  m_BoxDimX = boxDimensions[0];
-  m_BoxDimY = boxDimensions[1];
-  m_BoxDimZ = boxDimensions[2];
+  std::copy(boxDimensions.begin(), boxDimensions.end(),
+            m_BoxDimensions.begin());
 
   return;
 }
@@ -285,6 +270,7 @@ void HarmonicCenterOfMassRestraintForce<AT, CT>::initialize(
                         std::to_string(numAtoms));
 
   this->setBoxDimensions(boxDimensions);
+  this->syncDeviceData();
 
   return;
 }
@@ -297,347 +283,200 @@ void HarmonicCenterOfMassRestraintForce<AT, CT>::clear(void) {
 }
 
 /**
- * @brief Reduces periodically unwrapped selected coordinates by CUDA block.
+ * @brief Reduces raw selected coordinates and weights by CUDA block.
  *
- * The first selected atom is the image anchor. Each selected coordinate is
- * minimum-imaged relative to that anchor before its weighted Cartesian
- * components and weight are accumulated. The four independent quantities are
- * reduced together across each block. One `double4` partial record is written
- * per launch block as `{sum_x, sum_y, sum_z, sum_weight}`.
+ * As in CHARMM, the selected coordinates are summed without periodic
+ * unwrapping. Each thread accumulates `w_i * r_i` and `w_i` in `CT`, and the
+ * four independent quantities are reduced together across each block. One
+ * record is written per launch block as `{sum_x, sum_y, sum_z, sum_weight}`.
  *
+ * @tparam CT Arithmetic representation of the products and the reduction.
+ * @tparam CT4 Four-component vector type matching `CT`.
  * @tparam blockSize Compile-time number of threads in each CUDA block. It must
  * be at least `warpsize`, no greater than 1024, and an integer multiple of
  * `warpsize`.
  * @param[out] partialSums Non-NULL device array with at least `gridDim.x`
  * elements. Element `blockIdx.x` is overwritten by thread zero in that block.
  * @param[in] atomIndices Non-NULL device array of `numSelected` zero-based atom
- * indices. Element zero supplies the periodic image anchor.
- * @param[in] atomWeights Non-NULL device array of `numSelected` finite,
- * non-negative weights corresponding to `atomIndices`.
+ * indices.
+ * @param[in] atomWeights Non-NULL device array of `numSelected` finite weights
+ * corresponding to `atomIndices`.
  * @param[in] xyzq Non-NULL device array containing every indexed `float4`
  * coordinate-charge record. Cartesian components use angstroms; component `w`
  * is ignored.
  * @param[in] numSelected Positive dimensionless selected-atom count.
- * @param[in] boxx Positive orthorhombic X box length in angstroms.
- * @param[in] boxy Positive orthorhombic Y box length in angstroms.
- * @param[in] boxz Positive orthorhombic Z box length in angstroms.
  *
  * @pre The kernel is launched with one-dimensional blocks satisfying
- * `blockDim.x == BlockSize`.
+ * `blockDim.x == blockSize`.
  * @pre Every thread in each block reaches the block-wide reduction.
  * @pre The three input arrays remain valid for the complete kernel execution.
- * @note The anchor-based representation assumes each selected atom has an
- * unambiguous minimum image relative to the first selected atom.
  */
-template <int blockSize>
-__global__ static void
-PartialSumsKernel(double4 *__restrict__ partialSums,
-                  const int *__restrict__ atomIndices,
-                  const double *__restrict__ atomWeights,
-                  const float4 *__restrict__ xyzq, const int numSelected,
-                  const double boxx, const double boxy, const double boxz) {
+template <typename CT, typename CT4, int blockSize>
+__global__ static void PartialSumsKernel(CT4 *__restrict__ partialSums,
+                                         const int *__restrict__ atomIndices,
+                                         const double *__restrict__ atomWeights,
+                                         const float4 *__restrict__ xyzq,
+                                         const int numSelected) {
   const int index = blockIdx.x * blockDim.x + threadIdx.x;
   const int stride = gridDim.x * blockDim.x;
 
-  const int anchorAtomIndex = atomIndices[0];
-  const float4 xyzqAnchor = xyzq[anchorAtomIndex];
-
-  const float3 halfBox = make_float3(static_cast<float>(0.5 * boxx),
-                                     static_cast<float>(0.5 * boxy),
-                                     static_cast<float>(0.5 * boxz));
-
-  double sums[4] = {0.0, 0.0, 0.0, 0.0};
+  CT sums[4] = {static_cast<CT>(0), static_cast<CT>(0), static_cast<CT>(0),
+                static_cast<CT>(0)};
   for (int i = index; i < numSelected; i += stride) {
-    const int atomIndex = atomIndices[i];
-    const double atomWeight = atomWeights[i];
+    const CT weight = static_cast<CT>(atomWeights[i]);
+    const float4 xyzqi = xyzq[atomIndices[i]];
 
-    const float4 xyzqi = xyzq[atomIndex];
-
-    // Calculate periodic shift for atoms
-    const int ish = calc_ishift(xyzqi, xyzqAnchor, halfBox);
-    double shx = 0.0, shy = 0.0, shz = 0.0;
-    calc_box_shift<double>(ish, boxx, boxy, boxz, shx, shy, shz);
-
-    sums[0] += atomWeight * (static_cast<double>(xyzqi.x) + shx);
-    sums[1] += atomWeight * (static_cast<double>(xyzqi.y) + shy);
-    sums[2] += atomWeight * (static_cast<double>(xyzqi.z) + shz);
-    sums[3] += atomWeight;
+    sums[0] += weight * static_cast<CT>(xyzqi.x);
+    sums[1] += weight * static_cast<CT>(xyzqi.y);
+    sums[2] += weight * static_cast<CT>(xyzqi.z);
+    sums[3] += weight;
   }
 
-  __shared__ BlockReduceSumStorage<double, blockSize, 4> cache;
-  BlockReduceSum<double, blockSize, 4>(sums, cache);
+  __shared__ BlockReduceSumStorage<CT, blockSize, 4> cache;
+  BlockReduceSum<CT, blockSize, 4>(sums, cache);
 
   if (threadIdx.x == 0)
-    partialSums[blockIdx.x] = make_double4(sums[0], sums[1], sums[2], sums[3]);
+    partialSums[blockIdx.x] = CT4{sums[0], sums[1], sums[2], sums[3]};
 
   return;
 }
 
 /**
- * @brief Converts block partials into center state and optional energy.
+ * @brief Converts block partials into gradient factors and optional energy.
  *
- * The kernel reduces all block records, normalizes the selected center, applies
- * the Cartesian mask, and minimum-images each active center-to-reference
- * component. The four independent partial-sum components are reduced together
- * across the block. The kernel writes the potential gradient and inverse total
- * weight to state element zero and integer center image counts to state element
- * one.
+ * The kernel reduces all block records and normalizes the raw center. With the
+ * active components of `d = C - R`, `s = norm(d)`, and the deviation `s - r0`,
+ * it writes the per-axis factors `d_a * 2 * k / W * (s - r0) / s` in CHARMM's
+ * operation order to state components x, y, and z. A zero `s` writes zero
+ * factors. When requested, thread zero converts `k * (s - r0) * (s - r0)` to
+ * double and adds it to `energy`.
  *
+ * @tparam CT Arithmetic representation of the reduction, the center, the
+ * gradient factors, and the energy value.
+ * @tparam CT4 Four-component vector type matching `CT`.
  * @tparam blockSize Compile-time number of threads in the CUDA block. It must
  * be at least `warpsize`, no greater than 1024, and an integer multiple of
  * `warpsize`.
  * @tparam calcEnergy Whether thread zero atomically adds the current energy to
  * `energy`.
- * @param[out] restraintState Non-NULL device array of at least two `double4`
- * elements. The kernel overwrites both elements.
+ * @param[out] restraintState Non-NULL device array of at least one record. The
+ * kernel overwrites element zero.
  * @param[in,out] energy Non-NULL device pointer to the `hmcm` scalar in
  * kilocalories per mole. It is modified only when `calcEnergy` is `true`.
  * @param[in] partialSums Non-NULL device array of `numPartialSums` block
  * records produced by `PartialSumsKernel`.
  * @param[in] numPartialSums Positive dimensionless partial-record count.
- * @param[in] forceConstant Non-negative coefficient in kilocalories per mole
- * per square angstrom.
+ * @param[in] forceConstant Coefficient in kilocalories per mole per square
+ * angstrom.
  * @param[in] referencePosition Reference `[x, y, z]` position in angstroms;
  * component `w` is ignored.
  * @param[in] referenceMaskX Dimensionless X activation flag, zero or one.
  * @param[in] referenceMaskY Dimensionless Y activation flag, zero or one.
  * @param[in] referenceMaskZ Dimensionless Z activation flag, zero or one.
- * @param[in] referenceDistance Non-negative radial target in angstroms.
- * @param[in] boxx Positive orthorhombic X box length in angstroms.
- * @param[in] boxy Positive orthorhombic Y box length in angstroms.
- * @param[in] boxz Positive orthorhombic Z box length in angstroms.
+ * @param[in] referenceDistance Target distance in angstroms.
  *
  * @pre The kernel is launched with exactly one one-dimensional block satisfying
- * `blockDim.x == BlockSize`.
+ * `blockDim.x == blockSize`.
  * @pre Every thread in the block reaches the block-wide reduction.
- * @pre The partial weights sum to a positive finite value.
- * @note At positive reference distance and exactly zero displacement, the
- * implementation writes a zero gradient at the nondifferentiable point.
  */
-template <int blockSize, bool calcEnergy>
+template <typename CT, typename CT4, int blockSize, bool calcEnergy>
 __global__ static void
-StateKernel(double4 *__restrict__ restraintState, double *__restrict__ energy,
-            const double4 *__restrict__ partialSums, const int numPartialSums,
-            const double forceConstant, const double4 referencePosition,
+StateKernel(CT4 *__restrict__ restraintState, double *__restrict__ energy,
+            const CT4 *__restrict__ partialSums, const int numPartialSums,
+            const CT forceConstant, const CT4 referencePosition,
             const int referenceMaskX, const int referenceMaskY,
-            const int referenceMaskZ, const double referenceDistance,
-            const double boxx, const double boxy, const double boxz) {
-  double sums[4] = {0.0, 0.0, 0.0, 0.0};
+            const int referenceMaskZ, const CT referenceDistance) {
+  constexpr CT ZERO = static_cast<CT>(0);
+
+  CT sums[4] = {static_cast<CT>(0), static_cast<CT>(0), static_cast<CT>(0),
+                static_cast<CT>(0)};
   for (int i = threadIdx.x; i < numPartialSums; i += blockDim.x) {
-    const double4 partialSum = partialSums[i];
+    const CT4 partialSum = partialSums[i];
     sums[0] += partialSum.x;
     sums[1] += partialSum.y;
     sums[2] += partialSum.z;
     sums[3] += partialSum.w;
   }
 
-  __shared__ BlockReduceSumStorage<double, blockSize, 4> cache;
-  BlockReduceSum<double, blockSize, 4>(sums, cache);
+  __shared__ BlockReduceSumStorage<CT, blockSize, 4> cache;
+  BlockReduceSum<CT, blockSize, 4>(sums, cache);
 
   if (threadIdx.x == 0) {
-    const double invTotW = 1.0 / sums[3];
-    const double centerX = sums[0] * invTotW;
-    const double centerY = sums[1] * invTotW;
-    const double centerZ = sums[2] * invTotW;
+    const CT totalWeight = sums[3];
 
-    int centerShiftCountX = 0, centerShiftCountY = 0, centerShiftCountZ = 0;
-    double dx = 0.0, dy = 0.0, dz = 0.0;
+    CT dx = ZERO, dy = ZERO, dz = ZERO;
+    if (referenceMaskX != 0)
+      dx = sums[0] / totalWeight - referencePosition.x;
+    if (referenceMaskY != 0)
+      dy = sums[1] / totalWeight - referencePosition.y;
+    if (referenceMaskZ != 0)
+      dz = sums[2] / totalWeight - referencePosition.z;
 
-    if (referenceMaskX != 0) {
-      centerShiftCountX = -static_cast<int>(
-          floor((centerX - referencePosition.x) / boxx + 0.5));
-      dx = centerX + static_cast<double>(centerShiftCountX) * boxx -
-           referencePosition.x;
+    const CT distance = sqrt(dx * dx + dy * dy + dz * dz);
+    const CT deviation = distance - referenceDistance;
+
+    // CHARMM gives zero factors at a zero distance only when the deviation is
+    // also zero and divides by zero otherwise. Both cases use zero here.
+    CT4 factors = CT4{ZERO, ZERO, ZERO, ZERO};
+    if (distance != ZERO) {
+      constexpr CT TWO = static_cast<CT>(2);
+      factors.x = dx * TWO * forceConstant / totalWeight * deviation / distance;
+      factors.y = dy * TWO * forceConstant / totalWeight * deviation / distance;
+      factors.z = dz * TWO * forceConstant / totalWeight * deviation / distance;
     }
+    restraintState[0] = factors;
 
-    if (referenceMaskY != 0) {
-      centerShiftCountY = -static_cast<int>(
-          floor((centerY - referencePosition.y) / boxy + 0.5));
-      dy = centerY + static_cast<double>(centerShiftCountY) * boxy -
-           referencePosition.y;
-    }
-
-    if (referenceMaskZ != 0) {
-      centerShiftCountZ = -static_cast<int>(
-          floor((centerZ - referencePosition.z) / boxz + 0.5));
-      dz = centerZ + static_cast<double>(centerShiftCountZ) * boxz -
-           referencePosition.z;
-    }
-
-    const double dr2 = dx * dx + dy * dy + dz * dz;
-    double epot = 0.0, gradX = 0.0, gradY = 0.0, gradZ = 0.0;
-    double forceCoef = 2.0 * forceConstant;
-
-    if (referenceDistance == 0.0)
-      epot = forceConstant * dr2;
-    else {
-      const double distance = sqrt(dr2);
-      const double delta = distance - referenceDistance;
-
-      epot = forceConstant * delta * delta;
-
-      if (distance > 0.0)
-        forceCoef *= (delta / distance);
-    }
-    gradX = forceCoef * dx;
-    gradY = forceCoef * dy;
-    gradZ = forceCoef * dz;
-
-    restraintState[0] = make_double4(gradX, gradY, gradZ, invTotW);
-    restraintState[1] =
-        make_double4(static_cast<double>(centerShiftCountX),
-                     static_cast<double>(centerShiftCountY),
-                     static_cast<double>(centerShiftCountZ), 0.0);
-
-    if (calcEnergy == true)
-      atomicAdd(energy, epot);
+    if constexpr (calcEnergy)
+      atomicAdd(energy,
+                static_cast<double>(forceConstant * deviation * deviation));
   }
 
   return;
 }
 
 /**
- * @brief Distributes the center gradient and records periodic virial shifts.
+ * @brief Distributes the gradient factors to the selected atoms.
  *
- * Each selected atom receives its normalized weight fraction of the center
- * potential gradient. Fixed-point or floating-point component values are added
- * to structure-of-arrays force storage. When requested, the kernel also adds
- * atom-anchor and center-reference periodic shift forces to virial work state.
+ * As in CHARMM, selected atom `i` receives its weight times the per-axis
+ * factors from `StateKernel`. Each component is rounded once to the
+ * fixed-point force representation and added atomically.
  *
  * @tparam AT Device force-accumulator representation written to `forces`.
- * @tparam CT Arithmetic representation used for weight fractions and gradient
- * components.
- * @tparam calcVirial Whether virial shift-force records are accumulated.
- * @param[in,out] virial Device virial work state. It must be non-NULL when
- * `calcVirial` is `true` and may be NULL when `calcVirial` is `false`.
+ * @tparam CT Arithmetic representation of the weight-factor products.
+ * @tparam CT4 Four-component vector type matching `CT`.
  * @param[in,out] forces Non-NULL device structure-of-arrays storage containing
  * at least `3 * forceStride` elements. Contributions are added atomically.
  * @param[in] forceStride Dimensionless element offset between X, Y, and Z
  * component arrays.
  * @param[in] atomIndices Non-NULL device array of `numSelected` zero-based atom
- * indices. Element zero supplies the periodic image anchor.
+ * indices.
  * @param[in] atomWeights Non-NULL device array of `numSelected` weights
  * corresponding to `atomIndices`.
  * @param[in] numSelected Positive dimensionless selected-atom count.
- * @param[in] xyzq Non-NULL device array containing every indexed `float4`
- * coordinate-charge record. Coordinates use angstroms and component `w` is
- * ignored.
- * @param[in] restraintState Non-NULL device array of two records produced by
- * `StateKernel`.
- * @param[in] boxx Positive orthorhombic X box length in angstroms.
- * @param[in] boxy Positive orthorhombic Y box length in angstroms.
- * @param[in] boxz Positive orthorhombic Z box length in angstroms.
- *
- * @warning Center-reference virial bookkeeping uses the 27 neighboring image
- * slots and omits a center image count outside `[-1, 1]` on any axis.
+ * @param[in] restraintState Non-NULL device array whose element zero was
+ * produced by `StateKernel`.
  */
-template <typename AT, typename CT, bool calcVirial>
+template <typename AT, typename CT, typename CT4>
 __global__ static void
-ApplyForcesKernel(Virial_t *__restrict__ virial, AT *__restrict__ forces,
-                  const int forceStride, const int *__restrict__ atomIndices,
+ApplyForcesKernel(AT *__restrict__ forces, const int forceStride,
+                  const int *__restrict__ atomIndices,
                   const double *__restrict__ atomWeights, const int numSelected,
-                  const float4 *__restrict__ xyzq,
-                  const double4 *__restrict__ restraintState, const double boxx,
-                  const double boxy, const double boxz) {
+                  const CT4 *__restrict__ restraintState) {
   const int index = blockIdx.x * blockDim.x + threadIdx.x;
   const int stride = gridDim.x * blockDim.x;
 
   // Gradient state
-  const CT gradX = static_cast<CT>(restraintState[0].x);
-  const CT gradY = static_cast<CT>(restraintState[0].y);
-  const CT gradZ = static_cast<CT>(restraintState[0].z);
-  const CT invTotW = static_cast<CT>(restraintState[0].w);
-
-  // Center periodic image shift relative to the reference
-  const int centerShiftCountX = static_cast<int>(restraintState[1].x);
-  const int centerShiftCountY = static_cast<int>(restraintState[1].y);
-  const int centerShiftCountZ = static_cast<int>(restraintState[1].z);
-
-  const int anchorAtomIndex = atomIndices[0];
-  const float4 xyzqAnchor = xyzq[anchorAtomIndex];
-
-  const float3 halfBox = make_float3(static_cast<float>(0.5 * boxx),
-                                     static_cast<float>(0.5 * boxy),
-                                     static_cast<float>(0.5 * boxz));
-
-  // JEG260824: The 27 sforce slots encode only image counts from -1 through 1.
-  // Keep force and energy evaluation valid for larger counts, but omit the
-  // center shift from virial bookkeeping because it has no representable slot.
-  int centerIsh = 13;
-  const bool validCenterShift =
-      (centerShiftCountX >= -1) && (centerShiftCountX <= 1) &&
-      (centerShiftCountY >= -1) && (centerShiftCountY <= 1) &&
-      (centerShiftCountZ >= -1) && (centerShiftCountZ <= 1);
-
-  if (validCenterShift == true) {
-    centerIsh = (centerShiftCountX + 1) + 3 * (centerShiftCountY + 1) +
-                9 * (centerShiftCountZ + 1);
-  }
+  const CT4 factors = restraintState[0];
 
   for (int i = index; i < numSelected; i += stride) {
-    const int atomIndex = atomIndices[i];
-    const CT weightFraction = static_cast<CT>(atomWeights[i]) * invTotW;
+    AT gradX = static_cast<AT>(0);
+    AT gradY = static_cast<AT>(0);
+    AT gradZ = static_cast<AT>(0);
 
-    AT fx = static_cast<AT>(0);
-    AT fy = static_cast<AT>(0);
-    AT fz = static_cast<AT>(0);
+    calc_component_force<AT, CT>(static_cast<CT>(atomWeights[i]), factors.x,
+                                 factors.y, factors.z, gradX, gradY, gradZ);
 
-    calc_component_force<AT, CT>(weightFraction, gradX, gradY, gradZ, fx, fy,
-                                 fz);
-
-    // Store forces
-    write_force<AT>(fx, fy, fz, atomIndex, forceStride, forces);
-
-    if (calcVirial == true) {
-      const float4 xyzqi = xyzq[atomIndex];
-      const int atomIsh = calc_ishift(xyzqi, xyzqAnchor, halfBox);
-
-      const CT atomGradX = weightFraction * gradX;
-      const CT atomGradY = weightFraction * gradY;
-      const CT atomGradZ = weightFraction * gradZ;
-
-#ifdef USE_DP_SFORCE
-      if (atomIsh != 13) {
-        atomicAdd(&virial->sforce_dp[atomIsh][0],
-                  static_cast<double>(atomGradX));
-        atomicAdd(&virial->sforce_dp[atomIsh][1],
-                  static_cast<double>(atomGradY));
-        atomicAdd(&virial->sforce_dp[atomIsh][2],
-                  static_cast<double>(atomGradZ));
-      }
-
-      if ((validCenterShift == true) && (centerIsh != 13)) {
-        atomicAdd(&virial->sforce_dp[centerIsh][0],
-                  static_cast<double>(atomGradX));
-        atomicAdd(&virial->sforce_dp[centerIsh][1],
-                  static_cast<double>(atomGradY));
-        atomicAdd(&virial->sforce_dp[centerIsh][2],
-                  static_cast<double>(atomGradZ));
-      }
-#else
-      const AT virialForceX = fx / CONVERT_TO_VIR;
-      const AT virialForceY = fy / CONVERT_TO_VIR;
-      const AT virialForceZ = fz / CONVERT_TO_VIR;
-
-      if (atomIsh != 13) {
-        atomicAdd((unsigned long long int *)&virial->sforce_fp[atomIsh][0],
-                  llitoulli(virialForceX));
-        atomicAdd((unsigned long long int *)&virial->sforce_fp[atomIsh][1],
-                  llitoulli(virialForceY));
-        atomicAdd((unsigned long long int *)&virial->sforce_fp[atomIsh][2],
-                  llitoulli(virialForceZ));
-      }
-
-      if ((validCenterShift == true) && (centerIsh != 13)) {
-        atomicAdd((unsigned long long int *)&virial->sforce_fp[centerIsh][0],
-                  llitoulli(virialForceX));
-        atomicAdd((unsigned long long int *)&virial->sforce_fp[centerIsh][1],
-                  llitoulli(virialForceY));
-        atomicAdd((unsigned long long int *)&virial->sforce_fp[centerIsh][2],
-                  llitoulli(virialForceZ));
-      }
-#endif
-    }
+    write_force<AT>(gradX, gradY, gradZ, atomIndices[i], forceStride, forces);
   }
 
   return;
@@ -646,65 +485,58 @@ ApplyForcesKernel(Virial_t *__restrict__ virial, AT *__restrict__ forces,
 template <typename AT, typename CT>
 void HarmonicCenterOfMassRestraintForce<AT, CT>::calcForce(
     const float4 *xyzq, const bool calcEnergy, const bool calcVirial) {
-  if ((m_NumSelected <= 0) || (m_ForceConstant == 0.0))
+  static_cast<void>(calcVirial);
+
+  if (m_NumSelected <= 0 || m_ForceConstant == 0.0)
     return;
 
-  APOCHARMM_REQUIRE((m_BoxDimX > 0.0) && (m_BoxDimY > 0.0) && (m_BoxDimZ > 0.0),
-                    ApoCharmmErrorCode::NotInitialized,
-                    "Box dimensions must be set before force evaluation");
+  this->syncDeviceData();
 
   constexpr int numThreads = 256;
   const int numBlocks = (m_NumSelected + numThreads - 1) / numThreads;
   const int numPartialSums = static_cast<int>(m_PartialSums.size());
+  const CT4 referencePosition = {static_cast<CT>(m_ReferencePosition[0]),
+                                 static_cast<CT>(m_ReferencePosition[1]),
+                                 static_cast<CT>(m_ReferencePosition[2]),
+                                 static_cast<CT>(0)};
 
   // One stream establishes the reduction -> state -> distribution dependency
   // without host synchronization. Immediate launch checks do not report later
   // asynchronous execution failures.
-  cudaCheckLaunch(PartialSumsKernel<numThreads>
-                  <<<numBlocks, numThreads, 0, *m_Stream>>>(
-                      m_PartialSums.getDeviceArray().data(),
-                      m_AtomIndices.getDeviceArray().data(),
-                      m_AtomWeights.getDeviceArray().data(), xyzq,
-                      m_NumSelected, m_BoxDimX, m_BoxDimY, m_BoxDimZ));
+  cudaCheckLaunch(
+      PartialSumsKernel<CT, CT4, numThreads>
+      <<<numBlocks, numThreads, 0, *m_Stream>>>(
+          m_PartialSums.getDeviceArray().data(),
+          m_AtomIndices.getDeviceArray().data(),
+          m_AtomWeights.getDeviceArray().data(), xyzq, m_NumSelected));
 
-  if (calcEnergy == true) {
-    cudaCheckLaunch(StateKernel<numThreads, true>
-                    <<<1, numThreads, 0, *m_Stream>>>(
-                        m_RestraintState.getDeviceArray().data(),
-                        m_EnergyVirial->getEnergyPointer("hmcm"),
-                        m_PartialSums.getDeviceArray().data(), numPartialSums,
-                        m_ForceConstant, m_ReferencePosition, m_ReferenceMaskX,
-                        m_ReferenceMaskY, m_ReferenceMaskZ, m_ReferenceDistance,
-                        m_BoxDimX, m_BoxDimY, m_BoxDimZ));
-  } else {
-    cudaCheckLaunch(StateKernel<numThreads, false>
-                    <<<1, numThreads, 0, *m_Stream>>>(
-                        m_RestraintState.getDeviceArray().data(),
-                        m_EnergyVirial->getEnergyPointer("hmcm"),
-                        m_PartialSums.getDeviceArray().data(), numPartialSums,
-                        m_ForceConstant, m_ReferencePosition, m_ReferenceMaskX,
-                        m_ReferenceMaskY, m_ReferenceMaskZ, m_ReferenceDistance,
-                        m_BoxDimX, m_BoxDimY, m_BoxDimZ));
-  }
-
-  if (calcVirial == true) {
+  if (calcEnergy) {
     cudaCheckLaunch(
-        ApplyForcesKernel<AT, CT, true>
-        <<<numBlocks, numThreads, 0, *m_Stream>>>(
-            m_EnergyVirial->getVirialPointer(), m_Forces->xyz(),
-            m_Forces->stride(), m_AtomIndices.getDeviceArray().data(),
-            m_AtomWeights.getDeviceArray().data(), m_NumSelected, xyzq,
-            m_RestraintState.getDeviceArray().data(), m_BoxDimX, m_BoxDimY,
-            m_BoxDimZ));
+        StateKernel<CT, CT4, numThreads, true><<<1, numThreads, 0, *m_Stream>>>(
+            m_RestraintState.getDeviceArray().data(),
+            m_EnergyVirial->getEnergyPointer("hmcm"),
+            m_PartialSums.getDeviceArray().data(), numPartialSums,
+            static_cast<CT>(m_ForceConstant), referencePosition,
+            m_ReferenceMask[0], m_ReferenceMask[1], m_ReferenceMask[2],
+            static_cast<CT>(m_ReferenceDistance)));
   } else {
-    cudaCheckLaunch(ApplyForcesKernel<AT, CT, false>
-                    <<<numBlocks, numThreads, 0, *m_Stream>>>(
-                        nullptr, m_Forces->xyz(), m_Forces->stride(),
-                        m_AtomIndices.getDeviceArray().data(),
-                        m_AtomWeights.getDeviceArray().data(), m_NumSelected,
-                        xyzq, m_RestraintState.getDeviceArray().data(),
-                        m_BoxDimX, m_BoxDimY, m_BoxDimZ));
+    cudaCheckLaunch(
+        StateKernel<CT, CT4, numThreads, false>
+        <<<1, numThreads, 0, *m_Stream>>>(
+            m_RestraintState.getDeviceArray().data(),
+            m_EnergyVirial->getEnergyPointer("hmcm"),
+            m_PartialSums.getDeviceArray().data(), numPartialSums,
+            static_cast<CT>(m_ForceConstant), referencePosition,
+            m_ReferenceMask[0], m_ReferenceMask[1], m_ReferenceMask[2],
+            static_cast<CT>(m_ReferenceDistance)));
   }
+
+  cudaCheckLaunch(ApplyForcesKernel<AT, CT, CT4>
+                  <<<numBlocks, numThreads, 0, *m_Stream>>>(
+                      m_Forces->xyz(), m_Forces->stride(),
+                      m_AtomIndices.getDeviceArray().data(),
+                      m_AtomWeights.getDeviceArray().data(), m_NumSelected,
+                      m_RestraintState.getDeviceArray().data()));
 
   return;
 }
@@ -726,20 +558,47 @@ void HarmonicCenterOfMassRestraintForce<AT, CT>::updateSelectedAtoms(void) {
   }
 
   APOCHARMM_REQUIRE(
-      totalWeight > 0.0, ApoCharmmErrorCode::InvalidArgument,
-      "Selected atoms must have positive total weight; observed " +
+      std::isfinite(totalWeight) && totalWeight != 0.0,
+      ApoCharmmErrorCode::InvalidArgument,
+      "Selected atoms must have a finite nonzero total weight; observed " +
           std::to_string(totalWeight));
 
-  m_AtomIndices = selectedAtomIndices;
-  m_AtomWeights = selectedAtomWeights;
+  for (std::size_t i = 0; i < selectedAtomWeights.size(); i++) {
+    const double fraction = selectedAtomWeights[i] / totalWeight;
+    APOCHARMM_REQUIRE(
+        std::isfinite(fraction), ApoCharmmErrorCode::InvalidArgument,
+        "Weight fraction at atom index " +
+            std::to_string(selectedAtomIndices[i]) +
+            " must be finite; observed " + std::to_string(fraction));
+  }
+
+  m_AtomIndices.getHostArray() = selectedAtomIndices;
+  m_AtomWeights.getHostArray() = selectedAtomWeights;
+
+  m_DeviceDataDirty = true;
+
+  return;
+}
+
+template <typename AT, typename CT>
+void HarmonicCenterOfMassRestraintForce<AT, CT>::syncDeviceData(void) {
+  if (!m_DeviceDataDirty)
+    return;
+
+  m_AtomIndices.resize(m_AtomIndices.size());
+  m_AtomWeights.resize(m_AtomWeights.size());
+  m_AtomIndices.transferToDevice();
+  m_AtomWeights.transferToDevice();
 
   constexpr int numThreads = 256;
   const int numBlocks = (m_NumSelected + numThreads - 1) / numThreads;
 
   m_PartialSums.resize(numBlocks);
-  m_PartialSums.set(make_double4(0.0, 0.0, 0.0, 0.0));
+  m_PartialSums.set(CT4{});
 
-  m_RestraintState.set(make_double4(0.0, 0.0, 0.0, 0.0));
+  m_RestraintState.set(CT4{});
+
+  m_DeviceDataDirty = false;
 
   return;
 }

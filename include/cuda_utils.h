@@ -96,6 +96,36 @@ void ThrowCudaError(const cudaError_t error, const std::string_view failureKind,
 #define CUDA_CALLABLE_MEMBER
 #endif
 
+/**
+ * @brief Selects the CUDA vector type with `N` components of type `T`.
+ *
+ * `CudaVectorType<float, 4>::type` is `float4`, and
+ * `CudaVectorType<double, 3>::type` is `double3`. Only `float` and `double`
+ * with three or four components are defined, so any other combination fails to
+ * compile. Code templated on an arithmetic type `CT` names its vector type
+ * with, for example, `typename CudaVectorType<CT, 4>::type`.
+ *
+ * @tparam T Component type, `float` or `double`.
+ * @tparam N Number of components, three or four.
+ */
+template <typename T, int N> struct CudaVectorType;
+
+template <> struct CudaVectorType<float, 3> {
+  using type = float3;
+};
+
+template <> struct CudaVectorType<float, 4> {
+  using type = float4;
+};
+
+template <> struct CudaVectorType<double, 3> {
+  using type = double3;
+};
+
+template <> struct CudaVectorType<double, 4> {
+  using type = double4;
+};
+
 void deallocate_host_T(void **pp);
 void deallocate_host_noexcept_T(void **pp) noexcept;
 void allocate_host_T(void **pp, const int len, const size_t sizeofT);

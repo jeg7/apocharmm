@@ -25,6 +25,7 @@ from ._base import _ApoObject
 from ._lib import lib
 from ._validation import require_c_int
 from .atom_reference import AtomReference
+from .charmm_psf import CharmmPsf
 from .enums import DistanceRestraintCondition
 from .error import configure_status_function
 from .force_manager import ForceManager
@@ -40,7 +41,7 @@ def _initialize_prototypes() -> None:
 
     configure_status_function(
         lib().apo_distance_restraint_force_create,
-        [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int],
+        [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p],
         "DistanceRestraintForce construction",
     )
 
@@ -105,10 +106,12 @@ class DistanceRestraintForce(_ApoObject):
     the normalized energy, gradient, and internal virial.
 
     This wrapper owns one C handle for the native
-    `DistanceRestraintForce<long long int, float>` specialization. Python pair
-    and coefficient sequences are materialized into temporary contiguous
-    `ctypes` arrays and copied again into native storage. No caller sequence or
-    buffer is retained.
+    `DistanceRestraintForce<long long int, float>` specialization.
+    Construction borrows a `CharmmPsf` only for the call: native code copies its
+    atom count, and this wrapper retains neither the Python PSF wrapper nor its
+    native PSF. Python pair and coefficient sequences are materialized into
+    temporary contiguous `ctypes` arrays and copied again into native storage.
+    No caller sequence or buffer is retained.
 
     `ForceManager.subscribe()` retains this wrapper after native subscription
     succeeds. The native manager independently retains the restraint and its
@@ -131,45 +134,41 @@ class DistanceRestraintForce(_ApoObject):
 
     _destroy_function_name = "apo_distance_restraint_force_destroy"
 
-    def __init__(self, num_atoms: int) -> None:
+    def __init__(self, psf: CharmmPsf) -> None:
         """
-        @brief Constructs a distance restraint for a fixed atom count.
+        @brief Constructs a distance restraint from a PSF atom count.
 
-        `num_atoms` is checked as a Python `int`, converted to signed C `int`,
-        and passed to the native constructor. The wrapper owns the newly
-        returned handle and sets `default_force_tag` to `"resd"`.
+        The native constructor borrows `psf` only for the call and copies its
+        atom count; PSF masses are not read. The wrapper owns the newly returned
+        handle, does not retain `psf`, and sets `default_force_tag` to `"resd"`.
 
-        @param[in] num_atoms Dimensionless positive atom count representable by
-        signed 32-bit C `int`. The current `isinstance(value, int)` check also
-        accepts Python `bool`; `True` reaches native construction as one and
-        `False` is rejected natively as zero.
-        @throws TypeError If `num_atoms` is not a Python `int`.
-        @throws ValueError If `num_atoms` is outside the signed 32-bit C `int`
-        range.
-        @throws ApoCharmmError If native validation rejects a non-positive
-        value, native CUDA setup fails, or native allocation fails.
-        @throws RuntimeError If native construction reports success but
-        produces a NULL handle.
+        @param[in] psf Live `CharmmPsf` with a positive atom count, the number of
+        atoms represented by coordinate and force arrays.
+        @throws TypeError If `psf` is not a `CharmmPsf`.
+        @throws RuntimeError If `psf` has been closed or if native construction
+        reports success but produces a NULL handle.
+        @throws ApoCharmmError With native status
+        `APO_STATUS_INVALID_ARGUMENT` if the atom count is zero,
+        `APO_STATUS_NOT_INITIALIZED` if it is negative, `APO_STATUS_CUDA_ERROR`
+        if CUDA setup fails, or `APO_STATUS_RUNTIME_ERROR` if native allocation
+        fails.
         @throws MemoryError If Python or `ctypes` bookkeeping cannot allocate
         storage.
 
-        @post On success, this wrapper owns a live native handle and
-        `default_force_tag == "resd"`.
+        @post On success, this wrapper owns a live native handle,
+        `default_force_tag == "resd"`, and closing `psf` does not change the
+        restraint's atom count.
         """
         super().__init__()
 
-        if not isinstance(num_atoms, int):
-            raise TypeError("num_atoms must be an int")
-
-        if num_atoms < -(2**31) or num_atoms > 2**31 - 1:
-            raise ValueError("num_atoms must fit in int")
+        if not isinstance(psf, CharmmPsf):
+            raise TypeError("DistanceRestraintForce expects a CharmmPsf")
 
         _initialize_prototypes()
 
         handle: ctypes.c_void_p = ctypes.c_void_p()
-        c_num_atoms: ctypes.c_int = ctypes.c_int(num_atoms)
 
-        lib().apo_distance_restraint_force_create(ctypes.byref(handle), c_num_atoms)
+        lib().apo_distance_restraint_force_create(ctypes.byref(handle), psf.handle)
 
         if handle.value is None:
             raise RuntimeError(

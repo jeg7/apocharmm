@@ -536,3 +536,90 @@ apo_force_manager_is_composite(bool *flag,
       },
       function_name);
 }
+
+extern "C" apo_status
+apo_force_manager_get_potential_energy(double *energy,
+                                       const apo_force_manager *force_manager) {
+  const char *function_name = "apo_force_manager_get_potential_energy";
+
+  return apocharmm_c::guard(
+      [&](void) -> apo_status {
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_force_manager>(
+                force_manager, function_name, "ForceManager"));
+
+        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_pointer<double>(
+            energy, function_name, "energy"));
+
+        CudaContainer<double> &potential_energy =
+            force_manager->object->getPotentialEnergy();
+
+        potential_energy.transferToHost();
+
+        *energy = potential_energy[0];
+
+        return APO_STATUS_OK;
+      },
+      function_name);
+}
+
+extern "C" apo_status
+apo_force_manager_get_forces(double *forces, const size_t forces_len,
+                             const apo_force_manager *force_manager) {
+  const char *function_name = "apo_force_manager_get_forces";
+
+  return apocharmm_c::guard(
+      [&](void) -> apo_status {
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_force_manager>(
+                force_manager, function_name, "ForceManager"));
+
+        const std::shared_ptr<Force<double>> total_forces =
+            force_manager->object->getForces();
+        const size_t num_atoms = static_cast<size_t>(total_forces->size());
+
+        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_output_buffer<double>(
+            forces, forces_len, num_atoms * 3, function_name,
+            "Force output buffer"));
+
+        std::vector<double> gradient_x(num_atoms);
+        std::vector<double> gradient_y(num_atoms);
+        std::vector<double> gradient_z(num_atoms);
+        total_forces->getXYZ(gradient_x.data(), gradient_y.data(),
+                             gradient_z.data());
+
+        for (size_t i = 0; i < num_atoms; i++) {
+          forces[i * 3 + 0] = 0.0 - gradient_x[i];
+          forces[i * 3 + 1] = 0.0 - gradient_y[i];
+          forces[i * 3 + 2] = 0.0 - gradient_z[i];
+        }
+
+        return APO_STATUS_OK;
+      },
+      function_name);
+}
+
+extern "C" apo_status
+apo_force_manager_get_virial(double *virial, const size_t virial_len,
+                             const apo_force_manager *force_manager) {
+  const char *function_name = "apo_force_manager_get_virial";
+
+  return apocharmm_c::guard(
+      [&](void) -> apo_status {
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_force_manager>(
+                force_manager, function_name, "ForceManager"));
+
+        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_output_buffer<double>(
+            virial, virial_len, 9, function_name, "Virial output buffer"));
+
+        const CudaContainer<double> &total_virial =
+            force_manager->object->getVirial();
+
+        for (size_t i = 0; i < 9; i++)
+          virial[i] = total_virial[i];
+
+        return APO_STATUS_OK;
+      },
+      function_name);
+}

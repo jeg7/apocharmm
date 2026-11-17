@@ -9,6 +9,7 @@
 
 #include "apocharmm_c/HarmonicRestraintForce.h"
 #include "apocharmm_c/detail/AtomSelectionHandle.h"
+#include "apocharmm_c/detail/CharmmPsfHandle.h"
 #include "apocharmm_c/detail/ErrorInternal.h"
 #include "apocharmm_c/detail/ForceManagerHandle.h"
 #include "apocharmm_c/detail/HarmonicRestraintForceHandle.h"
@@ -21,7 +22,7 @@
 
 extern "C" apo_status
 apo_harmonic_restraint_force_create(apo_harmonic_restraint_force **out,
-                                    const int num_atoms) {
+                                    const apo_charmm_psf *psf) {
   const char *function_name = "apo_harmonic_restraint_force_create";
 
   return apocharmm_c::guard(
@@ -30,12 +31,16 @@ apo_harmonic_restraint_force_create(apo_harmonic_restraint_force **out,
             apocharmm_c::prepare_output_pointer<apo_harmonic_restraint_force>(
                 out, function_name, "out"));
 
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_charmm_psf>(
+                psf, function_name, "CharmmPsf"));
+
         std::unique_ptr<apo_harmonic_restraint_force> handle(
             new apo_harmonic_restraint_force());
 
         handle->object =
             std::make_shared<HarmonicRestraintForce<long long int, float>>(
-                num_atoms);
+                psf->object);
 
         *out = handle.release();
 
@@ -177,6 +182,48 @@ apo_harmonic_restraint_force_set_masses(apo_harmonic_restraint_force *restraint,
           cpp_masses[i] = masses[i];
 
         restraint->object->setMasses(cpp_masses);
+
+        return APO_STATUS_OK;
+      },
+      function_name);
+}
+
+extern "C" apo_status apo_harmonic_restraint_force_set_exponent(
+    apo_harmonic_restraint_force *restraint, const int exponent) {
+  const char *function_name = "apo_harmonic_restraint_force_set_exponent";
+
+  return apocharmm_c::guard(
+      [&](void) -> apo_status {
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_harmonic_restraint_force>(
+                restraint, function_name, "HarmonicRestraintForce"));
+
+        restraint->object->setExponent(exponent);
+
+        return APO_STATUS_OK;
+      },
+      function_name);
+}
+
+extern "C" apo_status apo_harmonic_restraint_force_set_scale_factors(
+    apo_harmonic_restraint_force *restraint, const double *scale_factors,
+    const size_t scale_factors_len) {
+  const char *function_name = "apo_harmonic_restraint_force_set_scale_factors";
+
+  return apocharmm_c::guard(
+      [&](void) -> apo_status {
+        APOCHARMM_C_RETURN_IF_ERROR(
+            apocharmm_c::require_handle_object<apo_harmonic_restraint_force>(
+                restraint, function_name, "HarmonicRestraintForce"));
+
+        APOCHARMM_C_RETURN_IF_ERROR(apocharmm_c::require_pointer<double>(
+            scale_factors, function_name, "scale_factors"));
+
+        std::vector<double> cpp_scale_factors(scale_factors_len);
+        for (size_t i = 0; i < scale_factors_len; i++)
+          cpp_scale_factors[i] = scale_factors[i];
+
+        restraint->object->setScaleFactors(cpp_scale_factors);
 
         return APO_STATUS_OK;
       },

@@ -15,6 +15,8 @@
 #include "apocharmm_c/Error.h"
 #include "apocharmm_c/Status.h"
 #include "apocharmm_c/detail/AtomReferenceHandle.h"
+#include "apocharmm_c/detail/CharmmPsfHandle.h"
+#include "apocharmm_c/detail/DistanceRestraintForceHandle.h"
 #include "catch.hpp"
 
 #include <memory>
@@ -23,6 +25,7 @@
 namespace {
 
 constexpr int NUM_ATOMS = 3;
+constexpr char CREATE_FUNCTION_NAME[] = "apo_distance_restraint_force_create";
 constexpr char ADD_FUNCTION_NAME[] =
     "apo_distance_restraint_force_add_restraint";
 
@@ -61,9 +64,11 @@ AtomReferenceHandle MakeReference(const std::shared_ptr<const CharmmPSF> &psf,
 }
 
 DistanceRestraintForceHandle MakeRestraint(void) {
+  apo_charmm_psf psf;
+  psf.object = MakePsf(NUM_ATOMS);
   apo_distance_restraint_force *restraint = nullptr;
 
-  REQUIRE(apo_distance_restraint_force_create(&restraint, NUM_ATOMS) ==
+  REQUIRE(apo_distance_restraint_force_create(&restraint, &psf) ==
           APO_STATUS_OK);
   REQUIRE(restraint != nullptr);
 
@@ -83,6 +88,73 @@ apo_status AddOnePair(apo_distance_restraint_force *restraint,
 }
 
 } // namespace
+
+TEST_CASE("CapiDistanceRestraintForceCreatesAndDestroys") {
+  apo_charmm_psf psf;
+  psf.object = MakePsf(NUM_ATOMS);
+
+  apo_test::CheckStatusAndDiagnostic(
+      apo_distance_restraint_force_create(nullptr, &psf),
+      APO_STATUS_INVALID_ARGUMENT,
+      std::string(CREATE_FUNCTION_NAME) + ": out pointer is NULL");
+
+  apo_distance_restraint_force staleRestraint;
+  apo_distance_restraint_force *restraint = &staleRestraint;
+
+  apo_test::CheckStatusAndDiagnostic(
+      apo_distance_restraint_force_create(&restraint, nullptr),
+      APO_STATUS_INVALID_ARGUMENT,
+      std::string(CREATE_FUNCTION_NAME) + ": CharmmPsf is NULL");
+  CHECK(restraint == nullptr);
+
+  apo_charmm_psf emptyPsf;
+  restraint = &staleRestraint;
+  apo_test::CheckStatusAndDiagnostic(
+      apo_distance_restraint_force_create(&restraint, &emptyPsf),
+      APO_STATUS_INVALID_ARGUMENT,
+      std::string(CREATE_FUNCTION_NAME) + ": CharmmPsf object is NULL");
+  CHECK(restraint == nullptr);
+
+  apo_charmm_psf uninitializedPsf;
+  uninitializedPsf.object = std::make_shared<CharmmPSF>();
+  restraint = &staleRestraint;
+  apo_test::CheckNativeError(
+      apo_distance_restraint_force_create(&restraint, &uninitializedPsf),
+      APO_STATUS_NOT_INITIALIZED, "NotInitialized", CREATE_FUNCTION_NAME,
+      "CharmmPSF atom count is not initialized; observed -1",
+      "src/DistanceRestraintForce.cu", "DistanceRestraintForce");
+  CHECK(restraint == nullptr);
+
+  apo_charmm_psf emptyAtomPsf;
+  emptyAtomPsf.object = MakePsf(0);
+  restraint = &staleRestraint;
+  apo_test::CheckNativeError(
+      apo_distance_restraint_force_create(&restraint, &emptyAtomPsf),
+      APO_STATUS_INVALID_ARGUMENT, "InvalidArgument", CREATE_FUNCTION_NAME,
+      "Atom count must be positive; observed 0",
+      "src/DistanceRestraintForce.cu", "DistanceRestraintForce");
+  CHECK(restraint == nullptr);
+
+  const std::weak_ptr<CharmmPSF> weakPsf = psf.object;
+  REQUIRE(apo_distance_restraint_force_create(&restraint, &psf) ==
+          APO_STATUS_OK);
+  REQUIRE(restraint != nullptr);
+  CHECK(std::string(apo_last_error()).empty());
+  CHECK(restraint->object->getForce()->size() == NUM_ATOMS);
+  psf.object.reset();
+  CHECK(weakPsf.expired());
+
+  CHECK_NOTHROW(apo_distance_restraint_force_destroy(restraint));
+  CHECK(std::string(apo_last_error()).empty());
+
+  REQUIRE(apo_distance_restraint_force_set_scale(nullptr, 1.0) ==
+          APO_STATUS_INVALID_ARGUMENT);
+  const std::string diagnostic = apo_last_error();
+  REQUIRE(diagnostic.empty() == false);
+
+  CHECK_NOTHROW(apo_distance_restraint_force_destroy(nullptr));
+  CHECK(std::string(apo_last_error()) == diagnostic);
+}
 
 TEST_CASE("CapiDistanceRestraintForceAcceptsAtomReferencesAndRepeatedPairs") {
   DistanceRestraintForceHandle restraint = MakeRestraint();
