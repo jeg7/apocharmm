@@ -642,8 +642,8 @@ __global__ static void UpdateKineticEnergyAndNoseHooverPistonKernel(
 
     const int j = i + blockSize;
     if (j < numPartialSums) {
-      ke[0] += kineticEnergyPartialSums[i * 2 + 0];
-      ke[1] += kineticEnergyPartialSums[i * 2 + 1];
+      ke[0] += kineticEnergyPartialSums[j * 2 + 0];
+      ke[1] += kineticEnergyPartialSums[j * 2 + 1];
     }
   }
 
