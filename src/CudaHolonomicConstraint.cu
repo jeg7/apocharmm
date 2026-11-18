@@ -93,7 +93,7 @@ void CudaHolonomicConstraint::setup(const double timeStep) {
 }
 
 void CudaHolonomicConstraint::handleHolonomicConstraints(
-    const double4 *coordsRef) {
+    const double4 *coordsRef, const bool adjustVelocities) {
   copy_DtoD_async<double4>(
       m_Context->getCoordinatesChargesDP().getDeviceArray().data(),
       m_CoordsStored.getDeviceArray().data(), m_Context->getNumAtoms(),
@@ -101,7 +101,8 @@ void CudaHolonomicConstraint::handleHolonomicConstraints(
 
   this->constrainWaterMolecules(coordsRef);
   this->constrainShakeAtoms(coordsRef);
-  this->updateVelocities();
+  if (adjustVelocities)
+    this->updateVelocities();
 
   cudaCheck(cudaStreamSynchronize(*m_Stream));
 

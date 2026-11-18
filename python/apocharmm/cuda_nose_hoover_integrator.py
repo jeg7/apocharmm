@@ -278,9 +278,9 @@ class CudaNoseHooverIntegrator(CudaIntegrator):
         @throws ApoCharmmError With native status
         `APO_STATUS_INVALID_ARGUMENT`, `APO_STATUS_CUDA_ERROR`, or
         `APO_STATUS_RUNTIME_ERROR`.
-        @warning Current C ABI behavior returns estimator element 0 when
-        old-temperature mode is enabled and element 1 when it is disabled,
-        opposite the native instantaneous-temperature selector.
+        @note Returns the on-step estimator when old-temperature mode is enabled
+        and the three-point estimator otherwise, as `getInstantaneousTemperature()`
+        does.
         """
         _initialize_prototypes()
 

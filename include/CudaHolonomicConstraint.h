@@ -33,7 +33,19 @@ public:
 
 public:
   void setup(const double timeStep);
-  void handleHolonomicConstraints(const double4 *coordsRef);
+
+  /**
+   * @brief Constrains the context coordinates to the reference geometry.
+   *
+   * @param[in] coordsRef Device coordinates that supply the constraint
+   * directions.
+   * @param[in] adjustVelocities Whether to add the constraint displacement,
+   * divided by the time step, to the context velocities. A dynamics step needs
+   * that correction; a projection that is not a step forward in time, such as
+   * the start-up back step, passes `false`.
+   */
+  void handleHolonomicConstraints(const double4 *coordsRef,
+                                  const bool adjustVelocities = true);
   void removeForceAlongHolonomicConstraints(void);
 
 private:

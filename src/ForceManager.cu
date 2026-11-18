@@ -1088,9 +1088,8 @@ inline bool isHydrogen(const std::string &atomType) {
  * `float4` parameter record before assigning both host vectors to CUDA
  * containers.
  *
- * The implementation currently assumes no selected heavy atom has more than
- * three hydrogens and uses one hydrogen-mass and equilibrium-bond value for the
- * generated group.
+ * A heavy atom with more than three hydrogens is rejected. The implementation
+ * uses one hydrogen-mass and equilibrium-bond value for the generated group.
  *
  * @internal
  */
@@ -1133,6 +1132,13 @@ void ForceManager::initializeHolonomicConstraintsVariables(void) {
 
   for (int i = 0; i < numAtoms; i++) {
     if (numBondsH[i]) {
+      APOCHARMM_REQUIRE(hydrogenBonds[i].size() <= 3,
+                        ApoCharmmErrorCode::NotImplemented,
+                        "SHAKE supports at most three hydrogens on one heavy "
+                        "atom; atom index " +
+                            std::to_string(i) + " has " +
+                            std::to_string(hydrogenBonds[i].size()));
+
       std::vector<int> group;
       group = {i, -1, -1, -1};
       float totalMass = static_cast<float>(atomMasses[i]);
@@ -1141,7 +1147,7 @@ void ForceManager::initializeHolonomicConstraintsVariables(void) {
       for (std::size_t j = 0; j < hydrogenBonds[i].size(); j++) {
         int hyd = hydrogenBonds[i][j];
         group[j + 1] = hyd;
-        totalMass += atomMasses[j];
+        totalMass += atomMasses[hyd];
         hydrogenMass = atomMasses[hyd];
 
         std::string atomType0 = "", atomType1 = "";

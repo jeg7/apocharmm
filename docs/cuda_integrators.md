@@ -265,11 +265,9 @@ have two elements:
 - Element 1 is the on-step “old” estimator.
 
 The native instantaneous-temperature methods select element 1 when
-`useOldTemperature(true)` is active and element 0 otherwise. The current
-Nose-Hoover and Langevin-piston C ABI running-average getters select the
-opposite indices: they return element 0 when the old-temperature flag is true
-and element 1 when it is false. Their Python wrappers inherit that current C
-ABI behavior.
+`useOldTemperature(true)` is active and element 0 otherwise. The Nose-Hoover and
+Langevin-piston C ABI running-average getters, and their Python wrappers, select
+the same element.
 
 The Langevin thermostat always reports element 0 through its C ABI and Python
 running-average and instantaneous-temperature methods.

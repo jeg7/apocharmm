@@ -340,8 +340,9 @@ apo_cuda_langevin_piston_integrator_get_nose_hoover_piston_mass(
  * @retval APO_STATUS_RUNTIME_ERROR The average container does not contain two
  * elements, or another unexpected exception occurred.
  * @post On failure, a valid output retains its previous contents.
- * @warning Current C ABI behavior returns element 0 when old-temperature mode
- * is enabled and element 1 when it is disabled, opposite the native selector.
+ * @note Returns element 1, the on-step estimator, when old-temperature mode is
+ * enabled and element 0, the three-point estimator, otherwise, as the native
+ * instantaneous-temperature selector does.
  */
 APOCHARMM_C_API apo_status
 apo_cuda_langevin_piston_integrator_get_average_temperature(

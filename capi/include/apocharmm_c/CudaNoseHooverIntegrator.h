@@ -185,9 +185,9 @@ apo_cuda_nose_hoover_integrator_get_nose_hoover_piston_mass(
  * @retval APO_STATUS_RUNTIME_ERROR An unexpected C++ exception occurred.
  *
  * @post On failure, a valid output location retains its previous contents.
- * @warning Current C ABI behavior returns element 0 when old-temperature mode
- * is enabled and element 1 when it is disabled. This is opposite the native
- * instantaneous-temperature selector and the documented array convention.
+ * @note Returns element 1, the on-step estimator, when old-temperature mode is
+ * enabled and element 0, the three-point estimator, otherwise, as the native
+ * instantaneous-temperature selector does.
  */
 APOCHARMM_C_API apo_status
 apo_cuda_nose_hoover_integrator_get_average_temperature(

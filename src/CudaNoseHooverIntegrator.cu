@@ -361,7 +361,7 @@ void CudaNoseHooverIntegrator::initializeImpl(void) {
                              numAtoms, *m_IntegratorStream);
 
     m_HolonomicConstraint->handleHolonomicConstraints(
-        m_CoordsRef.getDeviceArray().data());
+        m_CoordsRef.getDeviceArray().data(), false);
 
     cudaCheckLaunch(
         UpdateSinglePrecisionCoordinatesKernel<<<numBlocks, numThreads, 0,
@@ -393,8 +393,10 @@ void CudaNoseHooverIntegrator::initializeImpl(void) {
         coordsCharges, m_CoordsDeltaPrevious.getDeviceArray().data(),
         numAtoms));
 
+    // The back step is not a step forward in time, so its constraint correction
+    // must not reach the velocities.
     m_HolonomicConstraint->handleHolonomicConstraints(
-        m_CoordsRef.getDeviceArray().data());
+        m_CoordsRef.getDeviceArray().data(), false);
 
     cudaCheckLaunch(BackStepInitializationKernel2<<<numBlocks, numThreads, 0,
                                                     *m_IntegratorStream>>>(

@@ -347,9 +347,9 @@ apo_cuda_langevin_piston_integrator_get_average_temperature(
         average_temperature.transferToHost();
 
         if (integrator->object->usingOldTemperature())
-          *temperature = average_temperature[0];
-        else
           *temperature = average_temperature[1];
+        else
+          *temperature = average_temperature[0];
 
         return APO_STATUS_OK;
       },

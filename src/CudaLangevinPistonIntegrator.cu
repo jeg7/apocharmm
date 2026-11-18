@@ -876,7 +876,7 @@ void CudaLangevinPistonIntegrator::initializeImpl(void) {
                                *m_IntegratorStream);
 
       m_HolonomicConstraint->handleHolonomicConstraints(
-          m_CoordsRef.getDeviceArray().data());
+          m_CoordsRef.getDeviceArray().data(), false);
 
       cudaCheckLaunch(
           UpdateSinglePrecisionCoordinatesKernel<<<numBlocks, numThreads, 0,
@@ -909,8 +909,10 @@ void CudaLangevinPistonIntegrator::initializeImpl(void) {
           coordsCharges, m_CoordsDeltaPrevious.getDeviceArray().data(),
           numAtoms));
 
+      // The back step is not a step forward in time, so its constraint
+      // correction must not reach the velocities.
       m_HolonomicConstraint->handleHolonomicConstraints(
-          m_CoordsRef.getDeviceArray().data());
+          m_CoordsRef.getDeviceArray().data(), false);
 
       cudaCheckLaunch(BackStepInitializationKernel2<<<numBlocks, numThreads, 0,
                                                       *m_IntegratorStream>>>(
@@ -1386,8 +1388,16 @@ __global__ static void UpdatePressureKernel(
   __syncthreads();
 
   if (threadIdx.x == 0) {
-    *pressureScalar =
-        (pressureTensor[0] + pressureTensor[4] + pressureTensor[8]) / 3.0;
+    // Recompute the diagonal rather than read the entries threads 4 and 8
+    // stored: through these __restrict__ pointers, optimized device code may
+    // load them before the barrier.
+    const double pressureXX =
+        volumeFactor * (kineticPressureTensor[0] + virialTensor[0]);
+    const double pressureYY =
+        volumeFactor * (kineticPressureTensor[4] + virialTensor[4]);
+    const double pressureZZ =
+        volumeFactor * (kineticPressureTensor[8] + virialTensor[8]);
+    *pressureScalar = (pressureXX + pressureYY + pressureZZ) / 3.0;
 
     if (constantSurfaceTensionFlag == true) {
       referencePressureTensor[0] =
@@ -1948,8 +1958,16 @@ UpdateAveragePressureKernel(double *__restrict__ pressureTensor,
   __syncthreads();
 
   if (threadIdx.x == 0) {
-    *pressureScalar =
-        (pressureTensor[0] + pressureTensor[4] + pressureTensor[8]) / 3.0;
+    // Recompute the diagonal rather than read the entries threads 4 and 8
+    // stored: through these __restrict__ pointers, optimized device code may
+    // load them before the barrier.
+    const double pressureXX =
+        volumeFactor * (kineticPressureTensor[0] + virialTensor[0]);
+    const double pressureYY =
+        volumeFactor * (kineticPressureTensor[4] + virialTensor[4]);
+    const double pressureZZ =
+        volumeFactor * (kineticPressureTensor[8] + virialTensor[8]);
+    *pressureScalar = (pressureXX + pressureYY + pressureZZ) / 3.0;
     const double delta0 = *pressureScalar - *averagePressureScalar;
     *averagePressureScalar += delta0 / s;
     // const double delta1 = *pressureScalar - *averagePressureScalar;

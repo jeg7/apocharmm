@@ -183,9 +183,9 @@ extern "C" apo_status apo_cuda_nose_hoover_integrator_get_average_temperature(
         integrator->object->getAverageTemperature().transferToHost();
 
         if (integrator->object->usingOldTemperature())
-          *temperature = integrator->object->getAverageTemperature()[0];
-        else
           *temperature = integrator->object->getAverageTemperature()[1];
+        else
+          *temperature = integrator->object->getAverageTemperature()[0];
 
         return APO_STATUS_OK;
       },
