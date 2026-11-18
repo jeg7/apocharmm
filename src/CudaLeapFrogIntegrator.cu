@@ -46,7 +46,9 @@ void CudaLeapFrogIntegrator::propagateOneStepImpl(void) {
   if (m_StepsSinceNeighborListUpdate % 20 == 0)
     m_Context->resetNeighborList();
 
-  m_Context->calculateForces();
+  // A subscriber that reports after this step reads its energies and virial.
+  const bool calcEnergy = this->isReportDueAfterStep();
+  m_Context->calculateForces(false, calcEnergy, calcEnergy);
   auto force = m_Context->getForces();
 
   m_Context->calculateKineticEnergy();

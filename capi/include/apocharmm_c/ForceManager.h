@@ -165,7 +165,7 @@ APOCHARMM_C_API apo_status apo_force_manager_set_cutoff(
     apo_force_manager *force_manager, const double cutoff);
 
 /**
- * @brief Sets the outer switching distance exposed as `ctonnb`.
+ * @brief Sets the nonbonded switching onset, CHARMM CTONNB.
  *
  * @param[in] force_manager Borrowed non-null live manager handle.
  * @param[in] ctonnb Finite positive distance in angstroms. The C `double` is
@@ -179,14 +179,14 @@ APOCHARMM_C_API apo_status apo_force_manager_set_cutoff(
  *
  * @post Success clears the thread-local diagnostic; failure leaves a nonempty
  * diagnostic available through @ref apo_last_error.
- * @note The current native backend uses this as the distance at which switching
- * reaches zero and does not validate its ordering relative to `ctofnb`.
+ * @note Initialization and direct-space rebuilds require
+ * `ctonnb < ctofnb < cutoff`; this setter does not check the order.
  */
 APOCHARMM_C_API apo_status apo_force_manager_set_ctonnb(
     apo_force_manager *force_manager, const double ctonnb);
 
 /**
- * @brief Sets the inner switching distance exposed as `ctofnb`.
+ * @brief Sets the nonbonded switching cutoff, CHARMM CTOFNB.
  *
  * @param[in] force_manager Borrowed non-null live manager handle.
  * @param[in] ctofnb Finite positive distance in angstroms. The C `double` is
@@ -200,8 +200,8 @@ APOCHARMM_C_API apo_status apo_force_manager_set_ctonnb(
  *
  * @post Success clears the thread-local diagnostic; failure leaves a nonempty
  * diagnostic available through @ref apo_last_error.
- * @note The current native backend uses this as the distance at which switching
- * begins and does not validate its ordering relative to `ctonnb`.
+ * @note Initialization and direct-space rebuilds require
+ * `ctonnb < ctofnb < cutoff`; this setter does not check the order.
  */
 APOCHARMM_C_API apo_status apo_force_manager_set_ctofnb(
     apo_force_manager *force_manager, const double ctofnb);
@@ -409,7 +409,7 @@ APOCHARMM_C_API apo_status apo_force_manager_get_cutoff(
     double *cutoff, const apo_force_manager *force_manager);
 
 /**
- * @brief Returns the outer switching distance exposed as `ctonnb`.
+ * @brief Returns the switching onset, CHARMM CTONNB.
  *
  * @param[out] ctonnb Non-null output pointer receiving the value in angstroms.
  * @param[in] force_manager Borrowed non-null live manager handle.
@@ -428,7 +428,7 @@ APOCHARMM_C_API apo_status apo_force_manager_get_ctonnb(
     double *ctonnb, const apo_force_manager *force_manager);
 
 /**
- * @brief Returns the inner switching distance exposed as `ctofnb`.
+ * @brief Returns the switching cutoff, CHARMM CTOFNB.
  *
  * @param[out] ctofnb Non-null output pointer receiving the value in angstroms.
  * @param[in] force_manager Borrowed non-null live manager handle.
@@ -570,7 +570,8 @@ APOCHARMM_C_API apo_status apo_force_manager_is_composite(
  * @post On failure, `*energy` remains unchanged.
  * @post Success clears the thread-local diagnostic; failure leaves a nonempty
  * diagnostic available through @ref apo_last_error.
- * @note The transfer synchronizes the device.
+ * @note The copy runs on the legacy default CUDA stream, and only that stream
+ * is synchronized before the value is read.
  */
 APOCHARMM_C_API apo_status apo_force_manager_get_potential_energy(
     double *energy, const apo_force_manager *force_manager);

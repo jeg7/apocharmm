@@ -70,7 +70,7 @@ void ReplicaExchange::propagate() {
 
       context->calculatePotentialEnergy(true, true);
       auto pe = context->getPotentialEnergy();
-      pe.transferFromDevice();
+      pe.transferToHost(cudaStreamLegacy);
       potentialEnergies[index] = pe[0];
 
       std::cout << "Potential energy " << index << " "

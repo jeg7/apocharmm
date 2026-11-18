@@ -113,6 +113,14 @@ double parse_fortran_double(const std::string_view token,
 std::string format_fortran_double(const double value, const std::size_t width,
                                   const int precision);
 
+// Format a value as a Fortran Fw.d field, as gfortran writes it. Precision is
+// the number of decimals, d. The field always has a decimal point, and it has
+// the optional leading zero only when that fits. Nonfinite values print as NaN,
+// Infinity, or -Infinity, shortened to Inf or -Inf in a narrow field, and a
+// value that does not fit prints as asterisks.
+std::string format_fortran_fixed(const double value, const std::size_t width,
+                                 const int precision);
+
 // Read lines until a nonblank one is found. Fortran (/A) output, which CHARMM
 // uses for section labels, writes an empty record before the labelled one.
 void get_nonblank_line(std::string &line, std::size_t &line_number,

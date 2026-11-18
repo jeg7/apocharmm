@@ -99,6 +99,14 @@ public:
    */
   static constexpr bool contributesVirial = false;
 
+  /**
+   * @brief Names the CHARMM energy term of this restraint.
+   *
+   * Like CHARMM's CONS HARM energy, `ETERM(CHARM)`, the energy is reported as
+   * `harm` and printed in the `HARMonic` column of the `CONSTR>` line.
+   */
+  static constexpr const char *energyTerm = "harm";
+
 public:
   /**
    * @brief Prevents construction without a PSF atom count.
@@ -465,12 +473,12 @@ public:
    * scale factors. The `harm` energy is accumulated only when `calcEnergy` is
    * `true`.
    *
-   * Changed parameter mirrors are first transferred to the device, which
-   * synchronizes the device. The method then launches one of two compile-time
-   * kernel variants on the private stream and performs only the immediate
-   * kernel-launch check. It does not synchronize the stream. Asynchronous
-   * execution errors can surface from a later CUDA synchronization or
-   * dependent operation.
+   * Changed parameter mirrors are first copied to the device on the private
+   * stream, which is then synchronized. The method then launches one of two
+   * compile-time kernel variants on the private stream and performs only the
+   * immediate kernel-launch check. It does not synchronize the stream after the
+   * launch. Asynchronous execution errors can surface from a later CUDA
+   * synchronization or dependent operation.
    *
    * @param[in] xyzq Borrowed CUDA-device pointer to at least the fixed atom
    * count of contiguous `float4` records. The pointer may not be null and must

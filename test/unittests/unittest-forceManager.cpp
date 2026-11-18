@@ -155,8 +155,8 @@ TEST_CASE("ForceManagerDefaultConstructor") {
 
   CHECK(fm.getKappa() == Approx(0.34).margin(TOLERANCE));
   CHECK(fm.getCutoff() == Approx(14.0).margin(TOLERANCE));
-  CHECK(fm.getCtonnb() == Approx(12.0).margin(TOLERANCE));
-  CHECK(fm.getCtofnb() == Approx(10.0).margin(TOLERANCE));
+  CHECK(fm.getCtonnb() == Approx(10.0).margin(TOLERANCE));
+  CHECK(fm.getCtofnb() == Approx(12.0).margin(TOLERANCE));
   apo_test::CheckVectorsEqual<int>("default FFT grid", fm.getFFTGrid(),
                                    std::vector<int>{-1, -1, -1});
   CHECK(fm.getPmeSplineOrder() == 4);
@@ -388,6 +388,50 @@ TEST_CASE("ForceManagerRejectsInvalidInitializationInputs") {
         [&fm](void) { fm.initialize(); }, ApoCharmmErrorCode::Runtime,
         "CharmmPSF atom count must be positive; observed 0");
   }
+
+  SECTION("SwitchingOnsetNotBelowSwitchingCutoff") {
+    ForceManager fm(psf, prm);
+    fm.setBoxDimensions({30.0, 30.0, 30.0});
+    fm.setCtonnb(12.0f);
+    fm.setCtofnb(10.0f);
+    apo_test::CheckApoCharmmError(
+        [&fm](void) { fm.initialize(); }, ApoCharmmErrorCode::InvalidArgument,
+        "Nonbonded distances must satisfy ctonnb < ctofnb < cutoff; observed "
+        "ctonnb 12.000000, ctofnb 10.000000, cutoff 14.000000");
+    CHECK(fm.isInitialized() == false);
+  }
+
+  SECTION("SwitchingCutoffNotBelowCutoff") {
+    ForceManager fm(psf, prm);
+    fm.setBoxDimensions({30.0, 30.0, 30.0});
+    fm.setCutoff(12.0f);
+    apo_test::CheckApoCharmmError(
+        [&fm](void) { fm.initialize(); }, ApoCharmmErrorCode::InvalidArgument,
+        "Nonbonded distances must satisfy ctonnb < ctofnb < cutoff; observed "
+        "ctonnb 10.000000, ctofnb 12.000000, cutoff 12.000000");
+    CHECK(fm.isInitialized() == false);
+  }
+}
+
+TEST_CASE("ForceManagerRebuildRejectsUnorderedSwitchingDistances") {
+  auto fm = CreatePBCCompatibilityForceManager();
+  fm.setBoxDimensions({30.0, 30.0, 30.0});
+  REQUIRE_NOTHROW(fm.initialize());
+
+  CudaContainer<float4> xyzq(
+      std::vector<float4>(2, make_float4(0.0f, 0.0f, 0.0f, 0.0f)));
+  fm.setCtonnb(13.0f);
+  REQUIRE(fm.isDirectForceDirty() == true);
+
+  apo_test::CheckApoCharmmError(
+      [&fm, &xyzq](void) {
+        fm.resetNeighborList(xyzq.getDeviceArray().data());
+      },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Nonbonded distances must satisfy ctonnb < ctofnb < cutoff; observed "
+      "ctonnb 13.000000, ctofnb 12.000000, cutoff 14.000000");
+  CHECK(fm.isInitialized() == true);
+  CHECK(fm.isDirectForceDirty() == true);
 }
 
 TEST_CASE("ForceManagerCopyConstructorCopiesConfigurationOnly") {
@@ -528,6 +572,12 @@ TEST_CASE("ForceManagerDefaultPBCCompatibilityIsUnrestricted") {
 
   fm.unsubscribe(force);
   CHECK(fm.getSubscriptionVectorSizes() == emptySubscriptionSizes);
+}
+
+TEST_CASE("ForceViewReportsUserEnergyWithoutAnEnergyTerm") {
+  TestForce force;
+  const ForceView view(&force);
+  CHECK(std::string(view.energyTerm()) == "user");
 }
 
 TEST_CASE("ForceManagerP1OnlySubscriptionValidationIsTransactional") {

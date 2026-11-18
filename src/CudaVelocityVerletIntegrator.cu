@@ -91,6 +91,12 @@ void CudaVelocityVerletIntegrator::propagateOneStepImpl(void) {
   int numAtoms = m_Context->getNumAtoms();
   int stride = m_Context->getForceStride();
 
+  // Like CHARMM, which evaluates the forces before the first step of a run, the
+  // first step of each propagate() call computes them at the current
+  // coordinates instead of reusing a force buffer that can be stale.
+  if (m_StepsSinceNeighborListUpdate == 0)
+    m_Context->calculateForces();
+
   copy_DtoD_sync<double4>(coordsCharge, m_CoordsRef.getDeviceArray().data(),
                           numAtoms);
 
@@ -121,7 +127,9 @@ void CudaVelocityVerletIntegrator::propagateOneStepImpl(void) {
     m_Context->resetNeighborList();
   }
 
-  m_Context->calculateForces();
+  // A subscriber that reports after this step reads its energies and virial.
+  const bool calcEnergy = this->isReportDueAfterStep();
+  m_Context->calculateForces(false, calcEnergy, calcEnergy);
   force = m_Context->getForces();
 
   // calculate v_(n+1)

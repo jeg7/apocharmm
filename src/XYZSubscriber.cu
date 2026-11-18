@@ -35,7 +35,7 @@ void XYZSubscriber::update(void) {
   //   m_FileStream << i << "\t" << xyzq[i].x << "\t" << xyzq[i].y << "\t"
   //                << xyzq[i].z << std::endl;
   // }
-  m_CharmmContext->getCoordinatesChargesSP().transferToHost();
+  m_CharmmContext->getCoordinatesChargesSP().transferToHost(cudaStreamLegacy);
   for (int i = 0; i < m_CharmmContext->getNumAtoms(); i++) {
     m_FileStream << i << "\t" << m_CharmmContext->getCoordinatesChargesSP()[i].x
                  << "\t" << m_CharmmContext->getCoordinatesChargesSP()[i].y

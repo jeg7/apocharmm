@@ -59,6 +59,11 @@ class CharmmContext;
  * forces and only requested energy/virial outputs. Without it, the original
  * `clear()` is used.
  *
+ * Optional `static constexpr const char *energyTerm` names the CHARMM energy
+ * term that reports the force's energy, such as `harm` for CONS HARM. Without
+ * it, or with a name that `ForceManager::getEnergyComponents()` does not
+ * report, the energy is user energy, reported as `user`.
+ *
  * `ForceManager` preserves the pointee lifetime while a force is subscribed by
  * retaining a shared owner in its parallel subscription state.
  *
@@ -90,6 +95,7 @@ public:
   ForceView(ForceType *inputForce)
       : m_Force(static_cast<void *>(inputForce)),
         m_ContributesVirial(ForceType::contributesVirial),
+        m_EnergyTerm(ForceView::queryEnergyTerm<ForceType>(0)),
         supportsPBC_impl{[](void *force, const PBC pbc) -> bool {
           ForceType *ptr = static_cast<ForceType *>(force);
           return ForceView::queryPBCSupport(ptr, pbc, 0);
@@ -239,6 +245,14 @@ public:
    */
   bool contributesVirial(void) const { return m_ContributesVirial; }
 
+  /**
+   * @brief Returns the CHARMM energy term that reports the viewed force.
+   *
+   * @return The value of `ForceType::energyTerm` captured when the view was
+   * constructed, or `"user"` when the force type declares none.
+   */
+  const char *energyTerm(void) const { return m_EnergyTerm; }
+
 private:
   /** Dispatches selective clearing when available for a concrete force type. */
   template <typename ForceType>
@@ -272,12 +286,32 @@ private:
     return true;
   }
 
+  /**
+   * @brief Reads a concrete force's optional CHARMM energy-term name.
+   *
+   * The `int` overload participates only when `ForceType::energyTerm` converts
+   * to `const char *`. The `long int` overload reports user energy, CHARMM's
+   * term for energies outside its own terms.
+   */
+  template <typename ForceType>
+  static auto queryEnergyTerm(int)
+      -> decltype(static_cast<const char *>(ForceType::energyTerm)) {
+    return ForceType::energyTerm;
+  }
+
+  template <typename ForceType> static const char *queryEnergyTerm(long int) {
+    return "user";
+  }
+
 private:
   /** Borrowed, type-erased pointer to the concrete subscribed force. */
   void *m_Force;
 
   /** Compile-time virial capability captured from the concrete force type. */
   bool m_ContributesVirial;
+
+  /** CHARMM energy term captured from the concrete force type. */
+  const char *m_EnergyTerm;
 
   /**
    * Type-erased dispatch table. Every entry expects `m_Force` to still point
@@ -341,8 +375,8 @@ public:
    *
    * - Ewald splitting parameter `0.34` inverse angstroms;
    * - pair-list cutoff `14.0` angstroms;
-   * - outer switching distance exposed as `ctonnb`, `12.0` angstroms;
-   * - inner switching distance exposed as `ctofnb`, `10.0` angstroms;
+   * - switching onset `ctonnb` (CHARMM CTONNB), `10.0` angstroms;
+   * - switching cutoff `ctofnb` (CHARMM CTOFNB), `12.0` angstroms;
    * - automatic FFT dimensions, represented by `-1` on each axis;
    * - PME spline order `4`;
    * - periodic boundary condition @ref PBC::P1;
@@ -606,10 +640,9 @@ public:
   virtual void setCutoff(const float cutoff);
 
   /**
-   * @brief Sets the outer nonbonded switching distance exposed as `ctonnb`.
+   * @brief Sets the nonbonded switching onset, CHARMM CTONNB.
    *
-   * The current backend forwarding uses this value as the distance at which
-   * the switching function reaches zero.
+   * Switching and force-switching functions start acting at this distance.
    *
    * @param[in] ctonnb Finite positive distance in angstroms.
    *
@@ -618,18 +651,19 @@ public:
    * @ref ApoCharmmErrorCode::InvalidArgument if `ctonnb` is non-finite or not
    * positive.
    *
-   * @note The implementation does not validate the ordering of `ctonnb` and
-   * `ctofnb`.
+   * @note The order `ctonnb < ctofnb < cutoff` is checked by `initialize()`
+   * and before a direct-space rebuild, not here, so the three values can be
+   * changed in any order.
    * @warning This setter does not reconfigure an already constructed
    * direct-space backend.
    */
   virtual void setCtonnb(const float ctonnb);
 
   /**
-   * @brief Sets the inner nonbonded switching distance exposed as `ctofnb`.
+   * @brief Sets the nonbonded switching cutoff, CHARMM CTOFNB.
    *
-   * The current backend forwarding uses this value as the distance at which
-   * switching begins.
+   * Switched interactions reach zero at this distance, and the direct-space
+   * kernels skip pairs beyond it.
    *
    * @param[in] ctofnb Finite positive distance in angstroms.
    *
@@ -638,8 +672,9 @@ public:
    * @ref ApoCharmmErrorCode::InvalidArgument if `ctofnb` is non-finite or not
    * positive.
    *
-   * @note The implementation does not validate the ordering of `ctonnb` and
-   * `ctofnb`.
+   * @note The order `ctonnb < ctofnb < cutoff` is checked by `initialize()`
+   * and before a direct-space rebuild, not here, so the three values can be
+   * changed in any order.
    * @warning This setter does not reconfigure an already constructed
    * direct-space backend.
    */
@@ -900,9 +935,13 @@ public:
    * @brief Returns the current host-side energy decomposition.
    *
    * The returned map contains the keys `bond`, `angle`, `ureyb`, `dihe`,
-   * `imdihe`, `cmap`, `ewks`, `ewse`, `ewex`, `elec`, `vdw`, and `user`.
-   * `user` is the sum of the default energy component from every subscribed
-   * energy-virial object. Values use kilocalories per mole.
+   * `imdihe`, `cmap`, `ewks`, `ewse`, `ewex`, `elec`, `vdw`, `harm`, `resd`,
+   * `hmcm`, `geo`, and `user`. Each subscribed force adds the default energy
+   * component of its energy-virial object to the CHARMM term that its type
+   * names (see `ForceView::energyTerm()`): `harm` for CONS HARM, `resd`,
+   * `hmcm`, and `geo` for MMFP GEO. `user` sums the forces whose types name no
+   * term, or a term that is not one of these keys. Values use kilocalories per
+   * mole.
    *
    * This method reads existing host mirrors. It does not copy energy values
    * from the device and does not synchronize a CUDA stream.
@@ -1072,14 +1111,14 @@ public:
   float getCutoff(void) const;
 
   /**
-   * @brief Returns the stored outer switching distance exposed as `ctonnb`.
+   * @brief Returns the switching onset, CHARMM CTONNB.
    *
    * @return Distance in angstroms.
    */
   float getCtonnb(void) const;
 
   /**
-   * @brief Returns the stored inner switching distance exposed as `ctofnb`.
+   * @brief Returns the switching cutoff, CHARMM CTOFNB.
    *
    * @return Distance in angstroms.
    */
@@ -1231,6 +1270,7 @@ public:
    * @pre Three finite positive box dimensions have been set.
    * @pre The pair-list cutoff is positive and does not exceed half the X box
    * length.
+   * @pre `ctonnb < ctofnb < cutoff`.
    * @pre The current periodic-boundary value is a named @ref PBC enumerator and
    * every subscribed force supports it.
    *
@@ -1243,7 +1283,8 @@ public:
    * @throws ApoCharmmError With code
    * @ref ApoCharmmErrorCode::InvalidArgument if the current PBC value is
    * invalid, any subscribed force does not support it, the cutoff is invalid
-   * for the X box length or automatic-grid validation fails.
+   * for the X box length, the switching distances do not satisfy
+   * `ctonnb < ctofnb < cutoff`, or automatic-grid validation fails.
    * @throws ApoCharmmError With code @ref ApoCharmmErrorCode::Runtime if the
    * PSF atom count is not positive or a topology/parameter operation reports a
    * runtime failure.
@@ -1672,6 +1713,19 @@ private:
   void checkPBCCompatibility(const PBC pbc) const;
 
   /**
+   * @brief Requires `ctonnb < ctofnb < cutoff`.
+   *
+   * CHARMM switching starts at CTONNB and ends at CTOFNB, and the pair list
+   * must reach beyond CTOFNB.
+   *
+   * @throws ApoCharmmError With code @ref ApoCharmmErrorCode::InvalidArgument
+   * if the stored distances are not strictly increasing.
+   *
+   * @note This operation does not modify manager state.
+   */
+  void checkSwitchingDistances(void) const;
+
+  /**
    * @brief Constructs or reconstructs the bonded-force backend.
    *
    * The manager-owned CUDA stream, force storage, and energy-virial registry
@@ -1702,6 +1756,11 @@ private:
    * from `xyzq` before this function returns.
    *
    * @param[in] xyzq Current device-resident coordinate-charge array.
+   *
+   * @throws ApoCharmmError With code @ref ApoCharmmErrorCode::InvalidArgument
+   * if the direct backend is dirty and `xyzq` is null or the switching
+   * distances do not satisfy `ctonnb < ctofnb < cutoff`. The manager then
+   * keeps its previous backends and dirty flags.
    */
   void rebuildDirtyForces(const float4 *xyzq);
 
@@ -1834,14 +1893,14 @@ protected:
   float m_Cutoff;
 
   /**
-   * Outer switching distance in angstroms as currently forwarded to the
-   * direct backend; default `12.0`.
+   * Switching onset in angstroms, corresponding to CHARMM CTONNB and passed to
+   * the direct backend as `ron`; default `10.0`.
    */
   float m_Ctonnb;
 
   /**
-   * Inner switching distance in angstroms as currently forwarded to the
-   * direct backend; default `10.0`.
+   * Switching cutoff in angstroms, corresponding to CHARMM CTOFNB and passed to
+   * the direct backend as `roff`; default `12.0`.
    */
   float m_Ctofnb;
 

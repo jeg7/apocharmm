@@ -18,6 +18,7 @@ add_library(apoCHARMMlib
   ${apoCHARMM_SOURCE_DIR}/src/CudaBondedForce.cu
   ${apoCHARMM_SOURCE_DIR}/src/DynaSubscriber.cu
   ${apoCHARMM_SOURCE_DIR}/src/EnergyVirial.cpp
+  ${apoCHARMM_SOURCE_DIR}/src/EnergyTable.cpp
   ${apoCHARMM_SOURCE_DIR}/src/CudaEnergyVirial.cu
   ${apoCHARMM_SOURCE_DIR}/src/str_utils.cpp
   ${apoCHARMM_SOURCE_DIR}/src/cuda_utils.cu

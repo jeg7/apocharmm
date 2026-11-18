@@ -22,6 +22,7 @@ import ctypes
 
 from ._base import _ApoObject
 from ._lib import lib
+from ._validation import require_c_int
 from .error import configure_status_function
 
 _prototypes_initialized: bool = False
@@ -105,17 +106,14 @@ class Subscriber(_ApoObject):
         """
         @brief Sets the native reporting interval.
 
-        The current implementation accepts an ordinary Python `int` that fits a
-        signed 32-bit C `int`. Boolean values are also accepted by Python's type
-        rules: `True` becomes one, while `False` reaches native validation as
-        zero. Configure the interval before subscription because the native
-        integrator caches it when attaching the subscriber.
+        The value must be a Python `int` that fits a signed 32-bit C `int`;
+        booleans are rejected. Configure the interval before subscription
+        because the native integrator caches it when attaching the subscriber.
 
         @param[in] report_frequency Positive, dimensionless number of propagated
         steps between scheduled updates.
         @return `None`.
-        @throws TypeError If comparison with integer bounds or conversion by
-        `ctypes.c_int` rejects the supplied object.
+        @throws TypeError If `report_frequency` is not an `int` or is a `bool`.
         @throws ValueError If the value is outside the signed 32-bit C `int`
         range.
         @throws RuntimeError If the concrete wrapper has been closed.
@@ -128,10 +126,9 @@ class Subscriber(_ApoObject):
         """
         _initialize_prototypes()
 
-        if report_frequency < -(2**31) or report_frequency > 2**31 - 1:
-            raise ValueError("report_frequency must fit in int")
-
-        c_report_frequency: ctypes.c_int = ctypes.c_int(report_frequency)
+        c_report_frequency: ctypes.c_int = ctypes.c_int(
+            require_c_int(report_frequency, "report_frequency")
+        )
 
         lib().apo_subscriber_set_report_frequency(
             self.subscriber_handle, c_report_frequency

@@ -746,10 +746,10 @@ public: // Setters
    * @param[in] kappa Ewald splitting parameter in inverse angstroms. The value
    * must be finite and non-negative.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if no force manager is attached.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `kappa` is non-finite or negative.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * force manager is attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `kappa` is non-finite or negative.
    *
    * @warning Configure this value before force-manager initialization. The
    * current setter updates stored configuration but does not rebuild already
@@ -764,11 +764,10 @@ public: // Setters
    * and positive. Force-manager initialization additionally requires it not to
    * exceed half the X box length.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if no force manager is attached.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `cutoff` is non-finite or not
-   * positive.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * force manager is attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `cutoff` is non-finite or not positive.
    *
    * @warning Configure this value before force-manager initialization. The
    * current setter does not rebuild an already initialized neighbor-list
@@ -777,37 +776,35 @@ public: // Setters
   void setCutoff(const float cutoff);
 
   /**
-   * @brief Sets the nonbonded distance exposed as `ctonnb`.
+   * @brief Sets the nonbonded switching onset, CHARMM CTONNB.
    *
    * @param[in] ctonnb Distance in angstroms. The value must be finite and
    * positive.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if no force manager is attached.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `ctonnb` is non-finite or not
-   * positive.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * force manager is attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `ctonnb` is non-finite or not positive.
    *
-   * @warning The current direct-force initialization forwards this stored value
-   * to the backend parameter named `roff`. Configure it before force-manager
+   * @note Force-manager initialization and direct-space rebuilds require
+   * `ctonnb < ctofnb < cutoff`. Configure it before force-manager
    * initialization.
    */
   void setCtonnb(const float ctonnb);
 
   /**
-   * @brief Sets the nonbonded distance exposed as `ctofnb`.
+   * @brief Sets the nonbonded switching cutoff, CHARMM CTOFNB.
    *
    * @param[in] ctofnb Distance in angstroms. The value must be finite and
    * positive.
    *
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::NotInitialized` if no force manager is attached.
-   * @throws ApoCharmmError With code
-   * `ApoCharmmErrorCode::InvalidArgument` if `ctofnb` is non-finite or not
-   * positive.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::NotInitialized` if no
+   * force manager is attached.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::InvalidArgument` if
+   * `ctofnb` is non-finite or not positive.
    *
-   * @warning The current direct-force initialization forwards this stored value
-   * to the backend parameter named `ron`. Configure it before force-manager
+   * @note Force-manager initialization and direct-space rebuilds require
+   * `ctonnb < ctofnb < cutoff`. Configure it before force-manager
    * initialization.
    */
   void setCtofnb(const float ctofnb);
@@ -1055,7 +1052,7 @@ public: // Getters
   float getCutoff(void) const;
 
   /**
-   * @brief Returns the distance exposed as `ctonnb`.
+   * @brief Returns the switching onset, CHARMM CTONNB.
    *
    * @return Stored `ctonnb` value in angstroms.
    * @throws ApoCharmmError With code
@@ -1064,7 +1061,7 @@ public: // Getters
   float getCtonnb(void) const;
 
   /**
-   * @brief Returns the distance exposed as `ctofnb`.
+   * @brief Returns the switching cutoff, CHARMM CTOFNB.
    *
    * @return Stored `ctofnb` value in angstroms.
    * @throws ApoCharmmError With code
@@ -1454,9 +1451,9 @@ public: // Specialized functions
    * @brief Computes forces, potential energy, and virial.
    *
    * The call delegates to `ForceManager::calcForce()` with energy and virial
-   * calculation enabled. When `print` is `true`, it subsequently prints a
-   * CHARMM-style energy table to `std::cout` and updates the table's evaluation
-   * and delta-energy history.
+   * calculation enabled. When `print` is `true`, it subsequently prints
+   * CHARMM's energy table (see `apo::WriteEnergyTable`) to `std::cout` and
+   * updates the table's evaluation and delta-energy history.
    *
    * @param[in] reset Requests the force-manager reset mode. The current
    * `ForceManager` implementation rejects `true` as not implemented.
@@ -1525,11 +1522,12 @@ public: // Specialized functions
 
 protected:
   /**
-   * @brief Formats and prints the current CHARMM-style energy table.
+   * @brief Formats and prints the current CHARMM energy table.
    *
    * The helper transfers total potential energy to host, obtains host force
-   * components, computes gradient RMS, prints named standard energy
-   * components, and advances the context-local print-history counters.
+   * components, computes gradient RMS, prints the energy terms through
+   * `apo::WriteEnergyTable()`, and advances the context-local print-history
+   * counters.
    *
    * @pre The force manager is initialized and exposes all component names read
    * by the formatter.

@@ -13,6 +13,7 @@
 #include "ApoCharmmError.h"
 #include "Constants.h"
 #include "Crystal.h"
+#include "EnergyTable.h"
 #include "PBC.h"
 #include "cuda_utils.h"
 #include "gpu_utils.h"
@@ -283,8 +284,9 @@ void CharmmContext::setCoordinatesCharges(
     m_CoordinatesChargesDP[i] = xyzq;
   }
 
-  m_CoordinatesChargesSP.transferToDevice();
-  m_CoordinatesChargesDP.transferToDevice();
+  m_CoordinatesChargesSP.transferToDeviceAsync(cudaStreamLegacy);
+  m_CoordinatesChargesDP.transferToDeviceAsync(cudaStreamLegacy);
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
 
   // JEG260707: This is done to prevent building the neighbor list twice.
   const bool forceManagerWasInitialized =
@@ -359,8 +361,9 @@ void CharmmContext::setCoordinates(const std::vector<double3> &coordinates) {
     m_CoordinatesChargesDP[i].z = coordinates[i].z;
   }
 
-  m_CoordinatesChargesSP.transferToDevice();
-  m_CoordinatesChargesDP.transferToDevice();
+  m_CoordinatesChargesSP.transferToDeviceAsync(cudaStreamLegacy);
+  m_CoordinatesChargesDP.transferToDeviceAsync(cudaStreamLegacy);
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
 
   // JEG260707: This is done to prevent building the neighbor list twice.
   const bool forceManagerWasInitialized =
@@ -436,8 +439,9 @@ void CharmmContext::setCharges(const std::vector<double> &charges) {
     m_CoordinatesChargesDP[i].w = charges[i];
   }
 
-  m_CoordinatesChargesSP.transferToDevice();
-  m_CoordinatesChargesDP.transferToDevice();
+  m_CoordinatesChargesSP.transferToDeviceAsync(cudaStreamLegacy);
+  m_CoordinatesChargesDP.transferToDeviceAsync(cudaStreamLegacy);
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
 
   return;
 }
@@ -458,7 +462,8 @@ void CharmmContext::setVelocitiesInverseMasses(
   for (int i = 0; i < m_NumAtoms; i++)
     m_VelocitiesInverseMasses[i] = velocitiesInverseMasses[i];
 
-  m_VelocitiesInverseMasses.transferToDevice();
+  m_VelocitiesInverseMasses.transferToDeviceAsync(cudaStreamLegacy);
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
 
   return;
 }
@@ -519,7 +524,8 @@ void CharmmContext::setVelocities(const std::vector<double3> &velocities) {
     m_VelocitiesInverseMasses[i].z = velocities[i].z;
   }
 
-  m_VelocitiesInverseMasses.transferToDevice();
+  m_VelocitiesInverseMasses.transferToDeviceAsync(cudaStreamLegacy);
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
 
   return;
 }
@@ -629,7 +635,8 @@ void CharmmContext::setVelocitiesFromCHARMMVelocityFile(
     m_VelocitiesInverseMasses[i].z = z;
   }
 
-  m_VelocitiesInverseMasses.transferToDevice();
+  m_VelocitiesInverseMasses.transferToDeviceAsync(cudaStreamLegacy);
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
 
   return;
 }
@@ -647,7 +654,8 @@ void CharmmContext::setMasses(const std::vector<double> &masses) {
   for (int i = 0; i < m_NumAtoms; i++)
     m_VelocitiesInverseMasses[i].w = 1.0 / masses[i];
 
-  m_VelocitiesInverseMasses.transferToDevice();
+  m_VelocitiesInverseMasses.transferToDeviceAsync(cudaStreamLegacy);
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
 
   return;
 }
@@ -953,7 +961,7 @@ std::vector<double> &CharmmContext::getBoxDimensions(void) {
 
 double CharmmContext::getKineticEnergy(void) {
   this->calculateKineticEnergy();
-  m_KineticEnergy.transferFromDevice();
+  m_KineticEnergy.transferToHost(cudaStreamLegacy);
   return m_KineticEnergy.getHostArray()[0];
 }
 
@@ -1026,7 +1034,8 @@ void CharmmContext::assignVelocitiesAtTemperature(const double temperature) {
     m_VelocitiesInverseMasses[i].z = dist(rng);
   }
 
-  m_VelocitiesInverseMasses.transferToDevice();
+  m_VelocitiesInverseMasses.transferToDeviceAsync(cudaStreamLegacy);
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
 
   return;
 }
@@ -1422,34 +1431,20 @@ void CharmmContext::requireCrystalBox(void) const {
 }
 
 /**
- * @brief Implements CHARMM-style energy-table formatting and print history.
+ * @brief Implements the CHARMM energy table and its print history.
  *
- * The formatter expects the standard component keys used by the current
- * ForceManager implementation, transfers total potential energy to host,
- * synchronizes and extracts forces, and computes GRMS as the square root of
- * the sum of squared force components divided by the atom count.
+ * The table comes from apo::WriteEnergyTable(), the layout of CHARMM's PRINTE.
+ * The helper transfers total potential energy to host, synchronizes and
+ * extracts forces, and computes GRMS as the square root of the sum of squared
+ * force components divided by the atom count.
  *
  * The first printed delta is zero. Later deltas are measured relative to the
  * previous table printed by this context, not relative to the previous force
  * evaluation.
  */
 void CharmmContext::printEnergyTable(void) {
-  const std::map<std::string, double> energyComponents =
-      m_ForceManager->getEnergyComponents();
-
-  const auto component =
-      [&energyComponents](const std::string &name) -> double {
-    return energyComponents.at(name);
-  };
-
   CudaContainer<double> &potentialEnergy = m_ForceManager->getPotentialEnergy();
-  potentialEnergy.transferToHost();
-
-  const double totalEnergy = potentialEnergy[0];
-  const double deltaEnergy =
-      m_HasPreviousPrintedPotentialEnergy
-          ? totalEnergy - m_PreviousPrintedPotentialEnergy
-          : 0.0;
+  potentialEnergy.transferToHost(cudaStreamLegacy);
 
   const std::shared_ptr<Force<double>> forces = m_ForceManager->getForces();
   const std::size_t numAtoms = static_cast<std::size_t>(m_NumAtoms);
@@ -1466,55 +1461,23 @@ void CharmmContext::printEnergyTable(void) {
         forceX[i] * forceX[i] + forceY[i] * forceY[i] + forceZ[i] * forceZ[i];
   }
 
-  const double gradientRms =
+  apo::EnergyProperties properties;
+  properties.potentialEnergy = potentialEnergy[0];
+  properties.energyChange =
+      m_HasPreviousPrintedPotentialEnergy
+          ? properties.potentialEnergy - m_PreviousPrintedPotentialEnergy
+          : 0.0;
+  properties.gradientRms =
       std::sqrt(squaredGradientNorm / static_cast<double>(numAtoms));
 
   std::ostringstream output;
-
-  output << "ENER ENR:  Eval#     ENERgy      Delta-E         GRMS\n"
-         << "ENER INTERN:          BONDs       ANGLes       UREY-b"
-            "    DIHEdrals    IMPRopers\n"
-         << "ENER CROSS:           CMAPs        PMF1D        PMF2D"
-            "        PRIMO\n"
-         << "ENER EXTERN:        VDWaals         ELEC       HBONds"
-            "          ASP         USER\n"
-         << "ENER EWALD:          EWKSum       EWSElf       EWEXcl"
-            "       EWQCor       EWUTil\n"
-         << " ----------       ---------    ---------    ---------"
-            "    ---------    ---------\n";
-
-  output << std::fixed << std::setprecision(5) << std::right;
-
-  output << "ENER>" << std::setw(9) << m_EnergyTableEvaluationCount
-         << std::setw(13) << totalEnergy << std::setw(13) << deltaEnergy
-         << std::setw(13) << gradientRms << '\n';
-
-  output << std::left << std::setw(14) << "ENER INTERN>" << std::right
-         << std::setw(13) << component("bond") << std::setw(13)
-         << component("angle") << std::setw(13) << component("ureyb")
-         << std::setw(13) << component("dihe") << std::setw(13)
-         << component("imdihe") << '\n';
-
-  output << std::left << std::setw(14) << "ENER CROSS>" << std::right
-         << std::setw(13) << component("cmap") << std::setw(13) << 0.0
-         << std::setw(13) << 0.0 << std::setw(13) << 0.0 << '\n';
-
-  output << std::left << std::setw(14) << "ENER EXTERN>" << std::right
-         << std::setw(13) << component("vdw") << std::setw(13)
-         << component("elec") << std::setw(13) << 0.0 << std::setw(13) << 0.0
-         << std::setw(13) << component("user") << '\n';
-
-  output << std::left << std::setw(14) << "ENER EWALD>" << std::right
-         << std::setw(13) << component("ewks") << std::setw(13)
-         << component("ewse") << std::setw(13) << component("ewex")
-         << std::setw(13) << 0.0 << std::setw(13) << 0.0 << '\n';
-
-  output << " ----------       ---------    ---------    ---------"
-            "    ---------    ---------\n";
+  apo::WriteEnergyTable(output, apo::EnergyTableType::ENER, true,
+                        m_EnergyTableEvaluationCount, 0.0, properties,
+                        m_ForceManager->getEnergyComponents());
 
   std::cout << output.str() << std::flush;
 
-  m_PreviousPrintedPotentialEnergy = totalEnergy;
+  m_PreviousPrintedPotentialEnergy = properties.potentialEnergy;
   m_HasPreviousPrintedPotentialEnergy = true;
   m_EnergyTableEvaluationCount++;
 

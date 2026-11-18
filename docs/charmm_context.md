@@ -403,10 +403,12 @@ The force-manager backlink is established with
 context therefore cannot establish the backlink, although it can still retain
 and call its force manager.
 
-Coordinate setters update host mirrors and use `CudaContainer` transfers, which
-perform synchronous runtime copies. Image centering runs on the default stream
-and calls `cudaDeviceSynchronize()`. Force calculation itself uses the
-force-manager's bonded, reciprocal, direct, and aggregation streams.
+Coordinate setters update host mirrors, enqueue their `CudaContainer` uploads
+on the legacy default stream, which orders them before later work on every
+blocking stream, and synchronize that stream before returning. Image centering
+runs on the default stream and calls `cudaDeviceSynchronize()`. Force
+calculation itself uses the force-manager's bonded, reciprocal, direct, and
+aggregation streams.
 
 Extension work should preserve these boundaries:
 
@@ -436,8 +438,7 @@ Relevant tests are:
 Visible architectural constraints include nontransactional state transitions,
 different copy-construction and copy-assignment behavior, mutable invariant
 escape hatches, post-initialization configuration that does not rebuild active
-force objects, incomplete pressure support, and public `ctonnb`/`ctofnb` names
-whose current backend forwarding order requires clarification.
+force objects, and incomplete pressure support.
 
 ## API Reference
 

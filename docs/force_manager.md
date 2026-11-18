@@ -94,8 +94,8 @@ The base defaults are:
 | Box | sentinel values near `-9999.9999` | not configured |
 | Kappa | `0.34` | inverse angstroms |
 | Pair-list cutoff | `14.0` | angstroms |
-| `ctonnb` | `12.0` | current outer/off switching distance, angstroms |
-| `ctofnb` | `10.0` | current inner/on switching distance, angstroms |
+| `ctonnb` | `10.0` | switching onset (CHARMM CTONNB), angstroms |
+| `ctofnb` | `12.0` | switching cutoff (CHARMM CTOFNB), angstroms |
 | FFT grid | `(-1, -1, -1)` | automatic selection |
 | PME spline order | `4` | dimensionless |
 | PBC | [PBC::P1](@ref PBC::P1) | translational periodicity |
@@ -301,7 +301,10 @@ through the dedicated native method where appropriate.
 When `calcEnergy` is false, the prior aggregate energy remains observable and
 is stale. When `calcVirial` is false, previous virial state can remain
 observable. `getEnergyComponents()` reads current host mirrors and performs no
-device transfer or synchronization.
+device transfer or synchronization. It reports each subscribed force under the
+CHARMM energy term that its type names (`harm`, `resd`, `hmcm`, or `geo` for the
+restraints) and every other subscribed force as `user`, so the CHARMM energy
+tables print restraints in CHARMM's lines.
 
 `getPotentialEnergies()` is a legacy host-side sum. It currently omits CMAP and
 subscribed-force energies and is not equivalent to the aggregate energy
@@ -314,9 +317,11 @@ Mutable native accessors expose box, SHAKE, energy-virial, virial, and child
 storage directly. Mutation bypasses validation, propagation, and lifecycle
 logic.
 
-`ctonnb` and `ctofnb` currently follow backend behavior rather than conventional
-CHARMM spelling: `ctonnb` is forwarded as the outer/off distance and `ctofnb`
-as the inner/on distance. Their relative ordering is not validated.
+`ctonnb` and `ctofnb` have their CHARMM meaning: switching starts at `ctonnb`
+and ends at `ctofnb`, which is passed to the direct backend as `roff`.
+Initialization and every direct-space rebuild require
+`ctonnb < ctofnb < cutoff`; the setters themselves do not check the order, so
+the three values can be changed in any order.
 
 The base manager is not composite. Its child-manager and child-energy
 operations reject use, although mutable child storage remains exposed for

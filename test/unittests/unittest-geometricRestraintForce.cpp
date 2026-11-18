@@ -1028,6 +1028,7 @@ TEMPLATE_TEST_CASE("GeometricRestraintForceBoxAndVirial", "[mmfp][virial]",
   // applied.
   ForceView view(&force);
   CHECK(!view.contributesVirial());
+  CHECK(std::string(view.energyTerm()) == "geo");
   CHECK(view.supportsPBC(PBC::P1));
   CHECK(!view.supportsPBC(PBC::P21));
   CHECK(!view.supportsPBC(PBC::UNSET));

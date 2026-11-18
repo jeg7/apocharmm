@@ -438,6 +438,23 @@ unsigned long long int CudaIntegrator::getTotNumSteps(void) const {
 
 int CudaIntegrator::getNumSteps(void) const { return m_NumSteps; }
 
+bool CudaIntegrator::isReportDueAfterStep(void) const {
+  // The step in progress completes step m_TotNumSteps + 1, the count that
+  // reportIfNeeded() tests next.
+  for (std::size_t i = 0; i < m_ReportFreqList.size(); i++) {
+    const std::optional<unsigned long long int> &runStart =
+        m_Subscribers[i]->getStartStep();
+    if (runStart.has_value() &&
+        (m_TotNumSteps + 1ULL - *runStart) %
+                static_cast<unsigned long long int>(m_ReportFreqList[i]) ==
+            0ULL) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void CudaIntegrator::reportIfNeeded(void) {
   // Mirror CHARMM's MOD(ISTEP,NSAVC) test, where ISTEP counts the steps
   // completed since the run began rather than since this propagate() call.

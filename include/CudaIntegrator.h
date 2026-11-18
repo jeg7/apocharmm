@@ -286,8 +286,6 @@ public:
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Runtime` if a runtime
    * readiness check, NaN check, subscriber file operation, or other native
    * runtime operation fails.
-   * @throws std::invalid_argument If a scheduled legacy `DynaSubscriber`
-   * rejects its current integrator.
    * @throws std::runtime_error If a scheduled legacy `XYZSubscriber` has no
    * attached context.
    *
@@ -618,6 +616,19 @@ protected:
   virtual void requireCurrentState(void) const;
 
 protected:
+  /**
+   * @brief Reports whether a subscriber is updated after the step in progress.
+   *
+   * A concrete step asks before it computes forces and also computes the
+   * energies and the virial when the answer is `true`, so a subscriber reports
+   * the values of the step it follows. The test is the one `reportIfNeeded()`
+   * applies, for the completed-step count that the step will reach.
+   *
+   * @return `true` when `reportIfNeeded()` will call at least one subscriber
+   * after this step.
+   */
+  bool isReportDueAfterStep(void) const;
+
   /**
    * @brief Invokes subscribers scheduled for the just-completed step.
    *

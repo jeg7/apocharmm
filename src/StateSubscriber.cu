@@ -37,11 +37,11 @@ void StateSubscriber::update(void) {
   // Update energies
   m_CharmmContext->calculatePotentialEnergy(true, false);
   CudaContainer<double> peContainer = m_CharmmContext->getPotentialEnergy();
-  peContainer.transferFromDevice();
+  peContainer.transferToHost(cudaStreamLegacy);
   double pe = peContainer.getHostArray()[0];
 
   CudaContainer<double> keContainer = m_CharmmContext->getKineticEnergy();
-  keContainer.transferFromDevice();
+  keContainer.transferToHost(cudaStreamLegacy);
   double ke = keContainer.getHostArray()[0];
 
   std::vector<double> boxDim = m_CharmmContext->getBoxDimensions();
@@ -55,7 +55,7 @@ void StateSubscriber::update(void) {
   */
   CudaContainer<double4> velmassCC =
       m_CharmmContext->getVelocitiesInverseMasses();
-  velmassCC.transferFromDevice();
+  velmassCC.transferToHost(cudaStreamLegacy);
   std::vector<double4> velmass = velmassCC.getHostArray();
   double densityMass = 0.0;
   for (std::size_t i = 0; i < velmass.size(); i++)

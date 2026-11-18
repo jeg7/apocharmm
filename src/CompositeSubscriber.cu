@@ -34,7 +34,7 @@ void CompositeSubscriber::update(void) {
     auto children = fm->getChildren();
     for (std::size_t i = 0; i < children.size(); i++) {
       auto childPotentialEnergy = children[i]->getPotentialEnergy();
-      childPotentialEnergy.transferFromDevice();
+      childPotentialEnergy.transferToHost(cudaStreamLegacy);
       m_FileStream << childPotentialEnergy[0] << "\t";
     }
     m_FileStream << std::endl;

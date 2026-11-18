@@ -474,7 +474,6 @@ template <typename AT, typename CT, typename CT3, int blockSize,
           bool calcEnergy>
 __global__ static void EvaluateGeometricTermsKernel(
     CT3 *__restrict__ membershipGradients, double *__restrict__ termEnergies,
-    CT3 *__restrict__ rcmCenters, CT3 *__restrict__ rcmCenterGradients,
     int *__restrict__ error, const float4 *__restrict__ xyzq,
     const int *__restrict__ atomIndices, const double *__restrict__ masses,
     const std::size_t *__restrict__ termOffsets,
@@ -488,6 +487,11 @@ __global__ static void EvaluateGeometricTermsKernel(
 
   using GeoForce = GeometricRestraintForce<AT, CT>;
   __shared__ BlockReduceSumStorage<double, blockSize, 1> cache;
+
+  // Thread 0 hands each RCM center gradient to the block through shared memory.
+  // A value stored through a __restrict__ global pointer may be loaded by the
+  // other threads before the barrier in optimized device code.
+  __shared__ CT3 centerGradient;
 
   for (std::size_t i = blockIdx.x; i < numTerms; i += gridDim.x) {
     const int4 types = termTypes[i];
@@ -546,13 +550,11 @@ __global__ static void EvaluateGeometricTermsKernel(
               forceConstant);
         }
 
-        rcmCenters[i] = center;
-        rcmCenterGradients[i] = gradient;
+        centerGradient = gradient;
         termEnergies[i] = energy;
       }
       __syncthreads();
 
-      const CT3 centerGradient = rcmCenterGradients[i];
       for (std::size_t j = termOffsets[i] + threadIdx.x; j < termOffsets[i + 1];
            j += blockDim.x) {
         const CT fraction = static_cast<CT>(masses[atomIndices[j]]) / total;
@@ -590,8 +592,6 @@ __global__ static void EvaluateGeometricTermsKernel(
 
       BlockReduceSum<double, blockSize, 1>(partialEnergy, cache);
       if (threadIdx.x == 0) {
-        rcmCenters[i] = CT3{ZERO, ZERO, ZERO};
-        rcmCenterGradients[i] = CT3{ZERO, ZERO, ZERO};
         termEnergies[i] = partialEnergy[0];
         if (!isfinite(partialEnergy[0]))
           atomicOr(error, NONFINITE_EVALUATION);
@@ -741,9 +741,7 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
         EvaluateGeometricTermsKernel<AT, CT, CT3, numThreads, true>
         <<<termBlocks, numThreads, 0, *m_Stream>>>(
             m_MembershipGradients.getDeviceArray().data(),
-            m_TermEnergies.getDeviceArray().data(),
-            m_RcmCenters.getDeviceArray().data(),
-            m_RcmCenterGradients.getDeviceArray().data(), error, xyzq,
+            m_TermEnergies.getDeviceArray().data(), error, xyzq,
             m_AtomIndices.getDeviceArray().data(),
             m_Masses.getDeviceArray().data(),
             m_TermOffsets.getDeviceArray().data(),
@@ -770,9 +768,7 @@ void GeometricRestraintForce<AT, CT>::calcForce(const float4 *xyzq,
         EvaluateGeometricTermsKernel<AT, CT, CT3, numThreads, false>
         <<<termBlocks, numThreads, 0, *m_Stream>>>(
             m_MembershipGradients.getDeviceArray().data(),
-            m_TermEnergies.getDeviceArray().data(),
-            m_RcmCenters.getDeviceArray().data(),
-            m_RcmCenterGradients.getDeviceArray().data(), error, xyzq,
+            m_TermEnergies.getDeviceArray().data(), error, xyzq,
             m_AtomIndices.getDeviceArray().data(),
             m_Masses.getDeviceArray().data(),
             m_TermOffsets.getDeviceArray().data(),
@@ -1059,9 +1055,9 @@ void GeometricRestraintForce<AT, CT>::syncDeviceData(void) {
 
   // JEG261002: CudaContainer modifiers above deliberately changed only the
   // host mirrors
-  const auto upload = [](auto &container) -> void {
+  const auto upload = [this](auto &container) -> void {
     container.resize(container.size());
-    container.transferToDevice();
+    container.transferToDeviceAsync(*m_Stream);
     return;
   };
 
@@ -1078,12 +1074,11 @@ void GeometricRestraintForce<AT, CT>::syncDeviceData(void) {
   upload(m_RcmChunkEnds);
   upload(m_AtomOffsets);
   upload(m_AtomMemberships);
+  cudaCheck(cudaStreamSynchronize(*m_Stream));
 
   m_MembershipGradients.resize(m_AtomIndices.size());
   m_TermEnergies.resize(m_TermTypes.size());
   m_RcmPartials.resize(m_RcmChunkBegins.size());
-  m_RcmCenters.resize(m_TermTypes.size());
-  m_RcmCenterGradients.resize(m_TermTypes.size());
 
   m_DeviceDataDirty = false;
 

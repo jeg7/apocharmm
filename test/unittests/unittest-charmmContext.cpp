@@ -501,7 +501,7 @@ TEST_CASE("CharmmContextPrintsCharmmStyleEnergyTable") {
   const std::map<std::string, double> energyComponents =
       fm->getEnergyComponents();
 
-  CHECK(energyComponents.size() == 12);
+  CHECK(energyComponents.size() == 16);
 
   CudaContainer<double> &potentialEnergy = fm->getPotentialEnergy();
   potentialEnergy.transferFromDevice();
@@ -515,7 +515,9 @@ TEST_CASE("CharmmContextPrintsCharmmStyleEnergyTable") {
       energyComponents.at("imdihe") + energyComponents.at("cmap") +
       energyComponents.at("ewks") + energyComponents.at("ewse") +
       energyComponents.at("ewex") + energyComponents.at("elec") +
-      energyComponents.at("vdw") + energyComponents.at("user");
+      energyComponents.at("vdw") + energyComponents.at("harm") +
+      energyComponents.at("resd") + energyComponents.at("hmcm") +
+      energyComponents.at("geo") + energyComponents.at("user");
 
   CHECK(totalEnergy == Approx(componentTotal).margin(1.0e-8));
 
@@ -546,11 +548,9 @@ TEST_CASE("CharmmContextPrintsCharmmStyleEnergyTable") {
 
   std::ostringstream expectedOutput;
 
+  // The ions have no bonded or CMAP terms, so, as in CHARMM, the table has no
+  // INTERN or CROSS line.
   expectedOutput << "ENER ENR:  Eval#     ENERgy      Delta-E         GRMS\n"
-                 << "ENER INTERN:          BONDs       ANGLes       UREY-b"
-                    "    DIHEdrals    IMPRopers\n"
-                 << "ENER CROSS:           CMAPs        PMF1D        PMF2D"
-                    "        PRIMO\n"
                  << "ENER EXTERN:        VDWaals         ELEC       HBONds"
                     "          ASP         USER\n"
                  << "ENER EWALD:          EWKSum       EWSElf       EWEXcl"
@@ -563,16 +563,6 @@ TEST_CASE("CharmmContextPrintsCharmmStyleEnergyTable") {
   expectedOutput << "ENER>" << std::setw(9) << 0 << std::setw(13) << totalEnergy
                  << std::setw(13) << 0.0 << std::setw(13) << gradientRms
                  << '\n';
-
-  expectedOutput << std::left << std::setw(14) << "ENER INTERN>" << std::right
-                 << std::setw(13) << component("bond") << std::setw(13)
-                 << component("angle") << std::setw(13) << component("ureyb")
-                 << std::setw(13) << component("dihe") << std::setw(13)
-                 << component("imdihe") << '\n';
-
-  expectedOutput << std::left << std::setw(14) << "ENER CROSS>" << std::right
-                 << std::setw(13) << component("cmap") << std::setw(13) << 0.0
-                 << std::setw(13) << 0.0 << std::setw(13) << 0.0 << '\n';
 
   expectedOutput << std::left << std::setw(14) << "ENER EXTERN>" << std::right
                  << std::setw(13) << component("vdw") << std::setw(13)
@@ -647,10 +637,10 @@ TEST_CASE("CharmmContextEnergyTableTracksPrintedEvaluations") {
   std::istringstream firstTable(firstOutput);
   std::string firstRecordLine;
 
-  for (int i = 0; i < 6; i++)
+  // The record follows the header, whose lines depend on the nonzero terms.
+  do {
     REQUIRE(static_cast<bool>(std::getline(firstTable, firstRecordLine)));
-
-  REQUIRE(static_cast<bool>(std::getline(firstTable, firstRecordLine)));
+  } while (firstRecordLine.compare(0, 5, "ENER>") != 0);
 
   std::string firstTag;
   std::uint64_t firstEvaluation = 0;
@@ -673,10 +663,10 @@ TEST_CASE("CharmmContextEnergyTableTracksPrintedEvaluations") {
   std::istringstream secondTable(secondOutput);
   std::string secondRecordLine;
 
-  for (int i = 0; i < 6; i++)
+  // The record follows the header, whose lines depend on the nonzero terms.
+  do {
     REQUIRE(static_cast<bool>(std::getline(secondTable, secondRecordLine)));
-
-  REQUIRE(static_cast<bool>(std::getline(secondTable, secondRecordLine)));
+  } while (secondRecordLine.compare(0, 5, "ENER>") != 0);
 
   std::string secondTag;
   std::uint64_t secondEvaluation = 0;

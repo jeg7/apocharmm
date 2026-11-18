@@ -354,12 +354,11 @@ synchronizes subscribed streams during aggregate force and energy processing.
 Direct native callers must synchronize explicitly.
 
 Selection, mass, and weighting changes rebuild the selected host arrays and
-mark them dirty. `initialize()` and `calcForce()` transfer them with
-`CudaContainer` transfers and clears that call `cudaDeviceSynchronize()`, so
-several changes cost one transfer before the next calculation; those
-transfers can wait for unrelated work already submitted to the current CUDA
-device. Force constants, reference values, masks, reference distance, and box
-dimensions are host scalar state and do not trigger CUDA synchronization.
+mark them dirty. `initialize()` and `calcForce()` copy them and clear the
+reduction records on the restraint stream, then synchronize that stream, so
+several changes cost one transfer before the next calculation. Force
+constants, reference values, masks, reference distance, and box dimensions are
+host scalar state and do not trigger CUDA synchronization.
 
 Force and energy updates are additive. `clear()` is required before fresh
 output. Within `calcForce()` itself, `calcEnergy == false` leaves the existing
@@ -493,9 +492,10 @@ transactional.
 Selection and mass configuration begins in host memory. `updateSelectedAtoms()`
 materializes the selected vectors in the host mirrors and sets
 `m_DeviceDataDirty`. `syncDeviceData()`, called by `initialize()` and
-`calcForce()`, transfers them to device memory, resizes one partial record per
-256 selected atoms, clears the partial and state containers, and clears the
-flag. These `CudaContainer` operations synchronize the current CUDA device.
+`calcForce()`, copies them to device memory on the restraint stream, resizes
+one partial record per 256 selected atoms, clears the device copies of the
+partial and state containers on the same stream, synchronizes that stream, and
+clears the flag.
 
 Current coordinates remain device-resident and are borrowed from the manager.
 The restraint does not copy coordinates to host. Force and energy
@@ -560,9 +560,9 @@ path and an explicit template instantiation in
 
 Center reduction uses 256 threads per block. Force writes are atomic. Energy
 uses one atomic addition from the state kernel. Selected-array changes are
-transferred, with storage resizing and device-wide synchronization, by the
-first calculation after the change; a calculation without changes only checks
-the dirty flag.
+transferred on the restraint stream, with storage resizing and a
+synchronization of that stream, by the first calculation after the change; a
+calculation without changes only checks the dirty flag.
 
 ### Tests and current technical debt
 

@@ -13,6 +13,7 @@
 #include "DeviceVector.h"
 
 #include <cstddef>
+#include <cuda_runtime.h>
 #include <vector>
 #include <vector_types.h>
 
@@ -36,7 +37,10 @@
  *
  * CUDA operations use the CUDA runtime state current on the calling thread.
  * The class does not retain a CUDA device identifier or stream and provides
- * no internal host-thread synchronization.
+ * no internal host-thread synchronization. The stream transfers take the
+ * stream that orders them as an argument. Transfers to the host are `const`:
+ * the host mirror is a cache of the device values, so a `const` reference can
+ * refresh it.
  *
  * Copying a container duplicates its host and device mirrors independently and
  * preserves any existing divergence. Moving a container transfers both mirrors
@@ -747,8 +751,10 @@ public: // Modifiers
    * @post On success, the active host values equal the active device values.
    * @warning This call synchronizes all previously requested work on the
    * current CUDA device, not only work associated with this container.
+   * @note The method is `const` because it only refreshes the host cache of
+   * the device values.
    */
-  void transferToHost(void);
+  void transferToHost(void) const;
 
   /**
    * @brief Transfers the complete device mirror to host memory.
@@ -767,7 +773,7 @@ public: // Modifiers
    * valid storage for that active range.
    * @post On success, the active host values equal the active device values.
    */
-  void transferFromDevice(void);
+  void transferFromDevice(void) const;
 
   /**
    * @brief Transfers the complete host mirror to device memory.
@@ -787,6 +793,109 @@ public: // Modifiers
    * @post On success, the active device values equal the active host values.
    */
   void transferFromHost(void);
+
+  /**
+   * @brief Enqueues a copy of the complete host mirror to device memory.
+   *
+   * For a nonempty host mirror, the method enqueues `size()` contiguous
+   * elements on `stream` and returns without synchronizing. An empty host
+   * mirror issues no CUDA call. It does not allocate or resize either mirror.
+   *
+   * @param[in] stream CUDA stream that orders the copy. Work enqueued later on
+   * the same stream observes the new device values. `cudaStreamLegacy`, the
+   * legacy default stream, also orders the copy after earlier work in, and
+   * before later work in, every other blocking stream.
+   *
+   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if the copy cannot
+   * be enqueued.
+   * @throws std::bad_alloc If CUDA error-diagnostic construction fails.
+   * @throws std::length_error If the CUDA error diagnostic exceeds an
+   * implementation limit.
+   *
+   * @pre The active mirror lengths are equal and every nonempty mirror owns
+   * valid storage for at least `size()` elements.
+   * @post Once `stream` reaches the copy, the active device values equal the
+   * host values at the time of the call.
+   * @warning Keep the host values unchanged until `stream` reaches the copy,
+   * for example by synchronizing `stream` before the next host write. CUDA may
+   * stage pageable memory during the call, but it does not promise to.
+   * @warning Work on another non-blocking stream must be ordered after
+   * `stream` before it reads the new device values.
+   */
+  void transferToDeviceAsync(cudaStream_t stream);
+
+  /**
+   * @brief Enqueues a copy of the complete device mirror to host memory.
+   *
+   * For a nonempty host mirror, the method enqueues `getDeviceArray().size()`
+   * contiguous elements on `stream` and returns without an explicit
+   * synchronization. An empty host mirror issues no CUDA call. It does not
+   * allocate or resize either mirror.
+   *
+   * @param[in] stream CUDA stream that orders the copy after the work that
+   * produced the device values. `cudaStreamLegacy` waits for earlier work in
+   * every other blocking stream.
+   *
+   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if the copy cannot
+   * be enqueued.
+   * @throws std::bad_alloc If CUDA error-diagnostic construction fails.
+   * @throws std::length_error If the CUDA error diagnostic exceeds an
+   * implementation limit.
+   *
+   * @pre The active mirror lengths are equal and every nonempty mirror owns
+   * valid storage for that active range.
+   * @post After `stream` is synchronized, the active host values equal the
+   * device values that preceded the copy on `stream`.
+   * @warning Synchronize `stream` before reading the host mirror, or use
+   * `transferToHost(cudaStream_t)`, which does both.
+   */
+  void transferToHostAsync(cudaStream_t stream) const;
+
+  /**
+   * @brief Copies the complete host mirror to device memory on one stream.
+   *
+   * The method enqueues the copy like `transferToDeviceAsync(stream)` and then
+   * synchronizes `stream` only, so unrelated work on other streams keeps
+   * running.
+   *
+   * @param[in] stream CUDA stream that orders the copy after the work that
+   * produced the device values.
+   *
+   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if the copy cannot
+   * be enqueued or the stream synchronization fails.
+   * @throws std::bad_alloc If CUDA error-diagnostic construction fails.
+   * @throws std::length_error If the CUDA error diagnostic exceeds an
+   * implementation limit.
+   *
+   * @pre The active mirror lengths are equal and every nonempty mirror owns
+   * valid storage for that active range.
+   * @post On success, the active device values equal the host values that
+   * preceded the copy on `stream`.
+   */
+  void transferToDevice(cudaStream_t stream);
+
+  /**
+   * @brief Copies the complete device mirror to host memory on one stream.
+   *
+   * The method enqueues the copy like `transferToHostAsync(stream)` and then
+   * synchronizes `stream` only, so unrelated work on other streams keeps
+   * running.
+   *
+   * @param[in] stream CUDA stream that orders the copy after the work that
+   * produced the device values.
+   *
+   * @throws ApoCharmmError With `ApoCharmmErrorCode::Cuda` if the copy cannot
+   * be enqueued or the stream synchronization fails.
+   * @throws std::bad_alloc If CUDA error-diagnostic construction fails.
+   * @throws std::length_error If the CUDA error diagnostic exceeds an
+   * implementation limit.
+   *
+   * @pre The active mirror lengths are equal and every nonempty mirror owns
+   * valid storage for that active range.
+   * @post On success, the active host values equal the device values that
+   * preceded the copy on `stream`.
+   */
+  void transferToHost(cudaStream_t stream) const;
 
 public:
   /**
@@ -817,8 +926,13 @@ public:
 
   // TODO : enable a range-based iterator
 private:
-  /** @brief Owns the contiguous host mirror. */
-  std::vector<T> m_HostArray;
+  /**
+   * @brief Owns the contiguous host mirror.
+   *
+   * It is `mutable` because it caches the device values: the `const` transfers
+   * to the host refresh it without changing the container's logical state.
+   */
+  mutable std::vector<T> m_HostArray;
 
   /** @brief Owns the contiguous CUDA-device mirror. */
   DeviceVector<T> m_DeviceArray;

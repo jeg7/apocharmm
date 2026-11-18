@@ -220,36 +220,66 @@ template <typename T> void CudaContainer<T>::setToValue(const T value) {
 // JEG260813: Transfers intentionally do not resize either mirror. When entered
 // with equal active lengths, normal successful modifiers preserve that
 // relationship. Mutable mirror access is an escape hatch whose caller must
-// restore the invariant before copying. Both directions use cudaMemcpy without
-// a stream argument, then synchronize the current CUDA device.
+// restore the invariant before copying. The stream-less transfers synchronize
+// the current CUDA device. The stream transfers order the copy on the caller's
+// stream and synchronize only that stream, if at all.
 template <typename T> void CudaContainer<T>::transferToDevice(void) {
   if (m_HostArray.empty())
     return;
-  cudaCheck(cudaMemcpy(static_cast<void *>(m_DeviceArray.data()),
-                       static_cast<const void *>(m_HostArray.data()),
-                       m_HostArray.size() * sizeof(T), cudaMemcpyHostToDevice));
+  copy_HtoD_sync<T>(m_HostArray.data(), m_DeviceArray.data(),
+                    m_HostArray.size());
   cudaCheck(cudaDeviceSynchronize());
   return;
 }
 
-template <typename T> void CudaContainer<T>::transferToHost(void) {
+template <typename T> void CudaContainer<T>::transferToHost(void) const {
   if (m_HostArray.empty())
     return;
-  cudaCheck(cudaMemcpy(static_cast<void *>(m_HostArray.data()),
-                       static_cast<const void *>(m_DeviceArray.data()),
-                       m_DeviceArray.size() * sizeof(T),
-                       cudaMemcpyDeviceToHost));
+  copy_DtoH_sync<T>(m_DeviceArray.data(), m_HostArray.data(),
+                    m_DeviceArray.size());
   cudaCheck(cudaDeviceSynchronize());
   return;
 }
 
-template <typename T> void CudaContainer<T>::transferFromDevice(void) {
+template <typename T> void CudaContainer<T>::transferFromDevice(void) const {
   this->transferToHost();
   return;
 }
 
 template <typename T> void CudaContainer<T>::transferFromHost(void) {
   this->transferToDevice();
+  return;
+}
+
+template <typename T>
+void CudaContainer<T>::transferToDeviceAsync(cudaStream_t stream) {
+  if (m_HostArray.empty())
+    return;
+  copy_HtoD<T>(m_HostArray.data(), m_DeviceArray.data(), m_HostArray.size(),
+               stream);
+  return;
+}
+
+template <typename T>
+void CudaContainer<T>::transferToHostAsync(cudaStream_t stream) const {
+  if (m_HostArray.empty())
+    return;
+  copy_DtoH<T>(m_DeviceArray.data(), m_HostArray.data(), m_DeviceArray.size(),
+               stream);
+  return;
+}
+
+template <typename T>
+void CudaContainer<T>::transferToDevice(cudaStream_t stream) {
+  this->transferToDeviceAsync(stream);
+  cudaCheck(cudaStreamSynchronize(stream));
+  return;
+}
+
+template <typename T>
+void CudaContainer<T>::transferToHost(cudaStream_t stream) const {
+  this->transferToHostAsync(stream);
+  cudaCheck(cudaStreamSynchronize(stream));
   return;
 }
 

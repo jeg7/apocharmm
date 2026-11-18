@@ -504,9 +504,10 @@ void HarmonicRestraintForce<AT, CT>::syncDeviceData(void) {
   if (!m_DeviceDataDirty)
     return;
 
-  m_ForceConstants.transferToDevice();
-  m_ReferenceCoordinates.transferToDevice();
-  m_Masses.transferToDevice();
+  m_ForceConstants.transferToDeviceAsync(*m_Stream);
+  m_ReferenceCoordinates.transferToDeviceAsync(*m_Stream);
+  m_Masses.transferToDeviceAsync(*m_Stream);
+  cudaCheck(cudaStreamSynchronize(*m_Stream));
 
   m_DeviceDataDirty = false;
 

@@ -554,7 +554,7 @@ apo_force_manager_get_potential_energy(double *energy,
         CudaContainer<double> &potential_energy =
             force_manager->object->getPotentialEnergy();
 
-        potential_energy.transferToHost();
+        potential_energy.transferToHost(cudaStreamLegacy);
 
         *energy = potential_energy[0];
 

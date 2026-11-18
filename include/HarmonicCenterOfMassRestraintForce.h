@@ -100,6 +100,14 @@ public:
    */
   static constexpr bool contributesVirial = false;
 
+  /**
+   * @brief Names the CHARMM energy term of this restraint.
+   *
+   * Like CHARMM's `ETERM(HMCM)`, the energy is reported as `hmcm` and printed
+   * in the `RESTR>` column that CHARMM fills with `CQRT + PATH + HMCM`.
+   */
+  static constexpr const char *energyTerm = "hmcm";
+
 public:
   /**
    * @brief Prevents construction without a PSF atom-count and mass snapshot.
@@ -449,12 +457,12 @@ public:
   /**
    * @brief Enqueues center calculation, state calculation, and force updates.
    *
-   * Changed selected arrays are first transferred to the device, which
-   * synchronizes the device. The method then reads `m_NumAtoms` device `float4`
-   * coordinate-charge records, computes the selected center from raw
-   * coordinates, computes the energy and the CHARMM gradient factors, and
-   * distributes them to the selected atoms in proportion to their weights. All
-   * three kernels use the private stream and return after immediate launch
+   * Changed selected arrays are first copied to the device on the private
+   * stream, which is then synchronized. The method then reads `m_NumAtoms`
+   * device `float4` coordinate-charge records, computes the selected center
+   * from raw coordinates, computes the energy and the CHARMM gradient factors,
+   * and distributes them to the selected atoms in proportion to their weights.
+   * All three kernels use the private stream and return after immediate launch
    * checks.
    *
    * Force output is always accumulated. Energy is accumulated only when
@@ -515,10 +523,11 @@ private:
    * @brief Transfers dirty selected arrays and resizes reduction storage.
    *
    * When the selected arrays have changed, the method copies the selected
-   * indices and weights to device memory, resizes the block partial sums, and
-   * clears the partial and restraint-state records. The `CudaContainer`
-   * operations perform device-wide synchronization and can invalidate
-   * previously borrowed device pointers through reallocation.
+   * indices and weights to device memory on the private stream, resizes the
+   * block partial sums, clears the device copies of the partial and
+   * restraint-state records on the same stream, and then synchronizes that
+   * stream. Resizing can invalidate previously borrowed device pointers through
+   * reallocation.
    */
   void syncDeviceData(void);
 

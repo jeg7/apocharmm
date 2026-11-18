@@ -102,7 +102,7 @@ CudaContainer<double> FEPEIForceManager::getLambdaPotentialEnergies() {
   // Doing these on the host side itself as they are not costly
   // Move them to the device in the second pass
   // weights.transferFromDevice();
-  m_TotalPotentialEnergy.transferFromDevice();
+  m_TotalPotentialEnergy.transferToHost(cudaStreamLegacy);
   for (std::size_t i = 0; i < lambdas.size(); i++) {
     lambdaPotentialEnergies[i] = (1 - lambdas[i]) * m_TotalPotentialEnergy[0] +
                                  lambdas[i] * m_TotalPotentialEnergy[1];

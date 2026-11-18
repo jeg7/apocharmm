@@ -201,6 +201,14 @@ public:
    */
   static constexpr bool contributesVirial = false;
 
+  /**
+   * @brief Names the CHARMM energy term of this restraint.
+   *
+   * Like CHARMM's `ETERM(GEO)`, the energy is reported as `geo` and printed in
+   * the `GEO` column of the `MMFP>` line.
+   */
+  static constexpr const char *energyTerm = "geo";
+
 public:
   /**
    * @brief Prevents construction without a PSF atom-count and mass snapshot.
@@ -732,8 +740,9 @@ public:
    *
    * This ForceManager hook checks the fixed atom count, stores the supplied
    * box, and synchronizes term mirrors when they are dirty. Rebuilding waits
-   * for the private stream and uses synchronous host-to-device transfers. No
-   * separate initialized flag is set and output owners are not replaced.
+   * for the private stream, enqueues its host-to-device copies on it, and waits
+   * for them before returning. No separate initialized flag is set and output
+   * owners are not replaced.
    *
    * @param[in] numAtoms Dimensionless manager atom count; it must equal
    * `getNumAtoms()`.
@@ -917,15 +926,12 @@ private:
   // consumed
   CudaContainer<double> m_SelectedMassTotals;
 
-  // JEG261019: Dynamically sized RCM reduction and center state. Chunk ranges
-  // index the flattened membership list. No atom-count ceiling is imposed per
-  // term.
+  // JEG261019: Dynamically sized RCM reduction state. Chunk ranges index the
+  // flattened membership list. No atom-count ceiling is imposed per term.
   CudaContainer<std::size_t> m_RcmChunkOffsets;
   CudaContainer<std::size_t> m_RcmChunkBegins;
   CudaContainer<std::size_t> m_RcmChunkEnds;
   CudaContainer<CT3> m_RcmPartials;
-  CudaContainer<CT3> m_RcmCenters;
-  CudaContainer<CT3> m_RcmCenterGradients;
 
   // JEG261002: Derived inverse membership lists preserve term insertion order
   // per atom

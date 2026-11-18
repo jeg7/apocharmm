@@ -7,9 +7,10 @@ A concrete [Subscriber](@ref Subscriber) writes selected simulation state when
 an attached `CudaIntegrator` reaches the subscriber's reporting interval. The
 interval is a positive, dimensionless number of propagated steps.
 
-Use [DcdSubscriber](@ref DcdSubscriber) for coordinate trajectories and
-[RestartSubscriber](@ref RestartSubscriber) for restart state. Those two
-reporters are available through C++, the C ABI, and Python.
+Use [DcdSubscriber](@ref DcdSubscriber) for coordinate trajectories,
+[RestartSubscriber](@ref RestartSubscriber) for restart state, and
+[DynaSubscriber](@ref DynaSubscriber) for CHARMM's `DYNA` energy blocks. All
+three reporters are available through C++, the C ABI, and Python.
 
 Subscribers are synchronous observers, not background tasks. An update runs on
 the propagation caller's thread after the corresponding dynamics step and may
@@ -93,13 +94,18 @@ int main() {
 }
 ```
 
+`example/dyna_subscriber.py` writes CHARMM's `DYNA` energy blocks during a
+constant-pressure Langevin-piston run and a restrained Langevin-thermostat run
+of the repository water box.
+
 ## Construction and Required State
 
 A concrete file-writing subscriber validates its positive report frequency,
 copies its `std::filesystem::path`, checks the nonempty parent component with
 `std::filesystem::exists()`, and creates or truncates the output during
 construction. [DcdSubscriber](@ref DcdSubscriber) opens binary output, while
-[RestartSubscriber](@ref RestartSubscriber) uses text output.
+[RestartSubscriber](@ref RestartSubscriber) and
+[DynaSubscriber](@ref DynaSubscriber) use text output.
 
 Establish state in this order:
 
@@ -164,8 +170,9 @@ native subscriber cannot currently be resubscribed through the normal
 attachment path.
 
 The public C ABI owns concrete handles such as
-[apo_dcd_subscriber](@ref apo_dcd_subscriber) and
-[apo_restart_subscriber](@ref apo_restart_subscriber). Each concrete handle
+[apo_dcd_subscriber](@ref apo_dcd_subscriber),
+[apo_restart_subscriber](@ref apo_restart_subscriber), and
+[apo_dyna_subscriber](@ref apo_dyna_subscriber). Each concrete handle
 embeds an [apo_subscriber](@ref apo_subscriber) base view. Conversion returns a
 borrowed pointer into that concrete allocation; it is not a separately owned
 handle and has no destroy function. Destroying the concrete C handle invalidates
@@ -173,12 +180,13 @@ the base pointer even when a native integrator continues to retain the
 underlying C++ object. Keep the concrete handle alive until after C ABI
 unsubscription.
 
-Python `DcdSubscriber` and `RestartSubscriber` wrappers own their concrete C
-handles and store the borrowed base pointer. A Python `CudaIntegrator` appends a
-successfully subscribed wrapper to its `_subscribers` list, preserving the C
-handle and base-view lifetime. `unsubscribe()` removes that retained Python
-reference after native removal. Closing a subscriber clears its borrowed base
-view, so close only after unsubscription.
+Python `DcdSubscriber`, `RestartSubscriber`, and `DynaSubscriber` wrappers own
+their concrete C handles and store the borrowed base pointer. A Python
+`CudaIntegrator` appends a successfully subscribed wrapper to its
+`_subscribers` list, preserving the C handle and base-view lifetime.
+`unsubscribe()` removes that retained Python reference after native removal.
+Closing a subscriber clears its borrowed base view, so close only after
+unsubscription.
 
 The subsystem performs no internal host-thread locking. Serialize propagation,
 updates, frequency changes, attachment, unsubscription, stream operations, and
@@ -280,9 +288,10 @@ dynamics, changed host/device state, and written bytes remain observable.
 
 - Subscriber callbacks run synchronously and can substantially increase the
   wall time of the propagation step that triggers them.
-- DCD coordinate output and restart output perform device-to-host transfers that
-  call `cudaDeviceSynchronize()` on the current device. They do not use a
-  subscriber-specific CUDA stream.
+- DCD coordinate output copies coordinates to the host on the legacy default
+  stream and synchronizes that stream. Restart output performs device-to-host
+  transfers that call `cudaDeviceSynchronize()` on the current device. Neither
+  uses a subscriber-specific CUDA stream.
 - `Subscriber::setFilePath()` changes only the stored logical path. It does not
   reopen the stream. Mutable `getFilePath()` access bypasses all validation.
 - DCD writes are not atomic. For scheduled output, `NSTEP` is the announced
@@ -296,6 +305,15 @@ dynamics, changed host/device state, and written bytes remain observable.
   CHARMM sentinel. `NSAVC` comes from attached DCD subscribers, or is zero when
   none is attached. Different simultaneous DCD frequencies are rejected;
   `NSAVV` remains zero because velocity trajectories are not written.
+- DYNA output has CHARMM's `PRINTE` layout. A block shows the values the
+  integrator computed in the step just completed. The Langevin thermostat,
+  Nose-Hoover, Langevin piston, and leapfrog integrators evaluate forces before
+  they move the atoms, so their block `N` shows step `N - 1`, where CHARMM's
+  line `N` shows step `N`. The step-0 block of a run evaluates its energies at
+  the starting coordinates and takes its kinetic energy and pressure from the
+  integrator. Fields that apoCHARMM does not compute print as zero, as in
+  CHARMM's OpenMM and BLaDE dynamics, and only the Langevin piston fills the
+  pressure and crystal fields.
 
 ## Related Subsystems
 
@@ -330,14 +348,15 @@ The native implementation layer under `src/` performs DCD and restart format
 generation and CUDA transfers. DCD writes header, unit-cell, and coordinate
 records directly to `std::fstream`. Restart assembles one monolithic
 CHARMM-style file and reads integrator-specific containers through dynamic
-casts.
+casts. DYNA blocks are written by `apo::WriteEnergyTable()`, which the
+context's energy table also uses.
 
-The C ABI exposes only the base operations, DCD writer, restart writer, and the
-integrator attachment/propagation operations. Private handle structs store a
-concrete `std::shared_ptr` and an embedded base struct that shares the same
-native owner. C functions validate handles, translate exceptions with
-`apocharmm_c::guard`, and never expose the private C++ layout as a stable public
-contract.
+The C ABI exposes only the base operations, DCD writer, restart writer, DYNA
+writer, and the integrator attachment/propagation operations. Private handle
+structs store a concrete `std::shared_ptr` and an embedded base struct that
+shares the same native owner. C functions validate handles, translate
+exceptions with `apocharmm_c::guard`, and never expose the private C++ layout
+as a stable public contract.
 
 The Python layer mirrors that mapping. Concrete wrappers own their C handles,
 base methods operate on borrowed embedded views, and the integrator retains
@@ -357,10 +376,12 @@ they cannot return status.
 
 Relevant tests are registered in `test/unittests/CMakeLists.txt`. Native
 coverage is concentrated in `unittest-subscriber.cpp`,
-`unittest-dcdSubscriber.cpp`, `unittest-restartSubscriber.cpp`, and
-`unittest-cudaIntegrator.cpp`. Direct C ABI coverage uses the corresponding
-`unittest-capi*.cpp` files. Python coverage uses the subscriber, DCD-subscriber,
-restart-subscriber, and CUDA-integrator pytest modules.
+`unittest-dcdSubscriber.cpp`, `unittest-restartSubscriber.cpp`,
+`unittest-dynaSubscriber.cpp`, and `unittest-cudaIntegrator.cpp`. Direct C ABI
+coverage uses the corresponding `unittest-capi*.cpp` files. Python coverage
+uses the subscriber, DCD-subscriber, restart-subscriber, DYNA-subscriber, and
+CUDA-integrator pytest modules. `example/dyna_subscriber.py` runs the Python
+DYNA writer end to end.
 
 ## API Reference
 
@@ -369,6 +390,7 @@ C++:
 - [Subscriber](@ref Subscriber)
 - [DcdSubscriber](@ref DcdSubscriber)
 - [RestartSubscriber](@ref RestartSubscriber)
+- [DynaSubscriber](@ref DynaSubscriber)
 
 C ABI:
 
@@ -385,9 +407,15 @@ C ABI:
 - [apo_restart_subscriber_create_with_report_frequency](@ref apo_restart_subscriber_create_with_report_frequency)
 - [apo_restart_subscriber_destroy](@ref apo_restart_subscriber_destroy)
 - [apo_restart_subscriber_as_subscriber](@ref apo_restart_subscriber_as_subscriber)
+- [apo_dyna_subscriber](@ref apo_dyna_subscriber)
+- [apo_dyna_subscriber_create](@ref apo_dyna_subscriber_create)
+- [apo_dyna_subscriber_create_with_report_frequency](@ref apo_dyna_subscriber_create_with_report_frequency)
+- [apo_dyna_subscriber_destroy](@ref apo_dyna_subscriber_destroy)
+- [apo_dyna_subscriber_as_subscriber](@ref apo_dyna_subscriber_as_subscriber)
 
 Python:
 
 - [python_subscriber](@ref python_subscriber)
 - [python_dcd_subscriber](@ref python_dcd_subscriber)
 - [python_restart_subscriber](@ref python_restart_subscriber)
+- [python_dyna_subscriber](@ref python_dyna_subscriber)

@@ -594,15 +594,16 @@ void DistanceRestraintForce<AT, CT>::syncDeviceData(void) {
   m_EnergyExponents.resize(m_EnergyExponents.size());
   m_ActivationConditions.resize(m_ActivationConditions.size());
 
-  m_TermPairOffsets.transferToDevice();
-  m_FirstAtomIndices.transferToDevice();
-  m_SecondAtomIndices.transferToDevice();
-  m_PairCoefficients.transferToDevice();
-  m_ForceConstants.transferToDevice();
-  m_ReferenceValues.transferToDevice();
-  m_DistanceExponents.transferToDevice();
-  m_EnergyExponents.transferToDevice();
-  m_ActivationConditions.transferToDevice();
+  m_TermPairOffsets.transferToDeviceAsync(*m_Stream);
+  m_FirstAtomIndices.transferToDeviceAsync(*m_Stream);
+  m_SecondAtomIndices.transferToDeviceAsync(*m_Stream);
+  m_PairCoefficients.transferToDeviceAsync(*m_Stream);
+  m_ForceConstants.transferToDeviceAsync(*m_Stream);
+  m_ReferenceValues.transferToDeviceAsync(*m_Stream);
+  m_DistanceExponents.transferToDeviceAsync(*m_Stream);
+  m_EnergyExponents.transferToDeviceAsync(*m_Stream);
+  m_ActivationConditions.transferToDeviceAsync(*m_Stream);
+  cudaCheck(cudaStreamSynchronize(*m_Stream));
 
   m_DeviceDataDirty = false;
 

@@ -366,7 +366,7 @@ void DcdSubscriber::writeXtalData(void) {
 }
 
 void DcdSubscriber::writeCoordData(void) {
-  m_CharmmContext->getCoordinatesChargesSP().transferToHost();
+  m_CharmmContext->getCoordinatesChargesSP().transferToHost(cudaStreamLegacy);
   const float4 *xyzq =
       m_CharmmContext->getCoordinatesChargesSP().getHostArray().data();
   const int numAtoms = m_CharmmContext->getNumAtoms();

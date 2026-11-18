@@ -510,7 +510,7 @@ APOCHARMM_C_API apo_status
 apo_charmm_context_set_cutoff(apo_charmm_context *context, const double cutoff);
 
 /**
- * @brief Sets the nonbonded distance exposed as `ctonnb`.
+ * @brief Sets the nonbonded switching onset, CHARMM CTONNB.
  *
  * @param[in,out] context Borrowed non-NULL context handle.
  * @param[in] ctonnb Finite, positive distance in angstroms. The value is
@@ -521,14 +521,15 @@ apo_charmm_context_set_cutoff(apo_charmm_context *context, const double cutoff);
  * value is non-finite or not positive.
  * @retval APO_STATUS_NOT_INITIALIZED No force manager is attached.
  *
- * @warning The current backend forwards this value as `roff`. Configure it
- * before force-manager initialization.
+ * @note Force-manager initialization and direct-space rebuilds require
+ * `ctonnb < ctofnb < cutoff`. Configure it before force-manager
+ * initialization.
  */
 APOCHARMM_C_API apo_status
 apo_charmm_context_set_ctonnb(apo_charmm_context *context, const double ctonnb);
 
 /**
- * @brief Sets the nonbonded distance exposed as `ctofnb`.
+ * @brief Sets the nonbonded switching cutoff, CHARMM CTOFNB.
  *
  * @param[in,out] context Borrowed non-NULL context handle.
  * @param[in] ctofnb Finite, positive distance in angstroms. The value is
@@ -539,8 +540,9 @@ apo_charmm_context_set_ctonnb(apo_charmm_context *context, const double ctonnb);
  * value is non-finite or not positive.
  * @retval APO_STATUS_NOT_INITIALIZED No force manager is attached.
  *
- * @warning The current backend forwards this value as `ron`. Configure it
- * before force-manager initialization.
+ * @note Force-manager initialization and direct-space rebuilds require
+ * `ctonnb < ctofnb < cutoff`. Configure it before force-manager
+ * initialization.
  */
 APOCHARMM_C_API apo_status
 apo_charmm_context_set_ctofnb(apo_charmm_context *context, const double ctofnb);
@@ -791,7 +793,7 @@ APOCHARMM_C_API apo_status apo_charmm_context_get_cutoff(
     double *cutoff, const apo_charmm_context *context);
 
 /**
- * @brief Returns the distance exposed as `ctonnb`.
+ * @brief Returns the switching onset, CHARMM CTONNB.
  *
  * @param[out] ctonnb Non-NULL output pointer receiving angstroms.
  * @param[in] context Borrowed non-NULL context handle.
@@ -805,7 +807,7 @@ APOCHARMM_C_API apo_status apo_charmm_context_get_ctonnb(
     double *ctonnb, const apo_charmm_context *context);
 
 /**
- * @brief Returns the distance exposed as `ctofnb`.
+ * @brief Returns the switching cutoff, CHARMM CTOFNB.
  *
  * @param[out] ctofnb Non-NULL output pointer receiving angstroms.
  * @param[in] context Borrowed non-NULL context handle.

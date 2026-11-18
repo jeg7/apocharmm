@@ -1012,8 +1012,8 @@ ZeroInteractionSystem MakeSystem(void) {
   REQUIRE(apo_force_manager_set_box_dimensions(forceManager, BOX_DIMENSIONS,
                                                3) == APO_STATUS_OK);
   REQUIRE(apo_force_manager_set_cutoff(forceManager, 9.0) == APO_STATUS_OK);
-  REQUIRE(apo_force_manager_set_ctonnb(forceManager, 8.5) == APO_STATUS_OK);
-  REQUIRE(apo_force_manager_set_ctofnb(forceManager, 7.5) == APO_STATUS_OK);
+  REQUIRE(apo_force_manager_set_ctonnb(forceManager, 7.5) == APO_STATUS_OK);
+  REQUIRE(apo_force_manager_set_ctofnb(forceManager, 8.5) == APO_STATUS_OK);
   REQUIRE(apo_force_manager_set_periodic_boundary_condition(
               forceManager, APO_PBC_P1) == APO_STATUS_OK);
 

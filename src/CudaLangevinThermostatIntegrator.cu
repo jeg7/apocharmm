@@ -706,10 +706,13 @@ void CudaLangevinThermostatIntegrator::propagateOneStepImpl(void) {
 
   cudaCheck(cudaStreamSynchronize(*m_IntegratorStream));
 
-  if (m_DebugPrintFrequency > 0 &&
-      m_TotNumSteps %
-              static_cast<unsigned long long int>(m_DebugPrintFrequency) ==
-          0ULL) {
+  // Energies and the virial are computed only for a step that a subscriber
+  // reports or that the debug interval selects.
+  if (this->isReportDueAfterStep() ||
+      (m_DebugPrintFrequency > 0 &&
+       m_TotNumSteps %
+               static_cast<unsigned long long int>(m_DebugPrintFrequency) ==
+           0ULL)) {
     m_Context->calculateForces(false, true, true);
   } else {
     m_Context->calculateForces(false, false, false);

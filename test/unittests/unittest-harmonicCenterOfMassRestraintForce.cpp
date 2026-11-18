@@ -130,6 +130,7 @@ TEST_CASE("HarmonicCenterOfMassRestraintForceConstructorAndMetadata") {
   CHECK(weakPsf.expired());
 
   CHECK(decltype(restraint)::contributesVirial == false);
+  CHECK(std::string(decltype(restraint)::energyTerm) == "hmcm");
   CHECK(restraint.getStream() != nullptr);
   CHECK(restraint.getForce() != nullptr);
   CHECK(restraint.getForce()->size() == NUM_ATOMS);

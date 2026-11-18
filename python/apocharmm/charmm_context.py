@@ -962,7 +962,7 @@ class CharmmContext(_ApoObject):
 
     def setCtonnb(self, ctonnb: float) -> None:
         """
-        @brief Sets the nonbonded distance exposed as `ctonnb`.
+        @brief Sets the nonbonded switching onset, CHARMM CTONNB.
 
         @param[in] ctonnb Python `int` or `float` accepted by
         `ctypes.c_double`, in angstroms. The native float-converted value must
@@ -973,8 +973,9 @@ class CharmmContext(_ApoObject):
         @throws ApoCharmmError If no force manager is attached or native
         validation fails.
 
-        @warning The current backend forwards this value as `roff`. Configure
-        it before force-manager initialization.
+        @note Force-manager initialization and direct-space rebuilds require
+        `ctonnb < ctofnb < cutoff`. Configure it before force-manager
+        initialization.
         """
         _initialize_prototypes()
 
@@ -986,7 +987,7 @@ class CharmmContext(_ApoObject):
 
     def setCtofnb(self, ctofnb: float) -> None:
         """
-        @brief Sets the nonbonded distance exposed as `ctofnb`.
+        @brief Sets the nonbonded switching cutoff, CHARMM CTOFNB.
 
         @param[in] ctofnb Python `int` or `float` accepted by
         `ctypes.c_double`, in angstroms. The native float-converted value must
@@ -997,8 +998,9 @@ class CharmmContext(_ApoObject):
         @throws ApoCharmmError If no force manager is attached or native
         validation fails.
 
-        @warning The current backend forwards this value as `ron`. Configure
-        it before force-manager initialization.
+        @note Force-manager initialization and direct-space rebuilds require
+        `ctonnb < ctofnb < cutoff`. Configure it before force-manager
+        initialization.
         """
         _initialize_prototypes()
 
@@ -1338,7 +1340,7 @@ class CharmmContext(_ApoObject):
 
     def getCtonnb(self) -> float:
         """
-        @brief Returns the distance exposed as `ctonnb`.
+        @brief Returns the switching onset, CHARMM CTONNB.
 
         @return Python `float` in angstroms.
 
@@ -1356,7 +1358,7 @@ class CharmmContext(_ApoObject):
 
     def getCtofnb(self) -> float:
         """
-        @brief Returns the distance exposed as `ctofnb`.
+        @brief Returns the switching cutoff, CHARMM CTOFNB.
 
         @return Python `float` in angstroms.
 

@@ -50,6 +50,7 @@ from .cuda_nose_hoover_integrator import CudaNoseHooverIntegrator
 from .subscriber import Subscriber
 from .dcd_subscriber import DcdSubscriber
 from .restart_subscriber import RestartSubscriber
+from .dyna_subscriber import DynaSubscriber
 
 __all__: list[str] = [
     # Utility
@@ -92,4 +93,5 @@ __all__: list[str] = [
     "Subscriber",
     "DcdSubscriber",
     "RestartSubscriber",
+    "DynaSubscriber",
 ]

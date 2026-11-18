@@ -68,6 +68,8 @@ set(APOCHARMM_DOCUMENTATION_CPP_API
   "${apoCHARMM_SOURCE_DIR}/include/DcdSubscriber.h"
   "${apoCHARMM_SOURCE_DIR}/include/RestartIO.h"
   "${apoCHARMM_SOURCE_DIR}/include/RestartSubscriber.h"
+  "${apoCHARMM_SOURCE_DIR}/include/DynaSubscriber.h"
+  "${apoCHARMM_SOURCE_DIR}/include/EnergyTable.h"
 )
 
 set(APOCHARMM_DOCUMENTATION_C_API
@@ -84,6 +86,7 @@ set(APOCHARMM_DOCUMENTATION_C_API
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/CudaNoseHooverIntegrator.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/DcdSubscriber.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/DistanceRestraintForce.h"
+  "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/DynaSubscriber.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/Enums.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/Error.h"
   "${apoCHARMM_SOURCE_DIR}/capi/include/apocharmm_c/ForceManager.h"
@@ -109,6 +112,7 @@ set(APOCHARMM_DOCUMENTATION_PYTHON_API
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/cuda_nose_hoover_integrator.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/dcd_subscriber.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/distance_restraint_force.py"
+  "${apoCHARMM_SOURCE_DIR}/python/apocharmm/dyna_subscriber.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/enums.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/error.py"
   "${apoCHARMM_SOURCE_DIR}/python/apocharmm/force_manager.py"

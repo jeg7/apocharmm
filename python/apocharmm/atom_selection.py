@@ -22,6 +22,7 @@ import ctypes
 
 from ._base import _ApoObject
 from ._lib import lib
+from ._validation import require_c_int
 from .error import configure_status_function
 
 _prototypes_initialized: bool = False
@@ -202,14 +203,10 @@ class AtomSelection(_ApoObject):
         """
         _initialize_prototypes()
 
-        if not isinstance(atom_index, int) or isinstance(atom_index, bool):
-            raise TypeError("atom_index must be an int")
-
-        if atom_index < -(2**31) or atom_index > 2**31 - 1:
-            raise ValueError("atom_index must fit in int")
-
         c_is_selected: ctypes.c_bool = ctypes.c_bool()
-        c_atom_index: ctypes.c_int = ctypes.c_int(atom_index)
+        c_atom_index: ctypes.c_int = ctypes.c_int(
+            require_c_int(atom_index, "atom_index")
+        )
 
         lib().apo_atom_selection_contains(
             ctypes.byref(c_is_selected), self.handle, c_atom_index

@@ -148,37 +148,41 @@ void destroy_cuda_texture_object_noexcept(
     cudaTextureObject_t *texture_object) noexcept;
 
 #ifdef __CUDACC__
-void copy_HtoD_async_T(const void *h_array, void *d_array, int array_len,
-                       cudaStream_t stream, const size_t sizeofT);
+void copy_HtoD_async_T(const void *h_array, void *d_array,
+                       const std::size_t array_len, cudaStream_t stream,
+                       const size_t sizeofT);
 #endif
-void copy_HtoD_T(const void *h_array, void *d_array, int array_len,
+void copy_HtoD_T(const void *h_array, void *d_array,
+                 const std::size_t array_len, const size_t sizeofT);
+
+#ifdef __CUDACC__
+void copy_DtoH_async_T(const void *d_array, void *h_array,
+                       const std::size_t array_len, cudaStream_t stream,
+                       const size_t sizeofT);
+#endif
+void copy_DtoH_T(const void *d_array, void *h_array,
+                 const std::size_t array_len, const size_t sizeofT);
+
+#ifdef __CUDACC__
+void copy_DtoD_async_T(const void *d_src, void *d_dst,
+                       const std::size_t array_len, cudaStream_t stream,
+                       const size_t sizeofT);
+#endif
+void copy_DtoD_T(const void *d_src, void *d_dst, const std::size_t array_len,
                  const size_t sizeofT);
 
 #ifdef __CUDACC__
-void copy_DtoH_async_T(const void *d_array, void *h_array, const int array_len,
-                       cudaStream_t stream, const size_t sizeofT);
+void clear_gpu_array_async_T(void *data, const std::size_t ndata,
+                             cudaStream_t stream, const size_t sizeofT);
 #endif
-void copy_DtoH_T(const void *d_array, void *h_array, const int array_len,
-                 const size_t sizeofT);
+void clear_gpu_array_T(void *data, const std::size_t ndata,
+                       const size_t sizeofT);
 
 #ifdef __CUDACC__
-void copy_DtoD_async_T(const void *d_src, void *d_dst, const int array_len,
-                       cudaStream_t stream, const size_t sizeofT);
-#endif
-void copy_DtoD_T(const void *d_src, void *d_dst, const int array_len,
-                 const size_t sizeofT);
-
-#ifdef __CUDACC__
-void clear_gpu_array_async_T(void *data, const int ndata, cudaStream_t stream,
-                             const size_t sizeofT);
-#endif
-void clear_gpu_array_T(void *data, const int ndata, const size_t sizeofT);
-
-#ifdef __CUDACC__
-void set_gpu_array_async_T(void *data, const int ndata, const int value,
+void set_gpu_array_async_T(void *data, const std::size_t ndata, const int value,
                            cudaStream_t stream, const size_t sizeofT);
 #endif
-void set_gpu_array_T(void *data, const int ndata, const int value,
+void set_gpu_array_T(void *data, const std::size_t ndata, const int value,
                      const size_t sizeofT);
 
 // void copy3D_HtoD_T(void *src_data, void *dst_data, int src_x0, int src_y0,
@@ -319,7 +323,7 @@ void resize(T **pp, int *curlen, const int cur_size, const int new_size,
 //
 #ifdef __cplusplus
 template <class T>
-void copy_HtoD(const T *h_array, T *d_array, int array_len
+void copy_HtoD(const T *h_array, T *d_array, const std::size_t array_len
 #ifdef __CUDACC__
                ,
                cudaStream_t stream = 0
@@ -340,7 +344,7 @@ void copy_HtoD(const T *h_array, T *d_array, int array_len
 //
 #ifdef __cplusplus
 template <class T>
-void copy_HtoD_sync(const T *h_array, T *d_array, int array_len) {
+void copy_HtoD_sync(const T *h_array, T *d_array, const std::size_t array_len) {
   copy_HtoD_T(h_array, d_array, array_len, sizeof(T));
 }
 #endif
@@ -351,7 +355,7 @@ void copy_HtoD_sync(const T *h_array, T *d_array, int array_len) {
 //
 #ifdef __cplusplus
 template <class T>
-void copy_DtoH(const T *d_array, T *h_array, const int array_len
+void copy_DtoH(const T *d_array, T *h_array, const std::size_t array_len
 #ifdef __CUDACC__
                ,
                cudaStream_t stream = 0
@@ -370,7 +374,7 @@ void copy_DtoH(const T *d_array, T *h_array, const int array_len
 //
 #ifdef __cplusplus
 template <class T>
-void copy_DtoH_sync(const T *d_array, T *h_array, const int array_len) {
+void copy_DtoH_sync(const T *d_array, T *h_array, const std::size_t array_len) {
   copy_DtoH_T(d_array, h_array, array_len, sizeof(T));
 }
 #endif
@@ -381,7 +385,7 @@ void copy_DtoH_sync(const T *d_array, T *h_array, const int array_len) {
 //
 #ifdef __cplusplus
 template <class T>
-void copy_DtoD(const T *d_src, T *h_dst, const int array_len
+void copy_DtoD(const T *d_src, T *h_dst, const std::size_t array_len
 #ifdef __CUDACC__
                ,
                cudaStream_t stream = 0
@@ -400,12 +404,12 @@ void copy_DtoD(const T *d_src, T *h_dst, const int array_len
 //
 #ifdef __cplusplus
 template <class T>
-void copy_DtoD_sync(const T *d_src, T *h_dst, const int array_len) {
+void copy_DtoD_sync(const T *d_src, T *h_dst, const std::size_t array_len) {
   copy_DtoD_T(d_src, h_dst, array_len, sizeof(T));
 }
 
 template <class T>
-void copy_DtoD_async(const T *d_src, T *h_dst, const int array_len,
+void copy_DtoD_async(const T *d_src, T *h_dst, const std::size_t array_len,
                      cudaStream_t stream) {
   copy_DtoD_async_T(d_src, h_dst, array_len, stream, sizeof(T));
 }
@@ -415,7 +419,7 @@ void copy_DtoD_async(const T *d_src, T *h_dst, const int array_len,
 
 #ifdef __cplusplus
 template <class T>
-void clear_gpu_array(T *data, const int ndata
+void clear_gpu_array(T *data, const std::size_t ndata
 #ifdef __CUDACC__
                      ,
                      cudaStream_t stream = 0
@@ -430,7 +434,7 @@ void clear_gpu_array(T *data, const int ndata
 #endif
 
 #ifdef __cplusplus
-template <class T> void clear_gpu_array_sync(T *data, const int ndata) {
+template <class T> void clear_gpu_array_sync(T *data, const std::size_t ndata) {
   clear_gpu_array_T(data, ndata, sizeof(T));
 }
 #endif
@@ -439,7 +443,7 @@ template <class T> void clear_gpu_array_sync(T *data, const int ndata) {
 
 #ifdef __cplusplus
 template <class T>
-void set_gpu_array(T *data, const int ndata, const int value
+void set_gpu_array(T *data, const std::size_t ndata, const int value
 #ifdef __CUDACC__
                    ,
                    cudaStream_t stream = 0
@@ -455,7 +459,7 @@ void set_gpu_array(T *data, const int ndata, const int value
 
 #ifdef __cplusplus
 template <class T>
-void set_gpu_array_sync(T *data, const int ndata, const int value) {
+void set_gpu_array_sync(T *data, const std::size_t ndata, const int value) {
   set_gpu_array_T(data, ndata, value, sizeof(T));
 }
 #endif

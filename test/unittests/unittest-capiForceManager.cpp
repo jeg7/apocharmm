@@ -154,10 +154,10 @@ TEST_CASE("CapiForceManagerSettersAndGetters") {
   CHECK(value == Approx(14.0).margin(TOLERANCE));
   CHECK(apo_force_manager_get_ctonnb(&value, forceManager.get()) ==
         APO_STATUS_OK);
-  CHECK(value == Approx(12.0).margin(TOLERANCE));
+  CHECK(value == Approx(10.0).margin(TOLERANCE));
   CHECK(apo_force_manager_get_ctofnb(&value, forceManager.get()) ==
         APO_STATUS_OK);
-  CHECK(value == Approx(10.0).margin(TOLERANCE));
+  CHECK(value == Approx(12.0).margin(TOLERANCE));
 
   int grid[3] = {0, 0, 0};
   CHECK(apo_force_manager_get_fft_grid(grid, 3, forceManager.get()) ==

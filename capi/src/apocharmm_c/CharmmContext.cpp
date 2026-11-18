@@ -667,7 +667,7 @@ apo_charmm_context_get_coordinates_charges(double *xyzq, const size_t xyzq_len,
             xyzq, xyzq_len, req_len, function_name,
             "Coordinate and charge output buffer"));
 
-        coordinatesCharges.transferToHost();
+        coordinatesCharges.transferToHost(cudaStreamLegacy);
 
         for (size_t i = 0; i < num_atoms; i++) {
           xyzq[i * 4 + 0] = coordinatesCharges[i].x;
@@ -701,7 +701,7 @@ apo_charmm_context_get_velocity_mass(double *xyzm, const size_t xyzm_len,
             xyzm, xyzm_len, req_len, function_name,
             "Velocity and mass output buffer"));
 
-        velMass.transferToHost();
+        velMass.transferToHost(cudaStreamLegacy);
 
         for (size_t i = 0; i < num_atoms; i++) {
           xyzm[i * 4 + 0] = velMass[i].x;

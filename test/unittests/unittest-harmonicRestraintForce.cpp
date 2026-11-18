@@ -98,6 +98,7 @@ TEST_CASE("HarmonicRestraintForceConstructorAndDefaults") {
   CHECK(weakPsf.expired());
 
   CHECK(decltype(restraint)::contributesVirial == false);
+  CHECK(std::string(decltype(restraint)::energyTerm) == "harm");
   CHECK(restraint.getStream() != nullptr);
   CHECK(restraint.getForce() != nullptr);
   CHECK(restraint.getForce()->size() == NUM_ATOMS);
@@ -791,4 +792,43 @@ TEST_CASE("HarmonicRestraintForceCanBeSubscribedToForceManager") {
   apo_test::CheckFiniteTemperature(ctx->computeTemperature());
 
   CHECK_NOTHROW(fm->unsubscribe(restraint));
+}
+
+TEST_CASE("HarmonicRestraintForceEnergyIsReportedAsHarm") {
+  auto prm = std::make_shared<CharmmParameters>(apo_test::GetTopparDir() /
+                                                "toppar_water_ions.str");
+  auto psf =
+      std::make_shared<CharmmPSF>(apo_test::GetDataDir() / "nacl_pair.psf");
+  auto crd =
+      std::make_shared<CharmmCrd>(apo_test::GetDataDir() / "nacl_pair.cor");
+
+  auto ctx = std::make_shared<CharmmContext>(psf, prm);
+  ctx->setBoxDimensions(BOX_DIMENSIONS);
+  ctx->setCoordinates(crd);
+  ctx->useHolonomicConstraints(false);
+
+  // A reference half an angstrom away gives the restraint a positive energy.
+  std::vector<double3> reference = crd->getCoordinatesDP();
+  reference[0].x += 0.5;
+
+  auto restraint =
+      std::make_shared<HarmonicRestraintForce<long long int, float>>(psf);
+  restraint->setReferenceCoordinates(reference);
+  restraint->setMasses(psf->getMasses());
+  restraint->setSelection(MakeSelection(ctx->getNumAtoms(), {0, 1}));
+  restraint->setForceConstant(1.0);
+
+  auto fm = ctx->getForceManager();
+  fm->subscribe(restraint, "harm", restraint->getStream(),
+                restraint->getForce(), restraint->getEnergyVirial());
+  ctx->calculatePotentialEnergy();
+
+  // Like CHARMM's CONS HARM energy, the energy has its own term.
+  const std::map<std::string, double> energyComponents =
+      fm->getEnergyComponents();
+  CHECK(energyComponents.at("harm") > 0.0);
+  CHECK(energyComponents.at("harm") == GetHarmonicEnergy(*restraint));
+  CHECK(energyComponents.at("user") == 0.0);
+
+  fm->unsubscribe(restraint);
 }

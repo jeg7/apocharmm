@@ -363,11 +363,10 @@ synchronizes subscribed streams during aggregate force and energy processing.
 Direct native callers must synchronize explicitly.
 
 Parameter setters change only the host mirrors and mark them dirty.
-`initialize()` and `calcForce()` transfer the changed mirrors with
-`CudaContainer` transfers that call `cudaDeviceSynchronize()`, so several
-setter calls cost one transfer of each array before the next calculation.
-Those transfers wait for all previously requested work on the current CUDA
-device, not only restraint work.
+`initialize()` and `calcForce()` copy the changed mirrors on the restraint
+stream and synchronize that stream, so several setter calls cost one transfer
+of each array before the next calculation. The synchronization waits for the
+restraint stream, not for the whole device.
 
 Force and energy updates are additive. When `calcEnergy` is false, the existing
 `harm` energy remains unchanged and can be stale. `calcVirial` is accepted for
@@ -415,7 +414,7 @@ No layer provides internal host-thread synchronization.
 - [CharmmContext](@ref charmm_context) owns molecular state and drives manager
   initialization and force calculation.
 - [CudaContainer](@ref cuda_container) defines the parameter mirrors and their
-  synchronous transfer behavior.
+  transfer behavior.
 - `Force` defines fixed-point structure-of-arrays force storage.
 - `CudaEnergyVirial` stores the named `harm` energy.
 - [HarmonicCenterOfMassRestraintForce](@ref harmonic_center_of_mass_restraint_force)
@@ -547,8 +546,8 @@ Energy accumulation uses a block reduction followed by one atomic addition per
 block.
 
 Setters perform no CUDA work. A calculation after a configuration change
-first transfers the changed arrays with device-wide synchronization; a
-calculation without changes only checks the dirty flag.
+first copies the changed arrays on the restraint stream and synchronizes that
+stream; a calculation without changes only checks the dirty flag.
 
 ### Tests and example
 

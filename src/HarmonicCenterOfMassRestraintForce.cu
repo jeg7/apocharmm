@@ -587,16 +587,20 @@ void HarmonicCenterOfMassRestraintForce<AT, CT>::syncDeviceData(void) {
 
   m_AtomIndices.resize(m_AtomIndices.size());
   m_AtomWeights.resize(m_AtomWeights.size());
-  m_AtomIndices.transferToDevice();
-  m_AtomWeights.transferToDevice();
+  m_AtomIndices.transferToDeviceAsync(*m_Stream);
+  m_AtomWeights.transferToDeviceAsync(*m_Stream);
 
   constexpr int numThreads = 256;
   const int numBlocks = (m_NumSelected + numThreads - 1) / numThreads;
 
+  // The host copies of both reduction records are zero and never written, so
+  // clearing the device copies keeps the mirrors equal.
   m_PartialSums.resize(numBlocks);
-  m_PartialSums.set(CT4{});
-
-  m_RestraintState.set(CT4{});
+  clear_gpu_array<CT4>(m_PartialSums.getDeviceArray().data(),
+                       m_PartialSums.size(), *m_Stream);
+  clear_gpu_array<CT4>(m_RestraintState.getDeviceArray().data(),
+                       m_RestraintState.size(), *m_Stream);
+  cudaCheck(cudaStreamSynchronize(*m_Stream));
 
   m_DeviceDataDirty = false;
 

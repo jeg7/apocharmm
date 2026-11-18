@@ -121,8 +121,8 @@ END
 """
 BOX_DIMENSIONS: list[float] = [20.0, 30.0, 40.0]
 CUTOFF: float = 9.0
-CTONNB: float = 8.5
-CTOFNB: float = 7.5
+CTONNB: float = 7.5
+CTOFNB: float = 8.5
 DEFAULT_COORDINATES: list[tuple[float, float, float]] = [
     (0.0, 0.0, 0.0),
     (1.0, 0.0, 0.0),

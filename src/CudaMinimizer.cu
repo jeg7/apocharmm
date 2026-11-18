@@ -240,7 +240,7 @@ void CudaMinimizer::minimize(int numSteps) {
       }
 
       auto pe = m_Context->getPotentialEnergy();
-      pe.transferFromDevice();
+      pe.transferToHost(cudaStreamLegacy);
       float energy = pe[0];
 
       if (verboseFlag) {

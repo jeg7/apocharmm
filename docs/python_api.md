@@ -137,6 +137,8 @@ behavior.
   trajectories in DCD format.
 - [apocharmm.RestartSubscriber](@ref python_restart_subscriber) writes
   CHARMM-style restart state.
+- [apocharmm.DynaSubscriber](@ref python_dyna_subscriber) writes CHARMM's
+  `DYNA` energy blocks.
 
 See the [Subscriber subsystem](@ref subscriber) for scheduling, lifetime,
 synchronization, and file-format behavior.

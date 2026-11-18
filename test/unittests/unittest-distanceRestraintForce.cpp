@@ -475,6 +475,7 @@ TEST_CASE("DistanceRestraintForceConstructorAndMetadata") {
   CHECK(weakPsf.expired());
 
   CHECK(decltype(restraint)::contributesVirial == true);
+  CHECK(std::string(decltype(restraint)::energyTerm) == "resd");
 
   REQUIRE(restraint.getStream() != nullptr);
   CHECK(*restraint.getStream() != nullptr);

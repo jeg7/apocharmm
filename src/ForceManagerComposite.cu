@@ -302,13 +302,21 @@ ForceManagerComposite::computeAllChildrenPotentialEnergy(const float4 *xyzq) {
   // Compute potential energy for each child
   for (std::size_t i = 0; i < m_Children.size(); i++) {
     m_Children[i]->calcForce(xyzq, false, true, false);
-    m_Children[i]->getPotentialEnergy().transferFromDevice();
+    m_Children[i]->getPotentialEnergy().transferToHost(cudaStreamLegacy);
     m_ChildrenPotentialEnergy[i] = m_Children[i]->getPotentialEnergy()[0];
     // std::cout << "Child " << i << " potential energy : " <<
     // m_ChildrenPotentialEnergy[i] << std::endl;
   }
   // TODO: this is kind of a hotfix. Not sure this is ideal.
-  m_ChildrenPotentialEnergy.transferToDevice();
+  // The next call writes the host mirror only after its child reads have
+  // synchronized the same stream, which completes this upload.
+  m_ChildrenPotentialEnergy.transferToDeviceAsync(cudaStreamLegacy);
+
+  // JEG261118: Same as the base ForceManager. I don't know if this actually
+  // needs to be here, but I would rather be safe than trying to chase down a
+  // race condition later in life...
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
+
   return m_ChildrenPotentialEnergy;
 }
 

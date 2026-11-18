@@ -88,6 +88,14 @@ public:
    */
   static constexpr bool contributesVirial = true;
 
+  /**
+   * @brief Names the CHARMM energy term of this restraint.
+   *
+   * Like CHARMM's `ETERM(RESD)`, the energy is reported as `resd` and printed
+   * in the `RESDistance` column of the `CONSTR>` line.
+   */
+  static constexpr const char *energyTerm = "resd";
+
 public:
   /**
    * @brief Prevents construction without a PSF atom count.

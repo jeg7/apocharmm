@@ -408,6 +408,36 @@ TEST_CASE("StrUtilsFormatsFortranFieldsAndPreservesRepresentableSubnormals") {
       "Fortran numeric field exceeds its requested width");
 }
 
+TEST_CASE("StrUtilsFormatsFortranFixedFields") {
+  CHECK(apo::format_fortran_fixed(1.25, 13, 5) == "      1.25000");
+  CHECK(apo::format_fortran_fixed(-1234.5678, 13, 5) == "  -1234.56780");
+  CHECK(apo::format_fortran_fixed(-1.0e-9, 13, 5) == "     -0.00000");
+  CHECK(apo::format_fortran_fixed(90.0, 10, 5) == "  90.00000");
+  CHECK(apo::format_fortran_fixed(-12.3456, 10, 2) == "    -12.35");
+
+  // Without decimals the field keeps its decimal point.
+  CHECK(apo::format_fortran_fixed(12345678901.0, 13, 0) == " 12345678901.");
+
+  // The optional leading zero goes before the field overflows.
+  CHECK(apo::format_fortran_fixed(0.5, 6, 5) == ".50000");
+  CHECK(apo::format_fortran_fixed(-0.5, 7, 5) == "-.50000");
+
+  CHECK(apo::format_fortran_fixed(-1.0e7, 13, 5) == "*************");
+  CHECK(apo::format_fortran_fixed(std::numeric_limits<double>::quiet_NaN(), 13,
+                                  5) == "          NaN");
+  CHECK(apo::format_fortran_fixed(std::numeric_limits<double>::infinity(), 13,
+                                  5) == "     Infinity");
+  CHECK(apo::format_fortran_fixed(-std::numeric_limits<double>::infinity(), 13,
+                                  5) == "    -Infinity");
+  CHECK(apo::format_fortran_fixed(std::numeric_limits<double>::infinity(), 5,
+                                  2) == "  Inf");
+
+  apo_test::CheckApoCharmmError(
+      []() { static_cast<void>(apo::format_fortran_fixed(1.0, 13, -1)); },
+      ApoCharmmErrorCode::InvalidArgument,
+      "Fortran F field precision must be non-negative; observed -1");
+}
+
 TEST_CASE("StrUtilsKeepsAdjacentSignedFortranFieldsSeparate") {
   const std::string line = apo::format_fortran_double(-1.25, 22, 15) +
                            apo::format_fortran_double(-2.5e100, 22, 15);

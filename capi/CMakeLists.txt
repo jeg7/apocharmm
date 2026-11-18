@@ -32,6 +32,7 @@ add_library(apocharmm_c SHARED
   ${apoCHARMM_SOURCE_DIR}/capi/src/apocharmm_c/Subscriber.cpp
   ${apoCHARMM_SOURCE_DIR}/capi/src/apocharmm_c/DcdSubscriber.cpp
   ${apoCHARMM_SOURCE_DIR}/capi/src/apocharmm_c/RestartSubscriber.cpp
+  ${apoCHARMM_SOURCE_DIR}/capi/src/apocharmm_c/DynaSubscriber.cpp
 )
 
 target_include_directories(apocharmm_c

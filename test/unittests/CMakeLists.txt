@@ -23,6 +23,7 @@ set(SOURCES_UNITTESTS_TESTS
   unittest-subscriber.cpp
   unittest-dcdSubscriber.cpp
   unittest-restartSubscriber.cpp
+  unittest-dynaSubscriber.cpp
 
   # Integrator tests
   unittest-cudaIntegrator.cpp
@@ -56,6 +57,7 @@ set(SOURCES_CAPI_TESTS
   unittest-capiSubscriber.cpp
   unittest-capiDcdSubscriber.cpp
   unittest-capiRestartSubscriber.cpp
+  unittest-capiDynaSubscriber.cpp
 
   # Integrator tests
   unittest-capiCudaIntegrator.cpp

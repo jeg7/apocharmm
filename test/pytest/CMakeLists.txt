@@ -19,6 +19,7 @@ set(PYTHON_API_TESTS
   python_api_subscriber.py
   python_api_dcd_subscriber.py
   python_api_restart_subscriber.py
+  python_api_dyna_subscriber.py
 
   # Integrator tests
   python_api_cuda_integrator.py

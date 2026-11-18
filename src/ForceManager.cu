@@ -47,8 +47,8 @@ ForceManager::ForceManager(void) {
 
   m_Kappa = 0.34;
   m_Cutoff = 14.0;
-  m_Ctonnb = 12.0;
-  m_Ctofnb = 10.0;
+  m_Ctofnb = 12.0;
+  m_Ctonnb = 10.0;
 
   m_NfftX = -1;
   m_NfftY = -1;
@@ -437,15 +437,20 @@ std::map<std::string, double> ForceManager::getEnergyComponents(void) {
   energyDecompositionMap["elec"] = m_DirectEnergyVirial.getEnergy("elec");
   energyDecompositionMap["vdw"] = m_DirectEnergyVirial.getEnergy("vdw");
 
-  // JEG260811: This should eventually be put in its own bucket. However, it is
-  // fine for now. (CONS HARM, CONS HMCM, CONS RESD, etc. should have their own
-  // buckets).
-  double userEnergy = 0.0;
-  for (const std::shared_ptr<CudaEnergyVirial> &energyVirial :
-       m_EnergyVirials) {
-    userEnergy += energyVirial->getEnergy();
+  // Like CHARMM's ETERM array, each restraint has its own term. A subscribed
+  // force that names no term, or a term this map lacks, is user energy.
+  energyDecompositionMap["harm"] = 0.0;
+  energyDecompositionMap["resd"] = 0.0;
+  energyDecompositionMap["hmcm"] = 0.0;
+  energyDecompositionMap["geo"] = 0.0;
+  energyDecompositionMap["user"] = 0.0;
+  for (std::size_t i = 0; i < m_EnergyVirials.size(); i++) {
+    std::map<std::string, double>::iterator term =
+        energyDecompositionMap.find(m_ForceViews[i].energyTerm());
+    if (term == energyDecompositionMap.end())
+      term = energyDecompositionMap.find("user");
+    term->second += m_EnergyVirials[i]->getEnergy();
   }
-  energyDecompositionMap["user"] = userEnergy;
 
   return energyDecompositionMap;
 }
@@ -563,14 +568,15 @@ CudaContainer<double> &ForceManager::getVirial(void) {
   m_ReciprocalEnergyVirial.getVirial(m_ReciprocalVirial);
   m_DirectEnergyVirial.getVirial(m_DirectVirial);
 
-  m_BondedVirial.transferFromDevice();
-  m_ReciprocalVirial.transferFromDevice();
-  m_DirectVirial.transferFromDevice();
+  m_BondedVirial.transferToHostAsync(cudaStreamLegacy);
+  m_ReciprocalVirial.transferToHostAsync(cudaStreamLegacy);
+  m_DirectVirial.transferToHostAsync(cudaStreamLegacy);
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
 
   if (m_Pbc == PBC::P21) {
     for (int i = 0; i < 9; i++)
       m_ReciprocalVirial[i] /= 2.0;
-    m_ReciprocalVirial.transferToDevice();
+    m_ReciprocalVirial.transferToDeviceAsync(cudaStreamLegacy);
   }
 
   for (int i = 0; i < 9; i++) {
@@ -583,24 +589,24 @@ CudaContainer<double> &ForceManager::getVirial(void) {
       continue;
 
     m_EnergyVirials[i]->getVirial(m_SubscribedForceVirial);
-    m_SubscribedForceVirial.transferToHost();
+    m_SubscribedForceVirial.transferToHost(cudaStreamLegacy);
 
     for (int j = 0; j < 9; j++)
       m_TotalVirial[j] += m_SubscribedForceVirial[j];
   }
 
-  m_TotalVirial.transferToDevice();
+  // The next call writes these host mirrors only after its first stream
+  // synchronization, which completes this upload and the P21 upload above.
+  m_TotalVirial.transferToDeviceAsync(cudaStreamLegacy);
+
+  // JEG261118: I don't know if this actually needs to be here, but I would
+  // rather be safe than trying to chase down a race condition later in life...
+  cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
 
   return m_TotalVirial;
 }
 
 int ForceManager::getVdwType(void) const { return m_VdwType; }
-
-// const std::vector<Bond> &ForceManager::getBonds(void) const {
-//   return m_Psf->getBonds();
-// }
-
-// std::vector<Bond> &ForceManager::getBonds(void) { return m_Psf->getBonds(); }
 
 bool ForceManager::isComposite(void) const { return false; }
 
@@ -646,6 +652,8 @@ void ForceManager::initialize(void) {
   APOCHARMM_REQUIRE(numAtoms > 0, ApoCharmmErrorCode::Runtime,
                     "CharmmPSF atom count must be positive; observed " +
                         std::to_string(numAtoms));
+
+  this->checkSwitchingDistances();
 
   // Bonded
   m_BondedStream = std::make_shared<cudaStream_t>();
@@ -1027,7 +1035,7 @@ void ForceManager::calcForcePart3(const float4 *xyzq, const bool calcEnergy,
                   << "\n";
       }
 
-      m_TotalPotentialEnergy.transferToHost();
+      m_TotalPotentialEnergy.transferToHost(cudaStreamLegacy);
 
       std::cout << "Total potential energy : " << m_TotalPotentialEnergy[0]
                 << std::endl;
@@ -1226,6 +1234,17 @@ void ForceManager::checkPBCCompatibility(const PBC pbc) const {
   return;
 }
 
+void ForceManager::checkSwitchingDistances(void) const {
+  APOCHARMM_REQUIRE(m_Ctonnb < m_Ctofnb && m_Ctofnb < m_Cutoff,
+                    ApoCharmmErrorCode::InvalidArgument,
+                    "Nonbonded distances must satisfy ctonnb < ctofnb < "
+                    "cutoff; observed ctonnb " +
+                        std::to_string(m_Ctonnb) + ", ctofnb " +
+                        std::to_string(m_Ctofnb) + ", cutoff " +
+                        std::to_string(m_Cutoff));
+  return;
+}
+
 void ForceManager::rebuildBondedForce(void) {
   auto bondedParamsAndList = m_Prm->getBondedParamsAndLists(m_Psf);
 
@@ -1306,11 +1325,9 @@ void ForceManager::rebuildDirectForce(void) {
   // 1. "directForcePtr->setup(boxx, kappa, ctofnb, (...) );"
   // 2. "directForcePtr->setBoxDimensions({boxx...});"
 
-  // JEG260626: ctonnb and ctofnb were switched?
-  // m_DirectForcePtr->setup(m_BoxX, m_BoxY, m_BoxZ, m_Kappa, m_Ctofnb,
-  // m_Ctonnb,
-  //                         1.0, m_VdwType, EWALD, q_p21);
-  rebuiltForce->setup(m_BoxX, m_BoxY, m_BoxZ, m_Kappa, m_Ctonnb, m_Ctofnb, 1.0,
+  // JEG261118: The backend takes the switching end (CHARMM CTOFNB) as roff and
+  // the switching start (CHARMM CTONNB) as ron.
+  rebuiltForce->setup(m_BoxX, m_BoxY, m_BoxZ, m_Kappa, m_Ctofnb, m_Ctonnb, 1.0,
                       m_VdwType, EWALD, qP21);
   rebuiltForce->setBoxDimensions(m_BoxDimensions);
   rebuiltForce->setStream(m_DirectStream);
@@ -1344,6 +1361,7 @@ void ForceManager::rebuildDirtyForces(const float4 *xyzq) {
     APOCHARMM_REQUIRE(xyzq != nullptr, ApoCharmmErrorCode::InvalidArgument,
                       "Coordinate-charge array must not be null when "
                       "rebuilding the direct-space force");
+    this->checkSwitchingDistances();
   }
 
   // Leave the manager uninitialized if any reconstruction or neighbor-list

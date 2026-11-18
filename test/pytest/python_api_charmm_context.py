@@ -179,10 +179,10 @@ def check_construction_and_default_state(
             "CharmmContext.getCutoff default", context.getCutoff(), 14.0, TOLERANCE
         )
         apo_test.assert_close(
-            "CharmmContext.getCtonnb default", context.getCtonnb(), 12.0, TOLERANCE
+            "CharmmContext.getCtonnb default", context.getCtonnb(), 10.0, TOLERANCE
         )
         apo_test.assert_close(
-            "CharmmContext.getCtofnb default", context.getCtofnb(), 10.0, TOLERANCE
+            "CharmmContext.getCtofnb default", context.getCtofnb(), 12.0, TOLERANCE
         )
         apo_test.assert_equal(
             "CharmmContext.getFFTGrid default",

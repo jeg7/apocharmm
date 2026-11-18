@@ -82,9 +82,9 @@ container.getHostArray().size() == container.getDeviceArray().size()
 and ensure that both nonempty mirrors own storage for that active range.
 
 CUDA operations use the CUDA runtime state current on the calling thread. The
-container stores neither a device identifier nor a stream. Establish the
-intended CUDA device before construction and before later operations that touch
-the device allocation.
+container stores neither a device identifier nor a stream; the stream transfers
+take their stream as an argument. Establish the intended CUDA device before
+construction and before later operations that touch the device allocation.
 
 ## Ownership and Lifetime
 
@@ -173,9 +173,22 @@ and a device pointer through its `data()` method.
 `transferToHost()` copies the complete device active range to the host. Their
 `transferFromHost()` and `transferFromDevice()` names are compatibility aliases.
 The implementations do not resize or validate either mirror. For a nonempty
-container they call `cudaMemcpy` without a stream argument and then
-`cudaDeviceSynchronize()`, which waits for all previously requested work on the
-current CUDA device rather than only work associated with this container.
+container they copy synchronously and then call `cudaDeviceSynchronize()`, which
+waits for all previously requested work on the current CUDA device rather than
+only work associated with this container.
+
+The stream transfers order the copy on a caller-supplied stream instead.
+`transferToDeviceAsync(stream)` and `transferToHostAsync(stream)` only enqueue
+the copy. Keep the host values unchanged until the stream has reached an
+upload, and synchronize the stream before reading host values filled by
+`transferToHostAsync`. `transferToHost(stream)` enqueues the copy and then
+synchronizes that stream only. Pass `cudaStreamLegacy` when the data is shared
+with work on several blocking streams: the legacy default stream waits for
+earlier work in those streams, and their later work waits for it.
+
+The host-direction transfers are `const`. The host mirror is a cache of the
+device values, so code holding a `const CudaContainer<T>&` can refresh it
+without allocation.
 
 `push_back()` can independently reallocate the host and device owners. It then
 launches the device write on the default stream and returns after only an
@@ -200,8 +213,8 @@ The implementation provides library instantiations only for `int`, `int2`,
 `int3`, `int4`, `unsigned int`, `float`, `float2`, `float3`, `float4`,
 `long long int`, `longlong2`, `longlong3`, `longlong4`,
 `unsigned long long int`, `std::size_t`, `double`, `double2`, `double3`, and
-`double4`. It has no iterator interface, allocator customization, stream
-selection, device tracking, automatic dirty-state tracking, or internal locking.
+`double4`. It has no iterator interface, allocator customization, stored
+stream, device tracking, automatic dirty-state tracking, or internal locking.
 Callers must serialize overlapping access whenever any operation can mutate a
 mirror or its contents.
 
@@ -231,8 +244,11 @@ length and coherence invariants.
 Host-to-device constructors, host assignments, host setters, scalar setters, and
 `transferToDevice()` end at the host-to-device transfer boundary. Device-to-host
 constructors, device assignments, device setters, and `transferToHost()` end at
-the reverse boundary. For nonempty mirrors, the explicit transfer routines
-perform `cudaMemcpy` and then `cudaDeviceSynchronize()`.
+the reverse boundary. For nonempty mirrors, the stream-less explicit transfer
+routines copy synchronously and then call `cudaDeviceSynchronize()`. The stream
+transfers enqueue the copy on the caller's stream, and
+`transferToHost(cudaStream_t)` then synchronizes only that stream. The host
+mirror is `mutable` so the host-direction transfers can be `const`.
 CudaContainer-to-CudaContainer copy paths copy each owner separately and do not
 issue an explicit container-level synchronization. Same-type move paths exchange
 both owners without a CUDA operation. Host- and device-rvalue conversion paths
@@ -255,22 +271,26 @@ change that must be evaluated across all native callers.
 
 Performance-sensitive paths are device allocation, reallocation and preserved-
 prefix copies in [DeviceVector](@ref DeviceVector), full-range host/device
-transfers, the container-wide `cudaDeviceSynchronize()` calls, and repeated
-`push_back()` growth. The class does not batch transfers, track dirty ranges, or
-accept an application stream.
+transfers, the container-wide `cudaDeviceSynchronize()` calls in the
+stream-less transfers, and repeated `push_back()` growth. The class does not
+batch transfers or track dirty ranges. Its host mirror is pageable memory, so
+CUDA may perform a stream copy synchronously with respect to the host; full
+overlap would need a pinned host mirror.
 
 The focused native regression suite is
 `test/unittests/unittest-cudaContainer.cpp`. It covers construction, deep
 copies, host access, checked-index errors, assignment, self-assignment, clear,
-resize, capacity reduction, append, setters, transfer directions, and transfer
-aliases. `test/unittests/unittest-nothrowDestruction.cpp` statically verifies
+resize, capacity reduction, append, setters, transfer directions, transfer
+aliases, stream transfers, and `const` host refreshes.
+`test/unittests/unittest-nothrowDestruction.cpp` statically verifies
 the no-throw destructor contract. The current suite does not exercise
 `printDeviceArray()` or deliberate mirror-length divergence.
 
 Architectural constraints visible in the current implementation include mutable
 accessors that can bypass the equal-length invariant, sequential two-mirror
-updates with a weak failure guarantee, device-wide synchronization in explicit
-transfers, and a print path whose launch size is derived from the host mirror.
+updates with a weak failure guarantee, device-wide synchronization in the
+stream-less transfers, and a print path whose launch size is derived from the
+host mirror.
 
 ## API Reference
 

@@ -246,14 +246,15 @@ void resize_T(void **pp, int *curlen, const int cur_size, const int new_size,
 //
 // Copies memory Host -> Device
 //
-void copy_HtoD_async_T(const void *h_array, void *d_array, int array_len,
-                       cudaStream_t stream, const size_t sizeofT) {
+void copy_HtoD_async_T(const void *h_array, void *d_array,
+                       const std::size_t array_len, cudaStream_t stream,
+                       const size_t sizeofT) {
   cudaCheck(cudaMemcpyAsync(d_array, h_array, sizeofT * array_len,
                             cudaMemcpyHostToDevice, stream));
 }
 
-void copy_HtoD_T(const void *h_array, void *d_array, int array_len,
-                 const size_t sizeofT) {
+void copy_HtoD_T(const void *h_array, void *d_array,
+                 const std::size_t array_len, const size_t sizeofT) {
   cudaCheck(cudaMemcpy(d_array, h_array, sizeofT * array_len,
                        cudaMemcpyHostToDevice));
 }
@@ -262,14 +263,15 @@ void copy_HtoD_T(const void *h_array, void *d_array, int array_len,
 //
 // Copies memory Device -> Host
 //
-void copy_DtoH_async_T(const void *d_array, void *h_array, const int array_len,
-                       cudaStream_t stream, const size_t sizeofT) {
+void copy_DtoH_async_T(const void *d_array, void *h_array,
+                       const std::size_t array_len, cudaStream_t stream,
+                       const size_t sizeofT) {
   cudaCheck(cudaMemcpyAsync(h_array, d_array, sizeofT * array_len,
                             cudaMemcpyDeviceToHost, stream));
 }
 
-void copy_DtoH_T(const void *d_array, void *h_array, const int array_len,
-                 const size_t sizeofT) {
+void copy_DtoH_T(const void *d_array, void *h_array,
+                 const std::size_t array_len, const size_t sizeofT) {
   cudaCheck(cudaMemcpy(h_array, d_array, sizeofT * array_len,
                        cudaMemcpyDeviceToHost));
 }
@@ -278,13 +280,14 @@ void copy_DtoH_T(const void *d_array, void *h_array, const int array_len,
 //
 // Copies memory Device -> Device
 //
-void copy_DtoD_async_T(const void *d_src, void *d_dst, const int array_len,
-                       cudaStream_t stream, const size_t sizeofT) {
+void copy_DtoD_async_T(const void *d_src, void *d_dst,
+                       const std::size_t array_len, cudaStream_t stream,
+                       const size_t sizeofT) {
   cudaCheck(cudaMemcpyAsync(d_dst, d_src, sizeofT * array_len,
                             cudaMemcpyDeviceToDevice, stream));
 }
 
-void copy_DtoD_T(const void *d_src, void *d_dst, const int array_len,
+void copy_DtoD_T(const void *d_src, void *d_dst, const std::size_t array_len,
                  const size_t sizeofT) {
   cudaCheck(
       cudaMemcpy(d_dst, d_src, sizeofT * array_len, cudaMemcpyDeviceToDevice));
@@ -292,23 +295,24 @@ void copy_DtoD_T(const void *d_src, void *d_dst, const int array_len,
 
 //----------------------------------------------------------------------------------------
 
-void clear_gpu_array_async_T(void *data, const int ndata, cudaStream_t stream,
-                             const size_t sizeofT) {
+void clear_gpu_array_async_T(void *data, const std::size_t ndata,
+                             cudaStream_t stream, const size_t sizeofT) {
   cudaCheck(cudaMemsetAsync(data, 0, sizeofT * ndata, stream));
 }
 
-void clear_gpu_array_T(void *data, const int ndata, const size_t sizeofT) {
+void clear_gpu_array_T(void *data, const std::size_t ndata,
+                       const size_t sizeofT) {
   cudaCheck(cudaMemset(data, 0, sizeofT * ndata));
 }
 
 //----------------------------------------------------------------------------------------
 
-void set_gpu_array_async_T(void *data, const int ndata, const int value,
+void set_gpu_array_async_T(void *data, const std::size_t ndata, const int value,
                            cudaStream_t stream, const size_t sizeofT) {
   cudaCheck(cudaMemsetAsync(data, value, sizeofT * ndata, stream));
 }
 
-void set_gpu_array_T(void *data, const int ndata, const int value,
+void set_gpu_array_T(void *data, const std::size_t ndata, const int value,
                      const size_t sizeofT) {
   cudaCheck(cudaMemset(data, value, sizeofT * ndata));
 }

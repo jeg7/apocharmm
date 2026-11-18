@@ -590,6 +590,46 @@ std::string apo::format_fortran_double(const double value,
   return field;
 }
 
+std::string apo::format_fortran_fixed(const double value,
+                                      const std::size_t width,
+                                      const int precision) {
+  APOCHARMM_REQUIRE(
+      precision >= 0, ApoCharmmErrorCode::InvalidArgument,
+      "Fortran F field precision must be non-negative; observed " +
+          std::to_string(precision));
+
+  std::string field;
+  if (std::isnan(value))
+    field = "NaN";
+  else if (std::isinf(value)) {
+    // gfortran shortens Infinity to Inf when the field is too narrow.
+    field = (value < 0.0) ? "-Infinity" : "Infinity";
+    if (field.size() > width)
+      field = (value < 0.0) ? "-Inf" : "Inf";
+  } else {
+    std::ostringstream output;
+    output.imbue(std::locale::classic());
+    output << std::fixed << std::setprecision(precision) << value;
+    field = output.str();
+
+    // An F field always has a decimal point, even without decimals.
+    if (precision == 0)
+      field += '.';
+
+    // The leading zero is optional, so it is dropped before giving up.
+    const std::size_t firstDigit = (field[0] == '-') ? 1 : 0;
+    if (field.size() > width && field.compare(firstDigit, 2, "0.") == 0)
+      field.erase(firstDigit, 1);
+  }
+
+  if (field.size() > width)
+    return std::string(width, '*');
+
+  field.insert(0, width - field.size(), ' ');
+
+  return field;
+}
+
 void apo::get_nonblank_line(std::string &line, std::size_t &line_number,
                             std::istream &input,
                             const std::string_view record_name,

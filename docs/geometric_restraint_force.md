@@ -141,7 +141,8 @@ The context initializes the fully configured manager. Subscription then
 initializes the restraint with the manager's atom count and box. Normal manager
 evaluation clears the requested outputs and includes the restraint's energy and
 gradient; the restraint adds nothing to the virial. The printed energy table
-includes the ordinary force field as well as MMFP; it is not an isolated
+includes the ordinary force field as well as MMFP, which it prints in the `GEO`
+column of the `MMFP>` line, as CHARMM does; it is not an isolated
 restraint-energy report.
 
 The Python example `example/geometric_restraint.py` uses the same pair and

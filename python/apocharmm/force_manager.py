@@ -533,10 +533,10 @@ class ForceManager(_ApoObject):
 
     def setCtonnb(self, ctonnb: float) -> None:
         """
-        @brief Sets the outer switching distance exposed as `ctonnb`.
+        @brief Sets the nonbonded switching onset, CHARMM CTONNB.
 
-        The current native backend uses this value as the distance at which the
-        switching function reaches zero.
+        Initialization and direct-space rebuilds require
+        `ctonnb < ctofnb < cutoff`; this setter does not check the order.
 
         @param[in] ctonnb Value accepted by `ctypes.c_double`, in angstroms.
         The narrowed native value must be finite and positive.
@@ -555,10 +555,10 @@ class ForceManager(_ApoObject):
 
     def setCtofnb(self, ctofnb: float) -> None:
         """
-        @brief Sets the inner switching distance exposed as `ctofnb`.
+        @brief Sets the nonbonded switching cutoff, CHARMM CTOFNB.
 
-        The current native backend uses this value as the distance at which
-        switching begins.
+        Initialization and direct-space rebuilds require
+        `ctonnb < ctofnb < cutoff`; this setter does not check the order.
 
         @param[in] ctofnb Value accepted by `ctypes.c_double`, in angstroms.
         The narrowed native value must be finite and positive.
@@ -801,7 +801,7 @@ class ForceManager(_ApoObject):
 
     def getCtonnb(self) -> float:
         """
-        @brief Returns the outer switching distance exposed as `ctonnb`.
+        @brief Returns the switching onset, CHARMM CTONNB.
 
         @return Python `float` in angstroms.
 
@@ -818,7 +818,7 @@ class ForceManager(_ApoObject):
 
     def getCtofnb(self) -> float:
         """
-        @brief Returns the inner switching distance exposed as `ctofnb`.
+        @brief Returns the switching cutoff, CHARMM CTOFNB.
 
         @return Python `float` in angstroms.
 

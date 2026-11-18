@@ -22,6 +22,7 @@ import ctypes
 from ._lib import encode_path, lib
 from ._types import FilePath
 from .error import configure_status_function
+from ._validation import require_c_int
 from .subscriber import Subscriber
 
 _prototypes_initialized: bool = False
@@ -66,15 +67,16 @@ class DcdSubscriber(Subscriber):
     Construction immediately creates or truncates the binary output. During
     propagation, each scheduled native update writes single-precision X, Y, and
     Z coordinates in atom order and box lengths in angstroms. Charges are not
-    written. Coordinate output copies device data to host and synchronizes the
-    current CUDA device. The header records the first frame's completed step,
-    the reporting interval, and the integration time step in AKMA time units.
-    Coordinates and box lengths remain in angstroms. After the first frame,
-    changes to header metadata or irregular frame spacing require a new file.
-    Scheduled output retains the planned duration, including unsaved trailing
-    steps. A later propagation request updates that duration before its first
-    step, even when the request will produce no new frame. Such metadata updates
-    are not rolled back if a later subscriber or propagation step fails.
+    written. Coordinate output copies device data to host on the legacy default
+    CUDA stream and synchronizes that stream. The header records the first
+    frame's completed step, the reporting interval, and the integration time
+    step in AKMA time units. Coordinates and box lengths remain in angstroms.
+    After the first frame, changes to header metadata or irregular frame spacing
+    require a new file. Scheduled output retains the planned duration, including
+    unsaved trailing steps. A later propagation request updates that duration
+    before its first step, even when the request will produce no new frame. Such
+    metadata updates are not rolled back if a later subscriber or propagation
+    step fails.
 
     The wrapper owns the concrete C handle. Its `subscriber_handle` property is
     a borrowed view into that handle. Use the object as a context manager or
@@ -103,8 +105,7 @@ class DcdSubscriber(Subscriber):
 
         `report_frequency=None` selects the native default of 1000 steps. An
         explicit ordinary Python `int` must fit a signed 32-bit C `int` and be
-        positive. Boolean values follow Python integer conversion: `True`
-        becomes one and `False` is rejected by native validation.
+        positive. Booleans are rejected.
 
         @param[in] path Filesystem path to create or truncate. It must encode to
         a nonempty native path; when the path has a nonempty parent path, that
@@ -114,8 +115,7 @@ class DcdSubscriber(Subscriber):
         @param[in] report_frequency Optional positive, dimensionless number of
         propagated steps between DCD frames.
         @throws TypeError If `path` is not accepted by `os.fsencode()`, or an
-        explicit frequency cannot be compared with integer bounds or converted
-        by `ctypes.c_int`.
+        explicit frequency is not an `int` or is a `bool`.
         @throws UnicodeEncodeError If the platform filesystem encoding cannot
         encode a string path.
         @throws ValueError If an explicit frequency is outside the signed
@@ -142,10 +142,9 @@ class DcdSubscriber(Subscriber):
             function_name = "apo_dcd_subscriber_create"
             lib().apo_dcd_subscriber_create(ctypes.byref(handle), c_path)
         else:
-            if report_frequency < -(2**31) or report_frequency > 2**31 - 1:
-                raise ValueError("report_frequency must fit in int")
-
-            c_report_frequency: ctypes.c_int = ctypes.c_int(report_frequency)
+            c_report_frequency: ctypes.c_int = ctypes.c_int(
+                require_c_int(report_frequency, "report_frequency")
+            )
             function_name = "apo_dcd_subscriber_create_with_report_frequency"
 
             lib().apo_dcd_subscriber_create_with_report_frequency(

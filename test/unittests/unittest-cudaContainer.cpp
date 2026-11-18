@@ -514,4 +514,64 @@ TEST_CASE("CudaContainerSetAndTransfer") {
     CHECK(c.getHostArray() == deviceChange);
     CHECK(apo_test::CopyToHost(c.getDeviceArray()) == deviceChange);
   }
+
+  SECTION("TransferToDeviceAsyncOnStream") {
+    CudaContainer<int> c(std::vector<int>{1, 2, 3});
+    cudaStream_t stream;
+    cudaCheck(cudaStreamCreate(&stream));
+
+    c.getHostArray()[2] = 30;
+    c.transferToDeviceAsync(stream);
+    cudaCheck(cudaStreamSynchronize(stream));
+    cudaCheck(cudaStreamDestroy(stream));
+
+    const std::vector<int> expected = {1, 2, 30};
+    CHECK(c.getHostArray() == expected);
+    CHECK(apo_test::CopyToHost(c.getDeviceArray()) == expected);
+  }
+
+  SECTION("TransferToHostOnStreamThroughConstReference") {
+    CudaContainer<int> c(std::vector<int>{1, 2, 3});
+    const std::vector<int> expected = {4, 5, 6};
+    cudaStream_t stream;
+    cudaCheck(cudaStreamCreate(&stream));
+
+    apo_test::CopyToDevice(c.getDeviceArray(), expected);
+    const CudaContainer<int> &constContainer = c;
+    constContainer.transferToHost(stream);
+    cudaCheck(cudaStreamDestroy(stream));
+
+    CHECK(constContainer.getHostArray() == expected);
+  }
+
+  SECTION("TransferToHostAsyncOnLegacyStream") {
+    CudaContainer<int> c(std::vector<int>{1, 2, 3});
+    const std::vector<int> expected = {7, 8, 9};
+
+    apo_test::CopyToDevice(c.getDeviceArray(), expected);
+    c.transferToHostAsync(cudaStreamLegacy);
+    cudaCheck(cudaStreamSynchronize(cudaStreamLegacy));
+
+    CHECK(c.getHostArray() == expected);
+  }
+
+  SECTION("DeviceWideTransferToHostThroughConstReference") {
+    CudaContainer<int> c(std::vector<int>{1, 2, 3});
+    const std::vector<int> expected = {-1, -2, -3};
+
+    apo_test::CopyToDevice(c.getDeviceArray(), expected);
+    const CudaContainer<int> &constContainer = c;
+    constContainer.transferToHost();
+
+    CHECK(constContainer.getHostArray() == expected);
+  }
+
+  SECTION("StreamTransfersOfEmptyContainer") {
+    CudaContainer<int> c;
+
+    CHECK_NOTHROW(c.transferToDeviceAsync(cudaStreamLegacy));
+    CHECK_NOTHROW(c.transferToHostAsync(cudaStreamLegacy));
+    CHECK_NOTHROW(c.transferToHost(cudaStreamLegacy));
+    CHECK(c.size() == 0);
+  }
 }

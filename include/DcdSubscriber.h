@@ -25,8 +25,9 @@
  * Each frame contains one six-`double` unit-cell record followed by separate
  * X, Y, and Z blocks of single-precision coordinates in atom order. Coordinates
  * and box lengths use angstroms. Charges are not written. Coordinate output
- * transfers the complete single-precision coordinate/charge container from the
- * CUDA device to host memory and synchronizes the current CUDA device.
+ * copies the complete single-precision coordinate/charge container from the
+ * CUDA device to host memory on the legacy default stream and synchronizes that
+ * stream.
  *
  * Integer fields and record markers are signed 32-bit values. Coordinates use
  * IEEE binary32 and unit-cell entries use IEEE binary64. The byte order is
@@ -150,8 +151,8 @@ public:
    * frame count, first frame step, derived step count, or coordinate record
    * length exceeds signed 32-bit range, or if header/frame output or flushing
    * fails.
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if transferring
-   * coordinates from device to host or synchronizing the current CUDA device
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if copying
+   * coordinates from device to host or synchronizing the legacy default stream
    * fails.
    *
    * @pre The context's single-precision coordinate/charge container has one
@@ -224,8 +225,8 @@ private:
    * host and synchronized. Three Fortran-style records then store `float`
    * components in X-all-atoms, Y-all-atoms, Z-all-atoms order.
    *
-   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if the transfer
-   * or device-wide synchronization fails.
+   * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if the copy or
+   * the stream synchronization fails.
    *
    * @pre The context atom count is positive and agrees with both active
    * coordinate/charge mirror lengths.

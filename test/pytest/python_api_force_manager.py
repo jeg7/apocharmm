@@ -75,10 +75,10 @@ def check_default_state() -> None:
         "ForceManager.getCutoff default", fm.getCutoff(), 14.0, TOLERANCE
     )
     apo_test.assert_close(
-        "ForceManager.getCtonnb default", fm.getCtonnb(), 12.0, TOLERANCE
+        "ForceManager.getCtonnb default", fm.getCtonnb(), 10.0, TOLERANCE
     )
     apo_test.assert_close(
-        "ForceManager.getCtofnb default", fm.getCtofnb(), 10.0, TOLERANCE
+        "ForceManager.getCtofnb default", fm.getCtofnb(), 12.0, TOLERANCE
     )
     apo_test.assert_equal(
         "ForceManager.getFFTGrid default", fm.getFFTGrid(), (-1, -1, -1)
