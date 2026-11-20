@@ -604,6 +604,22 @@ __global__ static void Shake4Kernel(double4 *__restrict__ coords,
             (abs(a140 - a14) < TOL))
           break;
       }
+
+      coords[atoms.x].x += imass * (a12 * xrij + a13 * xrik + a14 * xril);
+      coords[atoms.x].y += imass * (a12 * yrij + a13 * yrik + a14 * yril);
+      coords[atoms.x].z += imass * (a12 * zrij + a13 * zrik + a14 * zril);
+
+      coords[atoms.y].x -= jmass * a12 * xrij;
+      coords[atoms.y].y -= jmass * a12 * yrij;
+      coords[atoms.y].z -= jmass * a12 * zrij;
+
+      coords[atoms.z].x -= kmass * a13 * xrik;
+      coords[atoms.z].y -= kmass * a13 * yrik;
+      coords[atoms.z].z -= kmass * a13 * zrik;
+
+      coords[atoms.w].x -= lmass * a14 * xril;
+      coords[atoms.w].y -= lmass * a14 * yril;
+      coords[atoms.w].z -= lmass * a14 * zril;
     }
   }
 
