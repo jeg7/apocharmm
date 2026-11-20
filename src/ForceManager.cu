@@ -549,7 +549,8 @@ float ForceManager::getPotentialEnergies(void) {
       static_cast<float>(m_BondedEnergyVirial.getEnergy("angle")) +
       static_cast<float>(m_BondedEnergyVirial.getEnergy("ureyb")) +
       static_cast<float>(m_BondedEnergyVirial.getEnergy("dihe")) +
-      static_cast<float>(m_BondedEnergyVirial.getEnergy("imdihe"));
+      static_cast<float>(m_BondedEnergyVirial.getEnergy("imdihe")) +
+      static_cast<float>(m_BondedEnergyVirial.getEnergy("cmap"));
 
   float totalNonBondedEnergy =
       static_cast<float>(m_ReciprocalEnergyVirial.getEnergy("ewks")) +

@@ -121,7 +121,8 @@ TEST_CASE("CharmmPSFParsesLinearChain") {
        0 !NIMPHI: impropers
        0 !NDON: donors
        0 !NACC: acceptors
-       0 !NCRTERM: cross-terms
+       1 !NCRTERM: cross-terms
+       1       2       3       4       4       3       2       1
 )PSF";
 
   apo_test::WriteTextFile(fileName, psfText);
@@ -135,7 +136,7 @@ TEST_CASE("CharmmPSFParsesLinearChain") {
     CHECK(psf.getNumAngles() == 2);
     CHECK(psf.getNumDihedrals() == 1);
     CHECK(psf.getNumImpropers() == 0);
-    CHECK(psf.getNumCrossTerms() == 0);
+    CHECK(psf.getNumCrossTerms() == 1);
   }
 
   SECTION("AtomMetadata") {
@@ -189,7 +190,17 @@ TEST_CASE("CharmmPSFParsesLinearChain") {
     CHECK(psf.getDihedrals()[0].latom == 3);
 
     CHECK(psf.getImpropers().empty() == true);
-    CHECK(psf.getCrossTerms().empty() == true);
+
+    // Like the other topology records, cross terms are zero-based.
+    REQUIRE(psf.getCrossTerms().size() == 1);
+    CHECK(psf.getCrossTerms()[0].iatom1 == 0);
+    CHECK(psf.getCrossTerms()[0].jatom1 == 1);
+    CHECK(psf.getCrossTerms()[0].katom1 == 2);
+    CHECK(psf.getCrossTerms()[0].latom1 == 3);
+    CHECK(psf.getCrossTerms()[0].iatom2 == 3);
+    CHECK(psf.getCrossTerms()[0].jatom2 == 2);
+    CHECK(psf.getCrossTerms()[0].katom2 == 1);
+    CHECK(psf.getCrossTerms()[0].latom2 == 0);
   }
 
   SECTION("ResiduesGroupsAndWater") {

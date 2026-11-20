@@ -1240,8 +1240,7 @@ public: // Getters
    * @throws ApoCharmmError With code `ApoCharmmErrorCode::Cuda` if component
    * transfer or stream synchronization fails.
    *
-   * @warning The current sum omits CMAP and subscribed-force energy
-   * contributions.
+   * @warning The current sum omits subscribed-force energy contributions.
    */
   float getPotentialEnergies(void);
 

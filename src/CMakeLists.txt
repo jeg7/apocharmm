@@ -21,7 +21,6 @@ add_library(apoCHARMMlib
   ${apoCHARMM_SOURCE_DIR}/src/EnergyTable.cpp
   ${apoCHARMM_SOURCE_DIR}/src/CudaEnergyVirial.cu
   ${apoCHARMM_SOURCE_DIR}/src/str_utils.cpp
-  ${apoCHARMM_SOURCE_DIR}/src/CmapSpline.cpp
   ${apoCHARMM_SOURCE_DIR}/src/cuda_utils.cu
   ${apoCHARMM_SOURCE_DIR}/src/CudaEMap.cu
   ${apoCHARMM_SOURCE_DIR}/src/CudaPMEDirectForce.cu

@@ -73,9 +73,10 @@ Lines beginning with `*` are skipped. The following sections are recognized:
 | `ANGLES`                       | Parses five-token angle records or seven-token angle plus Urey-Bradley records. |
 | `DIHEDRALS`                    | Parses seven-token proper-dihedral Fourier records.                             |
 | Headings beginning with `IMPR` | Parses seven-token harmonic improper records.                                   |
+| `CMAP`                         | Parses nine-token headers, each followed by a 24 x 24 grid of energies.         |
 | `NONBONDED`                    | Parses four-token regular or seven-token regular plus 1-4 records.              |
 | `NBFIX`                        | Parses four-token regular or six-token regular plus 1-4 pair overrides.         |
-| `ATOMS`, `CMAP`, `HBOND`       | Recognized but ignored.                                                         |
+| `ATOMS`, `HBOND`               | Recognized but ignored.                                                         |
 
 Supported data-record layouts are:
 
@@ -85,6 +86,10 @@ Supported data-record layouts are:
 * `DIHEDRALS`: `[type1, type2, type3, type4, kChi, n, delta_degrees]`.
 * `IMPR*`: `[type1, type2, type3, type4, kPsi, ignored_multiplicity,
   psi0_degrees]`.
+* `CMAP`: `[type1, type2, type3, type4, type5, type6, type7, type8, 24]`,
+  followed by 576 energies in kcal mol^-1 on as many lines as needed. Phi, the
+  first torsion, is the outer loop and psi the inner loop, both from -180
+  degrees in 15-degree steps.
 * `NONBONDED`: `[type, ignored, epsilon, Rmin/2]`, optionally followed by
   `[ignored_1_4, epsilon14, Rmin/2_14]`.
 * `NBFIX`: `[type1, type2, emin, Rmin]`, optionally followed by
@@ -105,6 +110,9 @@ Duplicate handling is section-specific:
 * BOND, ANGLE, Urey-Bradley, IMPROPER, and NBFIX maps keep the first value for a
   canonical key.
 * DIHEDRALS records append every Fourier term under the key in file-read order.
+* CMAP records replace an earlier map for the same key, as with CHARMM's
+  flexible parameter reader. CMAP keys keep the listed atom-type order, so,
+  unlike a proper dihedral, a reversed torsion does not match.
 * Regular NONBONDED values replace earlier values for the atom type. Explicit
   1-4 values are replaced only by a later record that also contains 1-4 fields.
 
@@ -163,6 +171,8 @@ The parsed value types use apoCHARMM's AKMA conventions:
 | `DihedralValues::delta`           | Proper-dihedral phase, degrees.                                        |
 | `ImDihedralValues::kPsi`          | Harmonic improper force constant, kcal mol^-1 radian^-2.               |
 | `ImDihedralValues::psi0`          | Improper equilibrium phase as parsed, degrees.                         |
+| `CmapValues::values`              | CMAP grid energies, kcal mol^-1.                                       |
+| `CmapValues::coeff`               | Bicubic CMAP coefficients, 16 per grid cell, kcal mol^-1.              |
 | `VdwParameters::epsilon`          | NONBONDED well-depth value as written, kcal mol^-1.                    |
 | `VdwParameters::rmin_2`           | Half of the minimum-energy pair distance, angstroms.                   |
 | `NBFixParameters::emin`, `emin14` | Non-negative pair well-depth magnitudes, kcal mol^-1.                  |
@@ -193,22 +203,26 @@ members before reading it.
 | Angle             | `[theta0_radians, kTheta]`                 |
 | Proper dihedral   | `[signed_n, kChi, sin(delta), cos(delta)]` |
 | Improper dihedral | `[psi0_degrees, kPsi, 0, 1]`               |
-| CMAP              | No rows in the current implementation.     |
+| CMAP              | One bicubic coefficient, `[c]`             |
 
 For a proper-dihedral key with multiple Fourier terms, every nonterminal row has
 its multiplicity negated to signal continuation to the CUDA consumer. The final
 row retains a positive multiplicity. This encoding assumes positive input
 multiplicities.
 
-`listVal` concatenates zero-based PSF atom-index rows. A `type` field is an
-index
-into the corresponding category's coefficient rows:
+Each CMAP map present in the PSF contributes 9216 consecutive one-coefficient
+rows in the order of [CmapValues::coeff](@ref CmapValues::coeff).
 
-| Category                     | Row layout                       |
-| ---------------------------- | -------------------------------- |
-| Bond and Urey-Bradley        | `[i, j, type, 13]`               |
-| Angle                        | `[i, j, k, type, 13, 13]`        |
-| Proper and improper dihedral | `[i, j, k, l, type, 13, 13, 13]` |
+`listVal` concatenates zero-based PSF atom-index rows. A `type` field is an
+index into the corresponding category's coefficient rows; a CMAP `type`
+indexes maps instead, each spanning 9216 rows:
+
+| Category                     | Row layout                                                       |
+| ---------------------------- | ---------------------------------------------------------------- |
+| Bond and Urey-Bradley        | `[i, j, type, 13]`                                               |
+| Angle                        | `[i, j, k, type, 13, 13]`                                        |
+| Proper and improper dihedral | `[i, j, k, l, type, 13, 13, 13]`                                 |
+| CMAP                         | `[i1, j1, k1, l1, i2, j2, k2, l2, type, 13, 13, 13, 13, 13, 13]` |
 
 The shift value `13` is the zero periodic image under apoCHARMM's 27-cell shift
 encoding. CharmmParameters creates these rows in host memory. ForceManager later
@@ -280,8 +294,10 @@ library can raise `OSError`. Native invalid-argument and runtime statuses become
 
 ## Important Behavior and Limitations
 
-* `ATOMS`, `CMAP`, and `HBOND` sections are ignored. Packed CMAP counts and rows
-  are always zero.
+* `ATOMS` and `HBOND` sections are ignored.
+* CMAP grids must have 24 points per torsion, the size of the CHARMM protein
+  maps, while CHARMM accepts any size. CMAP torsions have no wildcard matching
+  and must be listed in the parameter file's order.
 * The parser normalizes record text to uppercase but preserves constructor path
   strings exactly as supplied. File-name extensions are not checked, and a
   readable file with no recognized records can produce an empty parameter set.
@@ -384,11 +400,10 @@ crossing C. The Python prototype configuration translates non-OK statuses into
 
 ### Extension points and performance constraints
 
-CMAP is the clearest extension point: `CmapKey`, the sixth packed category, and
-CUDA CMAP list/coefficient slots exist, but file parsing and packing are not
-implemented. Completing CMAP requires a stable grid representation, parser
-support, key canonicalization, packed row definitions, force-consumer tests, C++
-error contracts, and documentation.
+CMAP grids of other sizes are the clearest extension point. CHARMM sizes each
+map independently, while the parser and the CUDA kernel assume 24 points per
+torsion; other sizes need per-map grid metadata in the packed rows and in the
+kernel.
 
 Packing is intentionally performed once during ForceManager initialization.
 The implementation uses ordered maps and repeated linear searches through
@@ -401,7 +416,11 @@ Relevant regression coverage is in
 `test/unittests/unittest-charmmParameters.cpp`,
 `test/unittests/unittest-capiCharmmParameters.cpp`, and
 `test/pytest/python_api_charmm_parameters.py`. ForceManager initialization and
-CudaBondedForce tests exercise the downstream packed-data consumers.
+CudaBondedForce tests exercise the downstream packed-data consumers. The CMAP
+case in `test/unittests/unittest-forceManager.cpp` checks the 1UBQ CMAP energy
+and forces against OpenMM reference values, the bonded gradient against a
+finite difference, and that the CMAP virial does not change under a
+periodic-image shift.
 
 ## API Reference
 
@@ -412,7 +431,7 @@ C++ types:
 * [AngleKey](@ref AngleKey) and [AngleValues](@ref AngleValues)
 * [DihedralKey](@ref DihedralKey), [DihedralValues](@ref DihedralValues), and
   [ImDihedralValues](@ref ImDihedralValues)
-* [CmapKey](@ref CmapKey)
+* [CmapKey](@ref CmapKey) and [CmapValues](@ref CmapValues)
 * [VdwParameters](@ref VdwParameters) and
   [NBFixParameters](@ref NBFixParameters)
 * [BondedParamsAndLists](@ref BondedParamsAndLists) and

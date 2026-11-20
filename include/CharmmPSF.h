@@ -72,10 +72,8 @@ struct Dihedral {
  * cross-term. The current CharmmPSF parser validates every atom number against
  * the atom count.
  *
- * @warning The current implementation retains these eight values in the PSF
- * file's one-based convention. This differs from @ref Bond, @ref Angle, and
- * @ref Dihedral and is tracked as an implementation defect rather than a stable
- * indexing guarantee.
+ * PSF parsing converts all atom numbers from the file's one-based convention to
+ * zero-based indices into the per-atom arrays owned by @ref CharmmPSF.
  *
  * @note Direct aggregate construction and mutation perform no validation.
  */
@@ -155,9 +153,8 @@ struct InclusionExclusion {
  * topological exclusions. The object stores the supplied path but does not
  * retain a reference to the caller's string.
  *
- * Parsed bonds, angles, proper dihedrals, and improper dihedrals use zero-based
- * atom indices. The current cross-term parser retains one-based indices; see
- * @ref CrossTerm and @ref charmm_psf for the associated implementation defect.
+ * Parsed bonds, angles, proper dihedrals, improper dihedrals, and CMAP cross
+ * terms use zero-based atom indices.
  *
  * Const accessors return borrowed references to object-owned storage. Mutable
  * accessors are unchecked escape hatches: they do not update stored counts,
@@ -524,9 +521,7 @@ public:
    * @brief Returns the parsed CMAP cross-term records.
    *
    * @return Borrowed const reference to object-owned host storage. No ownership
-   * is transferred.
-   * @warning The current parser stores these atom numbers in one-based PSF
-   * form, unlike the other topology records. See @ref CrossTerm.
+   * is transferred. Atom indices are zero-based.
    */
   const std::vector<CrossTerm> &getCrossTerms(void) const;
 
@@ -740,9 +735,8 @@ public:
    *
    * @return Borrowed mutable reference to object-owned host storage. No
    * ownership is transferred.
-   * @warning Mutation does not update the cross-term count. The current parsed
-   * representation is one-based, but direct mutation is not validated. See
-   * @ref charmm_psf_mutation.
+   * @warning Mutation does not update the cross-term count, and direct
+   * mutation is not validated. See @ref charmm_psf_mutation.
    */
   std::vector<CrossTerm> &getCrossTerms(void);
 

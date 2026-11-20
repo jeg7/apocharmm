@@ -467,6 +467,10 @@ public:
 /**
  * @brief Stores the two torsion keys that identify one CMAP interaction.
  *
+ * Both torsions keep the atom-type order of the parameter file or the PSF. As
+ * with CHARMM's flexible parameter reader, a cross term matches only a map
+ * that lists both torsions in the same order; unlike proper dihedrals, a
+ * reversed torsion does not match.
  */
 struct CmapKey {
 public:
@@ -481,18 +485,23 @@ public:
    */
   CmapKey(const DihedralKey &d1, const DihedralKey &d2) : dih1(d1), dih2(d2) {}
 
-  friend bool operator<(const CmapKey &lhs, const CmapKey &rhs) {
-    if (lhs.dih1 < rhs.dih1)
+public:
+  /**
+   * @brief Orders CMAP keys by `dih1` and then `dih2` in DihedralKey order.
+   *
+   * @param[in] first Left key to compare.
+   * @param[in] second Right key to compare.
+   * @return `true` when `first` sorts before `second`.
+   */
+  friend bool operator<(const CmapKey &first, const CmapKey &second) {
+    if (first.dih1 < second.dih1)
       return true;
-    if (rhs.dih1 < lhs.dih1)
+    else if (second.dih1 < first.dih1)
       return false;
-    return lhs.dih2 < rhs.dih2;
+    else
+      return first.dih2 < second.dih2;
   }
 
-  friend bool operator==(const CmapKey &lhs, const CmapKey &rhs) {
-    return lhs.dih1 == rhs.dih1 && lhs.dih2 == rhs.dih2;
-  }
-  
   /**
    * @brief Writes the two torsion keys that identify the CMAP interaction.
    *
@@ -505,6 +514,17 @@ public:
     return output;
   }
 
+  /**
+   * @brief Returns whether two CMAP keys are equal.
+   *
+   * @param[in] other Key to compare with this key.
+   * @return `true` when both torsion keys match in the same order; otherwise,
+   * `false`.
+   */
+  bool operator==(const CmapKey &other) const {
+    return this->dih1 == other.dih1 && this->dih2 == other.dih2;
+  }
+
 public:
   /** Stores the first torsion key. */
   DihedralKey dih1;
@@ -513,26 +533,58 @@ public:
 };
 
 /**
- * @brief Stores one CHARMM CMAP parameter record.
+ * @brief Stores one CHARMM CMAP grid and its bicubic coefficients.
  *
- * A CMAP parameter consists of a 24 x 24 grid of energy correction values
- * and 16 bicubic polynomial coefficients for each grid cell.
+ * `values` holds the grid in parameter-file order: phi is the outer loop and
+ * psi the inner loop, both starting at -180 degrees in 15-degree steps, so the
+ * energy at phi index `i` and psi index `j` is `values[i * gridSize + j]`.
+ * The parser fills `coeff` with the bicubic coefficients that CHARMM derives
+ * from the grid. Cell `(i, j)` spans phi indices `i` to `i + 1` and psi indices
+ * `j` to `j + 1`, wrapping at the last index. Its coefficients start at
+ * `(i * gridSize + j) * coefficientsPerCell`, and coefficient `4 * m + n`
+ * multiplies `t^m * u^n`, where `t` and `u` are the fractional positions along
+ * phi and psi inside the cell.
  */
 struct CmapValues {
 public:
+  /** Grid points per torsion. apoCHARMM supports only 24-point maps. */
   static constexpr int gridSize = 24;
+  /** Grid energies per map .*/
   static constexpr std::size_t numValues = gridSize * gridSize;
+  /** Bicubic coefficients per grid cell. */
   static constexpr std::size_t coefficientsPerCell = 16;
-  static constexpr std::size_t numCoefficients = coefficientsPerCell * numValues;
+  /** Bicubic coefficients per map. */
+  static constexpr std::size_t numCoefficients =
+      coefficientsPerCell * numValues;
 
+  /**
+   * @brief Constructs an empty CMAP record.
+   *
+   * @post `values` and `coeff` are empty.
+   */
   CmapValues(void) : values(), coeff() {}
 
+  /**
+   * @brief Constructs a CMAP record from its grid energies.
+   *
+   * @param[in] values Grid energies in kcal mol^-1, in the order described
+   * above.
+   *
+   * @note `coeff` starts empty. The constructor performs no size or finiteness
+   * validation.
+   */
   explicit CmapValues(const std::vector<double> &values)
       : values(values), coeff() {}
 
-  CmapValues(const CmapValues &other) = default;
-
 public:
+  /**
+   * @brief Writes the grid size and stored counts, then the grid when
+   * `values` holds all `numValues` energies.
+   *
+   * @param[in,out] output Stream that receives the text.
+   * @param[in] cv CMAP record to write.
+   * @return `output` after the write.
+   */
   friend std::ostream &operator<<(std::ostream &output, const CmapValues &cv) {
     output << "(gridSize : " << CmapValues::gridSize
            << ", values : " << cv.values.size()
@@ -551,20 +603,9 @@ public:
   }
 
 public:
-  // Original CHARMM CMAP energy grid.
+  /** Grid energies in kcal/mol. */
   std::vector<double> values;
-
-  // 16 bicubic polynomial coefficients per grid cell.
-  //
-  // Cell (i,j) occupies:
-  //
-  //  ((i * gridSize + j) * 16) ... + 15
-  //
-  // and is evaluated as
-  //
-  //   E(t,u) = sum_i sum_j c[i*4+j] t^i u^j
-  //
-  // with t,u in [0,1].
+  /** Bicubic coefficients in kcal/mol, `coefficientsPerCell` per cell. */
   std::vector<double> coeff;
 };
 
@@ -615,7 +656,7 @@ public:
   double rmin_2;
 };
 
-// JEG260812: This and CMAP need to be fixed
+// JEG260812: This needs to be fixed
 /**
  * @brief Stores a pair-specific CHARMM NBFIX override.
  *
@@ -696,13 +737,16 @@ public:
  *   nonterminal rows for a multi-term key use a negative multiplicity;
  * - improper dihedral: `[psi0_degrees, kPsi, 0, 1]` in
  *   `[degree, kcal mol^-1 radian^-2, dimensionless, dimensionless]`;
- * - CMAP: 16 bicubic polynomial coefficients per grid cell, 
- *   stored as one float per row.
+ * - CMAP: one bicubic coefficient per row in kcal mol^-1, with
+ *   `CmapValues::numCoefficients` consecutive rows per map in the order of
+ *   CmapValues::coeff.
  *
  * `listVal` concatenates zero-based PSF atom-index rows. Bond and
  * Urey-Bradley rows are `[i, j, type, 13]`; angle rows are
  * `[i, j, k, type, 13, 13]`; torsion rows are
- * `[i, j, k, l, type, 13, 13, 13]`. Type indices are local to each category.
+ * `[i, j, k, l, type, 13, 13, 13]`; CMAP rows are
+ * `[i1, j1, k1, l1, i2, j2, k2, l2, type, 13, 13, 13, 13, 13, 13]`. Type
+ * indices are local to each category; a CMAP type indexes maps, not rows.
  * The shift sentinel `13` denotes the zero periodic image.
  *
  * All storage is owned host memory. ForceManager later copies these rows to
@@ -936,11 +980,12 @@ public: // Getters
   /**
    * @brief Returns the parsed CMAP parameter map.
    *
-   * Each key identifies the two canonical dihedrals defining the CMAP
-   * interaction and maps to its square energy grid.
+   * Each key holds the two torsions of a CMAP interaction in the parameter
+   * file's atom-type order and maps to the grid energies and bicubic
+   * coefficients described by CmapValues.
    *
    * @return Borrowed const reference to the map owned by this object.
-   * CMAP energy values are stored in kcal mol^-1 in row-major order.
+   * Energies and coefficients are in kcal mol^-1.
    *
    * @note The reference aliases this object and remains valid only while the
    * object is alive and has not been assigned from or moved. Later successful
@@ -995,7 +1040,9 @@ public:
    * Exact parameter matching is attempted first. Proper dihedrals then permit
    * an `X-middle-middle-X` wildcard, and impropers permit an
    * `outer-X-X-outer` wildcard. Missing Urey-Bradley terms are allowed, and
-   * terms with `abs(kub) <= 0.01` are omitted. CMAP output is always empty.
+   * terms with `abs(kub) <= 0.01` are omitted. As with CHARMM's flexible
+   * parameter reader, a CMAP cross term needs a map that lists both torsions
+   * in the PSF's order, with no wildcard.
    *
    * @param[in] psf Borrowed shared pointer to a non-null CharmmPSF. The pointee
    * is read but not mutated or retained after return.
@@ -1004,7 +1051,7 @@ public:
    * @throws ApoCharmmError with code `ApoCharmmErrorCode::InvalidArgument` if
    * `psf` is null.
    * @throws ApoCharmmError with code `ApoCharmmErrorCode::Runtime` if a
-   * required bond, angle, proper-dihedral, or improper-dihedral
+   * required bond, angle, proper-dihedral, improper-dihedral, or CMAP
    * parameter cannot be matched to the PSF.
    * @throws std::bad_alloc If host-side packing allocation fails.
    *
@@ -1047,15 +1094,17 @@ public:
   /**
    * @brief Reads and merges one CHARMM parameter file.
    *
-   * The parser recognizes BONDS, ANGLES, DIHEDRALS, IMPROPER, NONBONDED, and
-   * NBFIX records. ATOMS, CMAP, and HBOND sections are currently ignored.
+   * The parser recognizes BONDS, ANGLES, DIHEDRALS, IMPROPER, CMAP, NONBONDED,
+   * and NBFIX records. ATOMS and HBOND sections are ignored.
    * Record text is stripped of `!` comments, normalized to uppercase, and
    * parsed on the host. This method does not append `filePath` to the
    * constructor path list returned by getPrmFileNames().
    *
    * Bond, angle, Urey-Bradley, improper, and NBFIX maps keep the first matching
-   * key. Proper-dihedral records append Fourier terms. Regular and explicit 1-4
-   * NONBONDED values replace earlier values for the same atom type.
+   * key. Proper-dihedral records append Fourier terms. As with CHARMM's
+   * flexible parameter reader, a CMAP record replaces an earlier map for the
+   * same key. Regular and explicit 1-4 NONBONDED values replace earlier values
+   * for the same atom type.
    *
    * @param[in] filePath Non-empty file-system path. The path is used only for
    * this call; parsed records, not the path string, are retained.
@@ -1065,8 +1114,8 @@ public:
    * @throws ApoCharmmError with code `ApoCharmmErrorCode::Runtime` if the file
    * cannot be opened or read, a file whose final path component contains
    * `TOPPAR` has no CHARMM parameter block, a NONBONDED header continuation is
-   * unterminated, or a recognized record has an invalid token count or numeric
-   * field.
+   * unterminated, a recognized record has an invalid token count or numeric
+   * field, or a CMAP grid is not 24 x 24 or ends early.
    * @throws std::bad_alloc If host-side parsing or map growth requires an
    * allocation that fails.
    *
@@ -1160,12 +1209,12 @@ private:
    * @throws ApoCharmmError with code `ApoCharmmErrorCode::Runtime` if the
    * header, grid size, or grid values are invalid, or if the file ends before
    * the complete grid is read.
-   * @post The CMAP grid is stored under its two canonical torsion keys.
+   * @post The grid and its bicubic coefficients are stored under the two
+   * torsion keys in file order, replacing an earlier map for the same key.
    */
-  void parseCmapRecord(
-      const std::vector<std::string> &tokens, std::ifstream &prmFile,
-      const std::string &line, const std::string &fileName,
-      std::size_t &lineNumber);
+  void parseCmapRecord(const std::vector<std::string> &tokens,
+                       std::ifstream &prmFile, const std::string &line,
+                       const std::string &fileName, std::size_t &lineNumber);
 
   /**
    * @brief Parses and stores one normalized NONBONDED record.

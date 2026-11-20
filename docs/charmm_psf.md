@@ -96,9 +96,8 @@ Residue identifiers must fit in `int`. No physical range is enforced for
 charge, mass, or residue identifiers.
 
 Bond, angle, proper-dihedral, improper-dihedral, and cross-term atom numbers
-must be in the one-based file range `[1, num_atoms]`. Bond, angle, proper, and
-improper records are converted to zero-based indices. The current cross-term
-implementation does not perform that final conversion.
+must be in the one-based file range `[1, num_atoms]`, and all of them are
+converted to zero-based indices.
 
 After primary parsing, construction performs this derived-state sequence:
 
@@ -181,9 +180,8 @@ other physical-range validation.
 [Bond](@ref Bond) stores two zero-based atom indices. [Angle](@ref Angle) stores
 three zero-based indices with the central atom in `jatom`.
 [Dihedral](@ref Dihedral) stores four zero-based indices and represents both
-proper and improper records. The current [CrossTerm](@ref CrossTerm)
-representation contains two four-atom tuples but retains one-based file atom
-numbers.
+proper and improper records. [CrossTerm](@ref CrossTerm) stores the two
+four-atom torsions of a CMAP cross term as zero-based indices.
 
 The 1-2, 1-3, and 1-4 connectivity members are host vectors of sets. The outer
 index is a zero-based source atom. Each set contains zero-based connected atom
@@ -292,13 +290,7 @@ The current parser has several visible constraints:
 - it does not validate or reorder by the ATOM record's serial-number token;
 - it treats a change in numeric residue identifier as the only residue boundary;
 - it assumes bonded connected components occupy contiguous atom intervals;
-- it recognizes only consecutive `OT`, `HT`, `HT` water records;
-- it retains cross-term atom numbers as one-based values.
-
-The cross-term index convention differs from all other parsed topology records
-and is an implementation defect, not a recommended consumer contract. The
-current CharmmParameters CMAP packing path is disabled, so the defect is not
-covered by an active CMAP consumer.
+- it recognizes only consecutive `OT`, `HT`, `HT` water records.
 
 The C ABI exposes segment identifiers, residue names, atom names, and atom types
 as fixed eight-byte fields. Longer native strings are silently truncated. The
@@ -392,9 +384,8 @@ The Python status wrapper raises `ApoCharmmError` for nonzero native statuses.
 Extension points visible in the current implementation include adding parser
 support for skipped PSF sections, adding safe topology-copy APIs to the C ABI,
 exposing structured topology in Python, replacing fixed-width text outputs with
-length-aware APIs, making derived-state rebuilding explicit, supporting
-additional water naming conventions, and enabling CMAP consumption after the
-cross-term indexing contract is corrected.
+length-aware APIs, making derived-state rebuilding explicit, and supporting
+additional water naming conventions.
 
 Performance-sensitive paths are complete-file loading, repeated host string
 allocation, set-based connectivity construction, repeated CudaContainer
@@ -409,9 +400,9 @@ Focused native coverage is in
 `test/data/nacl_pair.psf` and the larger PSF fixtures used by those suites.
 
 Known architectural constraints directly visible in the implementation include
-unrestricted mutable access, one-based cross terms, residue grouping that
-ignores segment changes, connected-component interval assumptions, fixed-width C
-ABI text fields, and the Python file-name buffer limit.
+unrestricted mutable access, residue grouping that ignores segment changes,
+connected-component interval assumptions, fixed-width C ABI text fields, and the
+Python file-name buffer limit.
 
 ## API Reference
 

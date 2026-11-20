@@ -1167,8 +1167,8 @@ public:
    *
    * The current implementation copies the bonded, reciprocal, and direct
    * energy-virial objects to host storage, synchronizes the aggregate stream,
-   * and sums `bond`, `angle`, `ureyb`, `dihe`, `imdihe`, `ewks`, `ewse`,
-   * `ewex`, `elec`, and `vdw`.
+   * and sums `bond`, `angle`, `ureyb`, `dihe`, `imdihe`, `cmap`, `ewks`,
+   * `ewse`, `ewex`, `elec`, and `vdw`.
    *
    * @return The listed energy-term sum, narrowed to `float`, in kilocalories
    * per mole.
@@ -1177,9 +1177,9 @@ public:
    * @throws ApoCharmmError With code @ref ApoCharmmErrorCode::Cuda if a
    * device-to-host copy or stream synchronization fails.
    *
-   * @warning The current implementation omits the `cmap` term and all
-   * subscribed-force energies. It is therefore not equivalent to the
-   * one-element total produced by `calcForce(..., calcEnergy = true, ...)`.
+   * @warning The current implementation omits all subscribed-force energies.
+   * It is therefore not equivalent to the one-element total produced by
+   * `calcForce(..., calcEnergy = true, ...)`.
    */
   virtual float getPotentialEnergies(void);
 

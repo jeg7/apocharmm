@@ -513,17 +513,15 @@ __forceinline__ __device__ void imdihe_pot(const float4 *dihecoef,
 }
 
 template <typename T, bool calc_energy>
-__forceinline__ __device__ void cmap_pot(const float *cmapcoef, 
-                                         const int cmap_type, const T phi, 
-                                         const T psi, T &dE_dphi, T &dE_dpsi, 
-                                         double &e) {
+__forceinline__ __device__ void
+cmap_pot(const float *cmapcoef, const int cmap_type, const T phi, const T psi,
+         T &dE_dphi, T &dE_dpsi, double &e) {
 
   constexpr int n = 24;
   constexpr int ncell = n * n;
   constexpr int ncoef = 16;
 
   constexpr T xmin = (T)-180.0;
-  constexpr T dx = (T)15.0;
   constexpr T inv_dx = (T)(1.0 / 15.0);
 
   // Convert angles to CMAP cell coordinates.
@@ -577,15 +575,15 @@ __forceinline__ __device__ void cmap_pot(const float *cmapcoef,
     e = (double)(((px3 * ty + px2) * ty + px1) * ty + px0);
   }
 
-  // dE/dx.
-  const T dx0 = (3.0 * a3 * tx + 2.0 * a2) * tx + a1;
-  const T dx1 = (3.0 * b3 * tx + 2.0 * b2) * tx + b1;
-  const T dx2 = (3.0 * c3 * tx + 2.0 * c2) * tx + c1;
-  const T dx3 = (3.0 * d3 * tx + 2.0 * d2) * tx + d1;
+  // dE/dx. The literals are cast to T so that float arithmetic stays float.
+  const T dx0 = ((T)3 * a3 * tx + (T)2 * a2) * tx + a1;
+  const T dx1 = ((T)3 * b3 * tx + (T)2 * b2) * tx + b1;
+  const T dx2 = ((T)3 * c3 * tx + (T)2 * c2) * tx + c1;
+  const T dx3 = ((T)3 * d3 * tx + (T)2 * d2) * tx + d1;
   const T de_dx = ((dx3 * ty + dx2) * ty + dx1) * ty + dx0;
 
   // dE/dy.
-  const T de_dy = ((3.0 * px3 * ty + 2.0 * px2) * ty + px1);
+  const T de_dy = ((T)3 * px3 * ty + (T)2 * px2) * ty + px1;
 
   // Convert from normalized cell coordinates to degrees.
   dE_dphi = de_dx * inv_dx;
@@ -948,10 +946,11 @@ __device__ void calc_cmap_force_device(
   const CT ct2 = (ax2 * bx2 + ay2 * by2 + az2 * bz2) * rabr2;
   const CT st2 = rg2 * rabr2 * (ax2 * hx2 + ay2 * hy2 + az2 * hz2);
 
-  // Convert sin/cos to dihedral angles in degrees.
-  const CT pi = static_cast<CT>(3.14159265358979323846);
-  const CT phi1 = atan2f(st1, ct1) * (180.0 / pi);
-  const CT phi2 = atan2f(st2, ct2) * (180.0 / pi);
+  // Convert sin/cos to dihedral angles in degrees. The factor is a CT
+  // constant, rounded once from double, so float arithmetic stays float.
+  const CT radians_to_degrees = (CT)(180.0 / 3.14159265358979323846);
+  const CT phi1 = atan2f(st1, ct1) * radians_to_degrees;
+  const CT phi2 = atan2f(st2, ct2) * radians_to_degrees;
 
   CT dE_dphi;
   CT dE_dpsi;
@@ -964,7 +963,6 @@ __device__ void calc_cmap_force_device(
 
   // cmap_pot returns derivatives per degree, while the Cartesian dihedral
   // derivatives are with respect to angles in radians.
-  const CT radians_to_degrees = (CT)180.0 / pi;
   const CT df1 = dE_dphi * radians_to_degrees;
   const CT df2 = dE_dpsi * radians_to_degrees;
 
@@ -983,16 +981,15 @@ __device__ void calc_cmap_force_device(
   calc_component_force<AT, CT>(-gaa1, ax1, ay1, az1, dfx1, dfy1, dfz1);
 
   AT dgx1, dgy1, dgz1;
-  calc_component_force<AT, CT>(fga1, ax1, ay1, az1, -hgb1, bx1, by1, bz1,
-                               dgx1, dgy1, dgz1);
+  calc_component_force<AT, CT>(fga1, ax1, ay1, az1, -hgb1, bx1, by1, bz1, dgx1,
+                               dgy1, dgz1);
 
   AT dhx1, dhy1, dhz1;
   calc_component_force<AT, CT>(gbb1, bx1, by1, bz1, dhx1, dhy1, dhz1);
 
   write_force<AT>(dfx1, dfy1, dfz1, i1, stride, force);
   write_force<AT>(dgx1 - dfx1, dgy1 - dfy1, dgz1 - dfz1, j1, stride, force);
-  write_force<AT>(-dhx1 - dgx1, -dhy1 - dgy1, -dhz1 - dgz1, k1, stride,
-                  force);
+  write_force<AT>(-dhx1 - dgx1, -dhy1 - dgy1, -dhz1 - dgz1, k1, stride, force);
   write_force<AT>(dhx1, dhy1, dhz1, l1, stride, force);
 
   // Cartesian force contributions from the second dihedral.
@@ -1010,8 +1007,8 @@ __device__ void calc_cmap_force_device(
   calc_component_force<AT, CT>(-gaa2, ax2, ay2, az2, dfx2, dfy2, dfz2);
 
   AT dgx2, dgy2, dgz2;
-  calc_component_force<AT, CT>(fga2, ax2, ay2, az2, -hgb2, bx2, by2, bz2,
-                               dgx2, dgy2, dgz2);
+  calc_component_force<AT, CT>(fga2, ax2, ay2, az2, -hgb2, bx2, by2, bz2, dgx2,
+                               dgy2, dgz2);
 
   AT dhx2, dhy2, dhz2;
   calc_component_force<AT, CT>(gbb2, bx2, by2, bz2, dhx2, dhy2, dhz2);
@@ -1134,20 +1131,15 @@ __device__ void calc_cmap_force_device(
 }
 
 //
-// cmapcoef contains flattened 24x24 CMAP grids.
-// Each grid has 576 consecutive float values.
-//
-// Grid for cmapType:
-//   cmapcoef[cmapType * 576 ... cmapType * 576 + 575]
-//
-// cmapType is stored in cmaplist.itype.
+// cmapcoef holds 24 * 24 * 16 = 9216 bicubic coefficients per CMAP map, in the
+// order of CmapValues::coeff: the 16 coefficients of cell (i, j) of map itype
+// start at ((itype * 24 + i) * 24 + j) * 16.
 //
 template <typename AT, typename CT, bool calc_energy, bool calc_virial>
 __global__ void calc_cmap_force_kernel(
     const int ncmaplist, const cmaplist_t *__restrict__ cmaplist,
-    const float *__restrict__ cmapcoef,
-    const float4 *__restrict__ xyzq, const int stride,
-    const CT boxx, const CT boxy, const CT boxz,
+    const float *__restrict__ cmapcoef, const float4 *__restrict__ xyzq,
+    const int stride, const CT boxx, const CT boxy, const CT boxz,
     AT *__restrict__ force, double *__restrict__ energy_cmap,
     Virial_t *__restrict__ virial) {
   extern __shared__ double sh_epot[];
@@ -1160,8 +1152,8 @@ __global__ void calc_cmap_force_kernel(
 
   while (pos < ncmaplist) {
     calc_cmap_force_device<AT, CT, calc_energy, calc_virial>(
-        pos, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz,
-        (AT *)force, epot, virial);
+        pos, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz, (AT *)force,
+        epot, virial);
 
     pos += blockDim.x * gridDim.x;
   }
@@ -1249,9 +1241,6 @@ __global__ void calc_all_forces_kernel(
     const int nimdihelist, const dihelist_t *__restrict__ imdihelist,
     const float4 *__restrict__ imdihecoef,
 
-    const int ncmaplist, const cmaplist_t *__restrict__ cmaplist,
-    const float *__restrict__ cmapcoef,
-
     const float4 *__restrict__ xyzq, const int stride, const CT boxx,
     const CT boxy, const CT boxz, AT *__restrict__ force,
     Virial_t *__restrict__ virial) {
@@ -1281,11 +1270,6 @@ __global__ void calc_all_forces_kernel(
     calc_dihe_force_device<AT, CT, false, false, calc_virial>(
         pos - ndihelist - nanglelist - nureyblist - nbondlist, imdihelist,
         imdihecoef, xyzq, stride, boxx, boxy, boxz, force, epot, virial);
-  } else if (pos < ncmaplist + nimdihelist + ndihelist + nanglelist +
-                         nureyblist + nbondlist) {
-    calc_cmap_force_device<AT, CT, false, calc_virial>(
-        pos - nimdihelist - ndihelist - nanglelist - nureyblist - nbondlist,
-        cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz, force, epot, virial);
   }
 }
 
@@ -2160,7 +2144,7 @@ void CudaBondedForce<AT, CT>::calc_force(
       cudaCheck(cudaGetLastError());
     }
 
-    //JM260901 should we add size check to other kernel launches?
+    // JM260901 should we add size check to other kernel launches?
     if (calc_cmap && ncmaplist > 0) {
       int nthread = 128;
       int nblock = (ncmaplist - 1) / nthread + 1;
@@ -2188,12 +2172,11 @@ void CudaBondedForce<AT, CT>::calc_force(
     int nanglelist_loc = (calc_angle) ? nanglelist : 0;
     int ndihelist_loc = (calc_dihe) ? ndihelist : 0;
     int nimdihelist_loc = (calc_imdihe) ? nimdihelist : 0;
-    int ncmaplist_loc = (calc_cmap) ? ncmaplist : 0;
 
     // int nthread = 512;
     int nthread = 128;
     int nblock = (nbondlist_loc + nureyblist_loc + nanglelist_loc +
-                  ndihelist_loc + nimdihelist_loc + ncmaplist_loc - 1) /
+                  ndihelist_loc + nimdihelist_loc - 1) /
                      nthread +
                  1;
     int shmem_size = 0;
@@ -2203,19 +2186,37 @@ void CudaBondedForce<AT, CT>::calc_force(
           <<<nblock, nthread, shmem_size, stream>>>(
               nbondlist_loc, bondlist, bondcoef, nureyblist_loc, ureyblist,
               ureybcoef, nanglelist_loc, anglelist, anglecoef, ndihelist_loc,
-              dihelist, dihecoef, nimdihelist_loc, imdihelist, imdihecoef, 
-              ncmaplist_loc, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz,
-              force, energyVirial.getVirialPointer());
+              dihelist, dihecoef, nimdihelist_loc, imdihelist, imdihecoef, xyzq,
+              stride, boxx, boxy, boxz, force, energyVirial.getVirialPointer());
     } else {
       calc_all_forces_kernel<AT, CT, false>
           <<<nblock, nthread, shmem_size, stream>>>(
               nbondlist_loc, bondlist, bondcoef, nureyblist_loc, ureyblist,
               ureybcoef, nanglelist_loc, anglelist, anglecoef, ndihelist_loc,
-              dihelist, dihecoef, nimdihelist_loc, imdihelist, imdihecoef, 
-              ncmaplist_loc, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz, 
-              force, NULL);
+              dihelist, dihecoef, nimdihelist_loc, imdihelist, imdihecoef, xyzq,
+              stride, boxx, boxy, boxz, force, NULL);
     }
     cudaCheck(cudaGetLastError());
+
+    // CMAP has its own launch so that its register-heavy device code does not
+    // raise the register count, and lower the occupancy, of the fused kernel
+    // for every system.
+    if (calc_cmap && ncmaplist > 0) {
+      const int ncmapblock = (ncmaplist - 1) / nthread + 1;
+
+      if (calc_virial) {
+        calc_cmap_force_kernel<AT, CT, false, true>
+            <<<ncmapblock, nthread, shmem_size, stream>>>(
+                ncmaplist, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz,
+                force, NULL, energyVirial.getVirialPointer());
+      } else {
+        calc_cmap_force_kernel<AT, CT, false, false>
+            <<<ncmapblock, nthread, shmem_size, stream>>>(
+                ncmaplist, cmaplist, cmapcoef, xyzq, stride, boxx, boxy, boxz,
+                force, NULL, NULL);
+      }
+      cudaCheck(cudaGetLastError());
+    }
   }
 }
 

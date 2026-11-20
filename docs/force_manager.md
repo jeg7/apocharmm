@@ -306,7 +306,7 @@ CHARMM energy term that its type names (`harm`, `resd`, `hmcm`, or `geo` for the
 restraints) and every other subscribed force as `user`, so the CHARMM energy
 tables print restraints in CHARMM's lines.
 
-`getPotentialEnergies()` is a legacy host-side sum. It currently omits CMAP and
+`getPotentialEnergies()` is a legacy host-side sum. It currently omits
 subscribed-force energies and is not equivalent to the aggregate energy
 produced by an energy-requesting force calculation.
 
@@ -489,7 +489,10 @@ calculation path when possible.
 
 - `test/unittests/unittest-forceManager.cpp` covers native defaults,
   validation, copying, initialization, force evaluation, subscriptions, box
-  propagation, and error categories.
+  propagation, and error categories. Its CMAP case checks the 1UBQ CMAP energy
+  and forces against OpenMM reference values, the bonded gradient against a
+  finite difference, and that the CMAP virial does not change under a
+  periodic-image shift.
 - `test/unittests/unittest-capiForceManager.cpp` covers C ABI ownership,
   validation, output state, status mapping, thread-local diagnostic
   behavior, and output getters that copy the native energy, negated force,

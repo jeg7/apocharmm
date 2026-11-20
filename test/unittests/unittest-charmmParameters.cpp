@@ -158,6 +158,31 @@ const std::string TEST_PSF_TEXT = R"PSF(PSF
        0 !NCRTERM: cross-terms
 )PSF";
 
+// TEST_PSF_TEXT plus one cross term whose second torsion is the first one read
+// backward, and the same cross term with both torsions listed the other way.
+const std::string TEST_CMAP_PSF_TEXT =
+    TEST_PSF_TEXT.substr(0, TEST_PSF_TEXT.find("       0 !NCRTERM")) +
+    "       1 !NCRTERM: cross-terms\n"
+    "       1       2       3       4       4       3       2       1\n";
+
+const std::string TEST_REVERSED_CMAP_PSF_TEXT =
+    TEST_PSF_TEXT.substr(0, TEST_PSF_TEXT.find("       0 !NCRTERM")) +
+    "       1 !NCRTERM: cross-terms\n"
+    "       4       3       2       1       1       2       3       4\n";
+
+// TEST_PARAMETER_TEXT plus one map for the torsions A-B-C-D and D-C-B-A whose
+// energies are 0.25 * phiIndex - 0.5 * psiIndex, written phi-major as in
+// CHARMM parameter files.
+const std::string TEST_CMAP_PARAMETER_TEXT = [](void) {
+  std::string text = TEST_PARAMETER_TEXT + "CMAP\nA B C D D C B A 24\n";
+  for (int i = 0; i < CmapValues::gridSize; i++) {
+    for (int j = 0; j < CmapValues::gridSize; j++)
+      text += std::to_string(0.25 * i - 0.5 * j) + " ";
+    text += "\n";
+  }
+  return text + "END\n";
+}();
+
 void CheckParameterFileError(const std::string &fileName,
                              const std::string &contents,
                              const ApoCharmmErrorCode expectedCode,
@@ -385,6 +410,66 @@ TEST_CASE("CharmmParametersBuildsBondedParamsAndLists") {
   apo_test::RemoveIfExists(psfFile);
 }
 
+TEST_CASE("CharmmParametersParsesAndPacksCmapRecords") {
+  const std::string parameterFile = "tmp_charmm_parameters_cmap.prm";
+  const std::string psfFile = "tmp_charmm_parameters_cmap.psf";
+  apo_test::WriteTextFile(parameterFile, TEST_CMAP_PARAMETER_TEXT);
+  apo_test::WriteTextFile(psfFile, TEST_CMAP_PSF_TEXT);
+
+  CharmmParameters parameters(parameterFile);
+  std::shared_ptr<CharmmPSF> psf = std::make_shared<CharmmPSF>(psfFile);
+
+  const CmapKey key(DihedralKey("A", "B", "C", "D"),
+                    DihedralKey("D", "C", "B", "A"));
+  const std::map<CmapKey, CmapValues> &cmaps = parameters.getCmapParams();
+
+  REQUIRE(cmaps.size() == 1);
+  REQUIRE(cmaps.count(key) == 1);
+  REQUIRE(cmaps.at(key).values.size() == CmapValues::numValues);
+  REQUIRE(cmaps.at(key).coeff.size() == CmapValues::numCoefficients);
+  CHECK(cmaps.at(key).values[1 * CmapValues::gridSize + 2] ==
+        Approx(-0.75).margin(DOUBLE_TOLERANCE));
+
+  const BondedParamsAndLists bonded = parameters.getBondedParamsAndLists(psf);
+
+  CHECK(bonded.paramsSize == std::vector<int>{3, 1, 2, 1, 1, 9216});
+  CHECK(bonded.listsSize == std::vector<int>{3, 1, 2, 1, 1, 1});
+  CHECK(bonded.listVal.back() ==
+        std::vector<int>{0, 1, 2, 3, 3, 2, 1, 0, 0, 13, 13, 13, 13, 13, 13});
+
+  // Within cell (1, 2), t runs along phi and u along psi. The bicubic patch
+  // reproduces its four corner energies: E(0, 0) is coefficient 0, E(1, 0)
+  // sums coefficients 4 * m, E(0, 1) sums coefficients n, and E(1, 1) sums
+  // all 16.
+  const std::size_t cellStart =
+      8 + (1 * CmapValues::gridSize + 2) * CmapValues::coefficientsPerCell;
+  REQUIRE(bonded.paramsVal.size() >= cellStart + 16);
+
+  double phiEdge = 0.0;
+  double psiEdge = 0.0;
+  double corner = 0.0;
+  for (std::size_t m = 0; m < 4; m++) {
+    for (std::size_t n = 0; n < 4; n++) {
+      const double coefficient = bonded.paramsVal[cellStart + 4 * m + n][0];
+
+      if (n == 0)
+        phiEdge += coefficient;
+      if (m == 0)
+        psiEdge += coefficient;
+      corner += coefficient;
+    }
+  }
+
+  CHECK(bonded.paramsVal[cellStart][0] ==
+        Approx(-0.75).margin(FLOAT_TOLERANCE));
+  CHECK(phiEdge == Approx(-0.5).margin(1.0e-5));
+  CHECK(psiEdge == Approx(-1.25).margin(1.0e-5));
+  CHECK(corner == Approx(-1.0).margin(1.0e-5));
+
+  apo_test::RemoveIfExists(parameterFile);
+  apo_test::RemoveIfExists(psfFile);
+}
+
 TEST_CASE("CharmmParametersBuildsVdwParamsAndTypes") {
   const std::string parameterFile = "tmp_charmm_parameters_full.prm";
   const std::string psfFile = "tmp_charmm_parameters_test.psf";
@@ -591,6 +676,48 @@ TEST_CASE("CharmmParametersParserValidationUsesApoCharmmError") {
                                 "\" at line 2: A B -0.05 2.5 0.0");
   }
 
+  SECTION("InvalidCmapRecord") {
+    const std::string parameterFile = "tmp_charmm_parameters_invalid_cmap.prm";
+
+    CheckParameterFileError(parameterFile, "CMAP\nA B C D B C D E\nEND\n",
+                            ApoCharmmErrorCode::Runtime,
+                            "Invalid CMAP parameter record in file \"" +
+                                parameterFile +
+                                "\" at line 2: A B C D B C D E");
+  }
+
+  SECTION("UnsupportedCmapGridSize") {
+    const std::string parameterFile = "tmp_charmm_parameters_cmap_grid.prm";
+
+    CheckParameterFileError(parameterFile, "CMAP\nA B C D B C D E 12\nEND\n",
+                            ApoCharmmErrorCode::Runtime,
+                            "Unsupported CMAP grid size in file \"" +
+                                parameterFile +
+                                "\" at line 2: expected 24, observed 12");
+  }
+
+  SECTION("TruncatedCmapGrid") {
+    const std::string parameterFile =
+        "tmp_charmm_parameters_cmap_truncated.prm";
+
+    CheckParameterFileError(
+        parameterFile, "CMAP\nA B C D B C D E 24\n0.0 0.0\n",
+        ApoCharmmErrorCode::Runtime,
+        "Unexpected end of file while reading CMAP parameter in file \"" +
+            parameterFile + "\" after line 3");
+  }
+
+  SECTION("InvalidCmapEnergy") {
+    const std::string parameterFile = "tmp_charmm_parameters_cmap_energy.prm";
+
+    CheckParameterFileError(parameterFile,
+                            "CMAP\nA B C D B C D E 24\n0.0 BAD\nEND\n",
+                            ApoCharmmErrorCode::Runtime,
+                            "Invalid grid energy value \"BAD\" in CMAP "
+                            "parameter record in file \"" +
+                                parameterFile + "\" at line 3: 0.0 BAD");
+  }
+
   SECTION("InvalidFloatingPointValue") {
     const std::string parameterFile = "tmp_charmm_parameters_invalid_float.prm";
 
@@ -675,6 +802,16 @@ TEST_CASE("CharmmParametersAssemblyValidationUsesApoCharmmError") {
         ApoCharmmErrorCode::Runtime,
         "Improper parameters were not found for improper 0; atom types: A B C "
         "D; atom names: A1 B1 C1 D1");
+  }
+
+  SECTION("MissingCmapParameter") {
+    // As in CHARMM's flexible parameter reader, a map does not match the same
+    // torsions listed in another order.
+    CheckBondedParameterError(
+        TEST_CMAP_PARAMETER_TEXT, TEST_REVERSED_CMAP_PSF_TEXT,
+        ApoCharmmErrorCode::Runtime,
+        "CMAP parameters were not found for cross term 0; atom types: D C B A, "
+        "A B C D; atom names: D1 C1 B1 A1, A1 B1 C1 D1");
   }
 
   SECTION("MissingNonbondedParameter") {

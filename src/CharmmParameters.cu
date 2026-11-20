@@ -9,7 +9,6 @@
 // ENDLICENSE
 
 #include "CharmmParameters.h"
-#include "CmapSpline.h"
 
 #include "ApoCharmmError.h"
 #include "str_utils.h"
@@ -50,11 +49,60 @@ std::string CleanPrmLine(const std::string &rawLine) {
   return line;
 }
 
+// Solves for the second derivatives of the natural cubic spline through the n
+// values y spaced `spacing` apart, as CHARMM's CMAPSPL does. `work` holds n
+// values.
+void FitCmapSpline(const double spacing, const double *y, const int n,
+                   double *work, double *secondDerivatives) {
+  secondDerivatives[0] = 0.0;
+  work[0] = 0.0;
+
+  const double inverseSpacing = 1.0 / spacing;
+
+  for (int i = 1; i < n - 1; i++) {
+    const double pivotInverse = 1.0 / (secondDerivatives[i - 1] + 4.0);
+    secondDerivatives[i] = -pivotInverse;
+    work[i] = ((6.0 * y[i + 1] - 12.0 * y[i] + 6.0 * y[i - 1]) *
+                   inverseSpacing * inverseSpacing -
+               work[i - 1]) *
+              pivotInverse;
+  }
+
+  secondDerivatives[n - 1] = 0.0;
+
+  for (int i = n - 2; i >= 0; i--) {
+    secondDerivatives[i] =
+        secondDerivatives[i] * secondDerivatives[i + 1] + work[i];
+  }
+
+  return;
+}
+
+// Evaluates a spline from FitCmapSpline and its first derivative at x, as
+// CHARMM's CMAPSPI does. The knots start at `minimum`.
+void EvaluateCmapSpline(const double minimum, const double spacing,
+                        const double *y, const double *secondDerivatives,
+                        const double x, double &value, double &slope) {
+  const int knot = static_cast<int>(std::floor((x - minimum) / spacing));
+  const double a = (minimum + (knot + 1) * spacing - x) / spacing;
+  const double b = (x - minimum - knot * spacing) / spacing;
+
+  value = a * y[knot] + b * y[knot + 1] +
+          ((a * a * a - a) * secondDerivatives[knot] +
+           (b * b * b - b) * secondDerivatives[knot + 1]) *
+              (spacing * spacing) / 6.0;
+  slope = (y[knot + 1] - y[knot]) / spacing -
+          (3.0 * a * a - 1.0) / 6.0 * spacing * secondDerivatives[knot] +
+          (3.0 * b * b - 1.0) / 6.0 * spacing * secondDerivatives[knot + 1];
+
+  return;
+}
+
 } // namespace
 
 CharmmParameters::CharmmParameters(void)
     : m_BondParams(), m_UreybParams(), m_AngleParams(), m_DihedralParams(),
-      m_ImproperParams(), m_CmapParams(), m_NbfixParams(), m_VdwParams(), 
+      m_ImproperParams(), m_CmapParams(), m_NbfixParams(), m_VdwParams(),
       m_Vdw14Params(), m_PrmFilePaths() {}
 
 CharmmParameters::CharmmParameters(const std::filesystem::path &filePath)
@@ -416,26 +464,29 @@ BondedParamsAndLists CharmmParameters::getBondedParamsAndLists(
   for (int cmap = 0; cmap < psf->getNumCrossTerms(); cmap++) {
     const CrossTerm &crossTerm = cmaps[cmap];
 
-    std::string atom1 = atomTypes[crossTerm.iatom1];
-    std::string atom2 = atomTypes[crossTerm.jatom1];
-    std::string atom3 = atomTypes[crossTerm.katom1];
-    std::string atom4 = atomTypes[crossTerm.latom1];
-
-    const DihedralKey dihe1(atom1, atom2, atom3, atom4);
-
-    atom1 = atomTypes[crossTerm.iatom2];
-    atom2 = atomTypes[crossTerm.jatom2];
-    atom3 = atomTypes[crossTerm.katom2];
-    atom4 = atomTypes[crossTerm.latom2];
-
-    const DihedralKey dihe2(atom1, atom2, atom3, atom4);
-    const CmapKey key(dihe1, dihe2);
+    const CmapKey key(
+        DihedralKey(atomTypes[crossTerm.iatom1], atomTypes[crossTerm.jatom1],
+                    atomTypes[crossTerm.katom1], atomTypes[crossTerm.latom1]),
+        DihedralKey(atomTypes[crossTerm.iatom2], atomTypes[crossTerm.jatom2],
+                    atomTypes[crossTerm.katom2], atomTypes[crossTerm.latom2]));
 
     const auto parameter = m_CmapParams.find(key);
 
     APOCHARMM_REQUIRE(
         parameter != m_CmapParams.end(), ApoCharmmErrorCode::Runtime,
-        "CMAP parameters were not found for cross term " + std::to_string(cmap));
+        "CMAP parameters were not found for cross term " +
+            std::to_string(cmap) + "; atom types: " +
+            atomTypes[crossTerm.iatom1] + " " + atomTypes[crossTerm.jatom1] +
+            " " + atomTypes[crossTerm.katom1] + " " +
+            atomTypes[crossTerm.latom1] + ", " + atomTypes[crossTerm.iatom2] +
+            " " + atomTypes[crossTerm.jatom2] + " " +
+            atomTypes[crossTerm.katom2] + " " + atomTypes[crossTerm.latom2] +
+            "; atom names: " + atomNames[crossTerm.iatom1] + " " +
+            atomNames[crossTerm.jatom1] + " " + atomNames[crossTerm.katom1] +
+            " " + atomNames[crossTerm.latom1] + ", " +
+            atomNames[crossTerm.iatom2] + " " + atomNames[crossTerm.jatom2] +
+            " " + atomNames[crossTerm.katom2] + " " +
+            atomNames[crossTerm.latom2]);
 
     auto findResult =
         std::find(cmapKeysPresent.begin(), cmapKeysPresent.end(), key);
@@ -445,33 +496,30 @@ BondedParamsAndLists CharmmParameters::getBondedParamsAndLists(
 
       const CmapValues &value = parameter->second;
 
-      APOCHARMM_REQUIRE(
-          value.values.size() == CmapValues::numValues &&
-          value.coeff.size() == CmapValues::numCoefficients,
-          ApoCharmmErrorCode::Runtime,
-          "CMAP coefficient data has an invalid size");
+      APOCHARMM_REQUIRE(value.values.size() == CmapValues::numValues &&
+                            value.coeff.size() == CmapValues::numCoefficients,
+                        ApoCharmmErrorCode::Runtime,
+                        "CMAP coefficient data has an invalid size");
 
       for (const double coefficient : value.coeff)
         paramsVal.push_back({static_cast<float>(coefficient)});
     }
 
-    const int cmapType = static_cast<int>(std::find(cmapKeysPresent.begin(),
-                         cmapKeysPresent.end(), key) - cmapKeysPresent.begin());
+    const int cmapType = static_cast<int>(
+        std::find(cmapKeysPresent.begin(), cmapKeysPresent.end(), key) -
+        cmapKeysPresent.begin());
 
-    listVal.push_back({crossTerm.iatom1, crossTerm.jatom1,
-                       crossTerm.katom1, crossTerm.latom1,
-                       crossTerm.iatom2, crossTerm.jatom2,
-                       crossTerm.katom2, crossTerm.latom2,
-                       cmapType, 13, 13, 13, 13, 13, 13
-    });
+    listVal.push_back({crossTerm.iatom1, crossTerm.jatom1, crossTerm.katom1,
+                       crossTerm.latom1, crossTerm.iatom2, crossTerm.jatom2,
+                       crossTerm.katom2, crossTerm.latom2, cmapType, 13, 13, 13,
+                       13, 13, 13});
   }
 
   paramsSize.push_back(
       static_cast<int>(cmapKeysPresent.size() * CmapValues::numCoefficients));
 
-  listsSize.push_back(
-      listVal.size() - listsSize[0] - listsSize[1] -
-      listsSize[2] - listsSize[3] - listsSize[4]);
+  listsSize.push_back(listVal.size() - listsSize[0] - listsSize[1] -
+                      listsSize[2] - listsSize[3] - listsSize[4]);
 
   return BondedParamsAndLists(paramsSize, paramsVal, listsSize, listVal);
 }
@@ -898,77 +946,184 @@ void CharmmParameters::parseImproperRecord(
   return;
 }
 
-void CharmmParameters::parseCmapRecord(
-    const std::vector<std::string> &tokens, std::ifstream &prmFile,
-    const std::string &line, const std::string &fileName,
-    std::size_t &lineNumber) {
-
+void CharmmParameters::parseCmapRecord(const std::vector<std::string> &tokens,
+                                       std::ifstream &prmFile,
+                                       const std::string &line,
+                                       const std::string &fileName,
+                                       std::size_t &lineNumber) {
   APOCHARMM_REQUIRE(tokens.size() == 9, ApoCharmmErrorCode::Runtime,
-      "Invalid CMAP parameter record in file \"" + fileName +
-          "\" at line " + std::to_string(lineNumber) + ": " + line);
-
-  const std::string valueContext =
-      GetPrmValueContext("CMAP", line, fileName, lineNumber);
+                    "Invalid CMAP parameter record in file \"" + fileName +
+                        "\" at line " + std::to_string(lineNumber) + ": " +
+                        line);
 
   const int gridSize =
-      apo::parse_int(tokens[8], "grid size", valueContext);
+      apo::parse_int(tokens[8], "grid size",
+                     GetPrmValueContext("CMAP", line, fileName, lineNumber));
 
-  APOCHARMM_REQUIRE(
-      gridSize == CmapValues::gridSize,
-      ApoCharmmErrorCode::Runtime,
-      "Unsupported CMAP grid size in file \"" + fileName +
-          "\" at line " + std::to_string(lineNumber) +
-          ": expected " + std::to_string(CmapValues::gridSize) +
-          ", observed " + std::to_string(gridSize));
+  // CHARMM sizes every map independently, but the CUDA kernel assumes the
+  // 24-point grid that the CHARMM protein maps use.
+  APOCHARMM_REQUIRE(gridSize == CmapValues::gridSize,
+                    ApoCharmmErrorCode::Runtime,
+                    "Unsupported CMAP grid size in file \"" + fileName +
+                        "\" at line " + std::to_string(lineNumber) +
+                        ": expected " + std::to_string(CmapValues::gridSize) +
+                        ", observed " + std::to_string(gridSize));
 
+  // Like CHARMM's RDCMAP, read the energies in file order (phi outer, psi
+  // inner) from as many lines as they occupy.
   std::vector<double> values;
   values.reserve(CmapValues::numValues);
 
   while (values.size() < CmapValues::numValues) {
-    std::string cmapLine;
+    std::string valueLine;
 
-    APOCHARMM_REQUIRE(
-        static_cast<bool>(std::getline(prmFile, cmapLine)),
-        ApoCharmmErrorCode::Runtime,
-        "Unexpected end of file while reading CMAP parameter in file \"" +
-            fileName + "\" after line " +
-            std::to_string(lineNumber));
+    APOCHARMM_REQUIRE(static_cast<bool>(std::getline(prmFile, valueLine)),
+                      ApoCharmmErrorCode::Runtime,
+                      "Unexpected end of file while reading CMAP parameter in "
+                      "file \"" +
+                          fileName + "\" after line " +
+                          std::to_string(lineNumber));
 
     lineNumber++;
-    cmapLine = CleanPrmLine(cmapLine);
+    valueLine = CleanPrmLine(valueLine);
 
-    if (cmapLine.empty() || cmapLine.front() == '*')
+    if (valueLine.empty() || (valueLine.front() == '*'))
       continue;
 
-    const std::vector<std::string> cmapTokens = apo::split(cmapLine);
+    const std::string valueContext =
+        GetPrmValueContext("CMAP", valueLine, fileName, lineNumber);
 
-    for (const std::string &token : cmapTokens) {
-      const double value =
-          apo::parse_double(token, "CMAP value", valueContext);
+    for (const std::string &token : apo::split(valueLine)) {
+      APOCHARMM_REQUIRE(values.size() < CmapValues::numValues,
+                        ApoCharmmErrorCode::Runtime,
+                        "Too many CMAP values in file \"" + fileName +
+                            "\" at line " + std::to_string(lineNumber));
 
-      values.push_back(value);
-
-      APOCHARMM_REQUIRE(
-          values.size() <= CmapValues::numValues,
-          ApoCharmmErrorCode::Runtime,
-          "Too many CMAP values in file \"" + fileName +
-              "\" at line " + std::to_string(lineNumber));
+      values.push_back(apo::parse_double(token, "grid energy", valueContext));
     }
   }
 
-  const DihedralKey dihe1(tokens[0], tokens[1], tokens[2], tokens[3]);
-  const DihedralKey dihe2(tokens[4], tokens[5], tokens[6], tokens[7]);
-  const CmapKey key(dihe1, dihe2);
+  // Fit the bicubic coefficients the way CHARMM's SETCMAP and GCSCF do. The
+  // grid is extended periodically by half a period on each side. Natural cubic
+  // splines along psi and then along phi give dE/dphi, dE/dpsi, and
+  // d2E/(dphi dpsi) at each grid point, and the bicubic Hermite matrix turns
+  // each cell's corner data into its 16 coefficients.
+  constexpr int numPoints = CmapValues::gridSize;
+  constexpr int padding = numPoints / 2;
+  constexpr int numExtended = numPoints + 2 * padding;
+  constexpr double spacing = 360.0 / numPoints;
+  constexpr double extendedMinimum = -180.0 - padding * spacing;
+
+  std::vector<double> extended(numExtended * numExtended);
+  for (int i = 0; i < numExtended; i++) {
+    const int gridI = (i + numPoints - padding) % numPoints;
+
+    for (int j = 0; j < numExtended; j++) {
+      const int gridJ = (j + numPoints - padding) % numPoints;
+      extended[i * numExtended + j] = values[gridI * numPoints + gridJ];
+    }
+  }
+
+  // One spline along psi for every extended phi row.
+  std::vector<double> work(numExtended);
+  std::vector<double> psiSecondDerivatives(numExtended * numExtended);
+  for (int i = 0; i < numExtended; i++)
+    FitCmapSpline(spacing, &extended[i * numExtended], numExtended, work.data(),
+                  &psiSecondDerivatives[i * numExtended]);
+
+  // Everything but the final evaluation at phi depends only on psi, so it is
+  // done once per psi column.
+  std::vector<double> dEdPhi(CmapValues::numValues);
+  std::vector<double> dEdPsi(CmapValues::numValues);
+  std::vector<double> d2EdPhidPsi(CmapValues::numValues);
+  std::vector<double> energyAlongPhi(numExtended);
+  std::vector<double> slopeAlongPhi(numExtended);
+  std::vector<double> energySecondDerivatives(numExtended);
+  std::vector<double> slopeSecondDerivatives(numExtended);
+
+  for (int j = 0; j < numPoints; j++) {
+    const double psi = j * spacing - 180.0;
+
+    for (int k = 0; k < numExtended; k++)
+      EvaluateCmapSpline(extendedMinimum, spacing, &extended[k * numExtended],
+                         &psiSecondDerivatives[k * numExtended], psi,
+                         energyAlongPhi[k], slopeAlongPhi[k]);
+
+    FitCmapSpline(spacing, energyAlongPhi.data(), numExtended, work.data(),
+                  energySecondDerivatives.data());
+    FitCmapSpline(spacing, slopeAlongPhi.data(), numExtended, work.data(),
+                  slopeSecondDerivatives.data());
+
+    for (int i = 0; i < numPoints; i++) {
+      const double phi = i * spacing - 180.0;
+      const int point = i * numPoints + j;
+      double energy = 0.0;
+
+      EvaluateCmapSpline(extendedMinimum, spacing, energyAlongPhi.data(),
+                         energySecondDerivatives.data(), phi, energy,
+                         dEdPhi[point]);
+      EvaluateCmapSpline(extendedMinimum, spacing, slopeAlongPhi.data(),
+                         slopeSecondDerivatives.data(), phi, dEdPsi[point],
+                         d2EdPhidPsi[point]);
+    }
+  }
+
+  // CHARMM's WT matrix. Row r gives coefficient r from the corner energies,
+  // phi slopes, psi slopes, and mixed derivatives, each listed counterclockwise
+  // from the cell origin and scaled to the cell's unit square.
+  static const int hermite[16][16] = {
+      {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
+      {-3, 0, 0, 3, 0, 0, 0, 0, -2, 0, 0, -1, 0, 0, 0, 0},
+      {2, 0, 0, -2, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0},
+      {0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+      {0, 0, 0, 0, -3, 0, 0, 3, 0, 0, 0, 0, -2, 0, 0, -1},
+      {0, 0, 0, 0, 2, 0, 0, -2, 0, 0, 0, 0, 1, 0, 0, 1},
+      {-3, 3, 0, 0, -2, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {0, 0, 0, 0, 0, 0, 0, 0, -3, 3, 0, 0, -2, -1, 0, 0},
+      {9, -9, 9, -9, 6, 3, -3, -6, 6, -6, -3, 3, 4, 2, 1, 2},
+      {-6, 6, -6, 6, -4, -2, 2, 4, -3, 3, 3, -3, -2, -1, -1, -2},
+      {2, -2, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {0, 0, 0, 0, 0, 0, 0, 0, 2, -2, 0, 0, 1, 1, 0, 0},
+      {-6, 6, -6, 6, -3, -3, 3, 3, -4, 4, 2, -2, -2, -2, -1, -1},
+      {4, -4, 4, -4, 2, 2, -2, -2, 2, -2, -2, 2, 1, 1, 1, 1}};
 
   CmapValues cmap(values);
+  cmap.coeff.resize(CmapValues::numCoefficients);
 
-  const double dx = 360.0 / static_cast<double>(CmapValues::gridSize);
+  for (int i = 0; i < numPoints; i++) {
+    const int nextI = (i + 1) % numPoints;
 
-  // CHARMM uses xm = grid / 2.
-  const int xm = CmapValues::gridSize / 2;
+    for (int j = 0; j < numPoints; j++) {
+      const int nextJ = (j + 1) % numPoints;
+      const int corners[4] = {i * numPoints + j, nextI * numPoints + j,
+                              nextI * numPoints + nextJ, i * numPoints + nextJ};
 
-  cmap_set_spline(CmapValues::gridSize, xm, dx, cmap.values, cmap.coeff);
+      double cornerData[16];
+      for (int corner = 0; corner < 4; corner++) {
+        cornerData[corner] = values[corners[corner]];
+        cornerData[corner + 4] = dEdPhi[corners[corner]] * spacing;
+        cornerData[corner + 8] = dEdPsi[corners[corner]] * spacing;
+        cornerData[corner + 12] =
+            d2EdPhidPsi[corners[corner]] * spacing * spacing;
+      }
 
+      const int cell = i * numPoints + j;
+      for (int row = 0; row < 16; row++) {
+        double coefficient = 0.0;
+        for (int column = 0; column < 16; column++)
+          coefficient += hermite[row][column] * cornerData[column];
+
+        cmap.coeff[cell * CmapValues::coefficientsPerCell + row] = coefficient;
+      }
+    }
+  }
+
+  // As in CHARMM's flexible parameter reader, both torsions keep the listed
+  // order, and a later map for the same torsions replaces the earlier one.
+  const CmapKey key(DihedralKey(tokens[0], tokens[1], tokens[2], tokens[3]),
+                    DihedralKey(tokens[4], tokens[5], tokens[6], tokens[7]));
   m_CmapParams.insert_or_assign(key, std::move(cmap));
 
   return;
